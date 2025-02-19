@@ -6,7 +6,7 @@ import datetime
 import faulthandler
 import os
 import signal
-
+import time
 from moviepy.editor import ImageSequenceClip
 import numpy as np
 from openpi_client import image_tools
@@ -18,6 +18,9 @@ import tqdm
 import tyro
 
 faulthandler.enable()
+
+# DROID data collection frequency -- we slow down execution to match this frequency
+DROID_CONTROL_FREQUENCY = 15
 
 
 @dataclasses.dataclass
@@ -95,6 +98,7 @@ def main(args: Args):
         bar = tqdm.tqdm(range(args.max_timesteps))
         print("Running rollout... press Ctrl+C to stop early.")
         for t_step in bar:
+            start_time = time.time()
             try:
                 # Get the current observation
                 curr_obs = _extract_observation(
@@ -145,6 +149,11 @@ def main(args: Args):
                 action = np.clip(action, -1, 1)
 
                 env.step(action)
+
+                # Sleep to match DROID data collection frequency
+                elapsed_time = time.time() - start_time
+                if elapsed_time < 1 / DROID_CONTROL_FREQUENCY:
+                    time.sleep(1 / DROID_CONTROL_FREQUENCY - elapsed_time)
             except KeyboardInterrupt:
                 break
 

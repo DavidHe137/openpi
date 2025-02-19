@@ -12,6 +12,7 @@ from openpi.models import model as _model
 import openpi.models.gemma_fast as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
+import openpi.shared.nnx_utils as nnx_utils
 
 logger = logging.getLogger("openpi")
 
@@ -116,6 +117,12 @@ class Pi0FASTConfig(_model.BaseModelConfig):
         action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
         return observation_spec, action_spec
+
+    def get_freeze_filter(self) -> nnx.filterlib.Filter:
+        """Returns the freeze filter based on the model config."""
+        if "lora" in self.paligemma_variant:
+            return nnx.All(nnx_utils.PathRegex(".*llm.*"), nnx.Not(nnx_utils.PathRegex(".*lora.*")))
+        return nnx.Nothing
 
 
 class Pi0FAST(_model.BaseModel):

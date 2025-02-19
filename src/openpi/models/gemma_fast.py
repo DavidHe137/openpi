@@ -17,6 +17,7 @@ Gemma model implementation from big_vision/models/ppp/gemma.py (with small modif
 Used for FAST autoregressive policies.
 """
 
+import dataclasses
 from typing import Literal, TypeAlias
 
 import einops
@@ -25,9 +26,10 @@ import jax
 import jax.numpy as jnp
 import ml_collections
 
+import openpi.models.lora as lora
 import openpi.shared.array_typing as at
 
-Variant = Literal["gemma_2b"]
+Variant = Literal["gemma_2b", "gemma_2b_lora"]
 
 
 def get_config(variant):
@@ -46,6 +48,26 @@ def get_config(variant):
                 "vocab_size": 257_152,
                 "scan": True,
                 "remat_policy": "nothing_saveable",
+            }
+        )
+    if variant == "gemma_2b_lora":
+        return ml_collections.ConfigDict(
+            {
+                "variant": variant,
+                "width": 2048,
+                "depth": 18,
+                "mlp_dim": 16_384,
+                "num_heads": 8,
+                "num_kv_heads": 1,
+                "head_dim": 256,
+                "norm_eps": 1e-6,
+                "vocab_size": 257_152,
+                "scan": True,
+                "remat_policy": "nothing_saveable",
+                "lora_configs": {
+                    "attn": lora.LoRAConfig(rank=16, alpha=16.0),
+                    "ffn": lora.LoRAConfig(rank=16, alpha=16.0),
+                },
             }
         )
     raise ValueError(f"Unknown variant: {variant}")
@@ -110,21 +132,34 @@ class Attention(nn.Module):
 
     cache_dtype: str | None = None
 
+    lora_config: lora.LoRAConfig | None = None
+
     def setup(self):
         if self.num_kv_heads == self.num_heads:
-            self.qkv_einsum = Einsum(
+            self.qkv_einsum = lora.Einsum(
                 shape=(3, self.num_heads, self.features, self.head_dim),
+                name="qkv_einsum",
+                init_fn=nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0, 1)),
+                lora_config=self.lora_config,
             )
         else:
-            # MQA
-            self.q_einsum = Einsum(
+            self.q_einsum = lora.Einsum(
                 shape=(self.num_heads, self.features, self.head_dim),
+                name="q_einsum",
+                init_fn=nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0,)),
+                lora_config=self.lora_config,
             )
-            self.kv_einsum = Einsum(
+            self.kv_einsum = lora.Einsum(
                 shape=(2, self.num_kv_heads, self.features, self.head_dim),
+                name="kv_einsum",
+                init_fn=nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0, 1)),
+                lora_config=self.lora_config,
             )
-        self.attn_vec_einsum = Einsum(
+        self.attn_vec_einsum = lora.Einsum(
             shape=(self.num_heads, self.head_dim, self.features),
+            name="attn_vec_einsum",
+            init_fn=nn.initializers.lecun_normal(in_axis=-2, out_axis=-1, batch_axis=(0,)),
+            lora_config=self.lora_config,
         )
 
     def _init_cache(self, k, v, cache_size):
@@ -190,37 +225,6 @@ class Attention(nn.Module):
 
 
 @at.typecheck
-class FeedForward(nn.Module):
-    """Feed forward module."""
-
-    features: int
-    hidden_dim: int
-
-    @nn.compact
-    def __call__(self, x):
-        dtype = x.dtype  # original dtype, could be half-precision
-        w_gating = self.param(
-            "gating_einsum",
-            nn.initializers.zeros_init(),
-            ((2, self.features, self.hidden_dim)),
-        ).astype(dtype)
-        ff_gate = jnp.dot(x, w_gating[0])
-        gate_value = nn.gelu(ff_gate)
-
-        ff1 = jnp.dot(x, w_gating[1])
-        activations = gate_value * ff1
-
-        w_linear = self.param(
-            "linear",
-            nn.initializers.zeros_init(),
-            (self.hidden_dim, self.features),
-        ).astype(dtype)
-        outputs = jnp.dot(activations, w_linear)
-        assert outputs.dtype == dtype
-        return outputs
-
-
-@at.typecheck
 class Block(nn.Module):
     """Transformer block."""
 
@@ -233,6 +237,7 @@ class Block(nn.Module):
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()
     cache_dtype: str | None = None
+    lora_configs: ml_collections.ConfigDict = dataclasses.field(default_factory=ml_collections.ConfigDict)
 
     def setup(self):
         self.pre_attention_norm = RMSNorm()
@@ -242,9 +247,12 @@ class Block(nn.Module):
             features=self.embed_dim,
             head_dim=self.head_dim,
             cache_dtype=self.cache_dtype,
+            lora_config=self.lora_configs.get("attn"),
         )
         self.pre_ffw_norm = RMSNorm()
-        self.mlp = FeedForward(features=self.embed_dim, hidden_dim=self.hidden_dim)
+        self.mlp = lora.FeedForward(
+            features=self.embed_dim, hidden_dim=self.hidden_dim, name="mlp", lora_config=self.lora_configs.get("ffn")
+        )
         if self.dropout:
             self.drop = nn.Dropout(self.dropout, self.dropout_bdims)
         else:
@@ -289,6 +297,7 @@ class Module(nn.Module):
 
     scan: bool = False
     remat_policy: str = "none"
+    lora_configs: ml_collections.ConfigDict = dataclasses.field(default_factory=ml_collections.ConfigDict)
 
     @nn.compact
     def __call__(
@@ -380,6 +389,7 @@ class Module(nn.Module):
             "dropout": self.dropout,
             "dropout_bdims": self.dropout_bdims,
             "cache_dtype": self.cache_dtype,
+            "lora_configs": self.lora_configs,
         }
         layers = self.scope.push("layers")
         blocks = [
