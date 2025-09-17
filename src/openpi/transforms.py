@@ -337,6 +337,73 @@ class PadStatesAndActions(DataTransformFn):
         return data
 
 
+@dataclasses.dataclass(frozen=True)
+class ReplacePromptWithReasoning(DataTransformFn):
+    """
+    Replaces the original task prompt with randomly selected reasoning components 
+    ('subtask' or 'movement') from the reasoning data.
+    Only applies during training (when 'actions' key is present in data).
+    """
+
+    mapping_file_path: str
+    reasoning_file_path: str
+    reasoning_components: list[str] = dataclasses.field(default_factory=lambda: ["subtask", "movement"])
+
+    def __post_init__(self):
+        # Use object.__setattr__ to bypass frozen dataclass restriction
+        import json
+        
+        with open(self.mapping_file_path, 'r') as f:
+            mapping_data = json.load(f)
+            object.__setattr__(self, '_mapping', mapping_data['mapping'])
+        
+        with open(self.reasoning_file_path, 'r') as f:
+            reasoning_data = json.load(f)
+            object.__setattr__(self, '_reasoning_data', reasoning_data)
+
+    def __call__(self, data: DataDict) -> DataDict:
+        import random
+
+        # Only apply reasoning replacement during training (when actions are present)
+        # During inference, actions are not present, so we keep the original prompt
+        if "actions" not in data:
+            return data
+
+        # Extract episode index and frame index from LeRobot data
+        episode_idx = int(data.get('episode_index', 0))
+        frame_idx = int(data.get('frame_index', 0))
+        
+        # Store original prompt as fallback
+        original_prompt = data.get('prompt', '')
+
+        data['prompt'] = np.asarray(original_prompt)
+        # data['reasoning_component_used'] = np.asarray('original')
+        
+        # Look up reasoning data using mapping
+        if str(episode_idx) in self._mapping:
+            mapping_info = self._mapping[str(episode_idx)]
+            task_key = mapping_info['reasonings_task_key']
+            episode_id = mapping_info['reasonings_episode_id']
+            
+            if task_key in self._reasoning_data:
+                reasoning_step = self._reasoning_data[task_key][f"{episode_id}"][f"{frame_idx}"]
+                
+                # Randomly select a reasoning component
+                available_components = ['original']  # Always include original as option
+                for component in self.reasoning_components:
+                    if component in reasoning_step and reasoning_step[component]:
+                        available_components.append(component)
+                
+                if available_components:
+                    selected_component = random.choice(available_components)
+                    if selected_component != 'original':
+                        new_prompt = reasoning_step[selected_component]
+                        data['prompt'] = np.asarray(new_prompt)
+                        # data['reasoning_component_used'] = np.asarray(selected_component)
+        
+        return data
+
+
 def flatten_dict(tree: at.PyTree) -> dict:
     """Flatten a nested dictionary. Uses '/' as the separator."""
     return traverse_util.flatten_dict(tree, sep="/")

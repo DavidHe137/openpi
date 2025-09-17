@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=libero90_lora_single_gpu3
-#SBATCH --output=/coc/flash7/zhenyang/logs/sbatch_out/libero90_lora_single_gpu3.out
-#SBATCH --error=/coc/flash7/zhenyang/logs/sbatch_err/libero90_lora_single_gpu3.err
+#SBATCH --job-name=libero90_lora_fsdp
+#SBATCH --output=/coc/flash7/zhenyang/logs/sbatch_out/libero90_lora_fsdp.out
+#SBATCH --error=/coc/flash7/zhenyang/logs/sbatch_err/libero90_lora_fsdp.err
 #SBATCH --partition=overcap
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=6
-#SBATCH --gpus-per-node="a40:1"
+#SBATCH --gpus-per-node="a40:8"
 #SBATCH --exclude="clippy,voltron"
 #SBATCH --mem-per-gpu=64
 #SBATCH --requeue
@@ -35,6 +35,7 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 # train with 90% of GPU memory
 # NOTE: multi-gpu with ``--fsdp-devices=8`` batch-size is 256
 uv run scripts/train.py \
     pi05_libero90_lora \
-    --exp-name=libero90_lora_finetune_single_gpu2 \
-    --batch-size=64 \
-    --overwrite
+    --exp-name=libero90_lora_finetune \
+    --fsdp-devices=8 \
+    --batch-size=256 \
+    --resume

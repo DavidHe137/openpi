@@ -355,6 +355,93 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotLiberoDataConfigWithReasoning(DataConfigFactory):
+    """
+    LIBERO data config that replaces task prompts with reasoning components (subtask/movement).
+    """
+
+    extra_delta_transform: bool = False
+    mapping_file_path: str = "/coc/flash7/zhenyang/VLA-data-augmentation/ECoT_LeRobot_data_ID_mapping/mapping.json"
+    reasoning_file_path: str = "/coc/flash7/zhenyang/data/embodied_features_and_demos_libero/libero_reasonings.json"
+    reasoning_components: list[str] = dataclasses.field(default_factory=lambda: ["subtask", "movement"])
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # The repack transform is *only* applied to the data coming from the dataset,
+        # and *not* during inference. We can use it to make inputs from the dataset look
+        # as close as possible to those coming from the inference environment (e.g. match the keys).
+        # Below, we match the keys in the dataset (which we defined in the data conversion script) to
+        # the keys we use in our inference pipeline (defined in the inference script for libero).
+        # For your own dataset, first figure out what keys your environment passes to the policy server
+        # and then modify the mappings below so your dataset's keys get matched to those target keys.
+        # The repack transform simply remaps key names here.
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image": "wrist_image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                        "episode_index": "episode_index",
+                        "frame_index": "frame_index",
+                    }
+                )
+            ]
+        )
+
+        # The data transforms are applied to the data coming from the dataset *and* during inference.
+        # Below, we define the transforms for data going into the model (``inputs``) and the transforms
+        # for data coming out of the model (``outputs``) (the latter is only used during inference).
+        # We defined these transforms in `libero_policy.py`. You can check the detailed comments there for
+        # how to modify the transforms to match your dataset. Once you created your own transforms, you can
+        # replace the transforms below with your own.
+        data_transforms = _transforms.Group(
+            inputs=[
+                libero_policy.LiberoInputs(model_type=model_config.model_type),
+                _transforms.ReplacePromptWithReasoning(
+                    mapping_file_path=self.mapping_file_path,
+                    reasoning_file_path=self.reasoning_file_path,
+                    reasoning_components=self.reasoning_components,
+                )
+            ],
+            outputs=[libero_policy.LiberoOutputs()],
+        )
+
+        # One additional data transform: pi0 models are trained on delta actions (relative to the first
+        # state in each action chunk). IF your data has ``absolute`` actions (e.g. target joint angles)
+        # you can uncomment the following line to convert the actions to delta actions. The only exception
+        # is for the gripper actions which are always absolute.
+        # In the example below, we would apply the delta conversion to the first 6 actions (joints) and
+        # leave the 7th action (gripper) unchanged, i.e. absolute.
+        # In Libero, the raw actions in the dataset are already delta actions, so we *do not* need to
+        # apply a separate delta conversion (that's why it's commented out). Choose whether to apply this
+        # transform based on whether your dataset uses ``absolute`` or ``delta`` actions out of the box.
+
+        # LIBERO already represents actions as deltas, but we have some old Pi0 checkpoints that are trained with this
+        # extra delta transform.
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        # Model transforms include things like tokenizing the prompt and action targets
+        # You do not need to change anything here for your own dataset.
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # We return all data transforms for training and inference. No need to change anything here.
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -761,6 +848,29 @@ _CONFIGS = [
             repo_id="libero_90_lerobot", # NOTE: using pre converted libero_90 dataset
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
+        ),
+
+        num_train_steps=30_000,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_libero/params"), # NOTE: using pi05_libero base model
+
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero90_lora_reasoning_prompt",
+        # Model config with LoRA for efficient fine-tuning
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        # Use reasoning data config that replaces task prompts with reasoning components
+        data=LeRobotLiberoDataConfigWithReasoning(
+            repo_id="libero_90_lerobot", # NOTE: using pre converted libero_90 dataset
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+            mapping_file_path="/coc/flash7/zhenyang/VLA-data-augmentation/ECoT_LeRobot_data_ID_mapping/mapping.json",
+            reasoning_file_path="/coc/flash7/zhenyang/data/embodied_features_and_demos_libero/libero_reasonings.json",
+            reasoning_components=["subtask", "movement"],
         ),
 
         num_train_steps=30_000,
