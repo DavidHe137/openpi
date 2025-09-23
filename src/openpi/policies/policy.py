@@ -105,6 +105,94 @@ class Policy(BasePolicy):
         }
         return outputs
 
+    def infer_batch(self, obs_batch: list[dict], *, noise: np.ndarray | None = None) -> list[dict]:
+        """Run inference on a batch of observations.
+        
+        Args:
+            obs_batch: List of observation dictionaries
+            noise: Optional noise tensor for batch (shape: batch_size, action_horizon, action_dim)
+            
+        Returns:
+            List of result dictionaries, one for each input observation
+        """
+        if not obs_batch:
+            return []
+        
+        # Check if all observations have the same structure
+        first_obs = obs_batch[0]
+        batch_size = len(obs_batch)
+        
+        # Stack observations into batch format
+        batched_obs = {}
+        for key in first_obs.keys():
+            if key in first_obs:
+                # Stack all values for this key
+                values = [obs[key] for obs in obs_batch]
+                if isinstance(values[0], np.ndarray):
+                    batched_obs[key] = np.stack(values, axis=0)
+                elif isinstance(values[0], dict):
+                    # Handle nested dictionaries (like images)
+                    batched_obs[key] = {}
+                    for subkey in values[0].keys():
+                        subvalues = [obs[key][subkey] for obs in obs_batch]
+                        if isinstance(subvalues[0], np.ndarray):
+                            batched_obs[key][subkey] = np.stack(subvalues, axis=0)
+                        else:
+                            batched_obs[key][subkey] = subvalues
+                else:
+                    batched_obs[key] = values
+            else:
+                batched_obs[key] = [obs.get(key, None) for obs in obs_batch]
+        
+        # Apply transforms to batched observation
+        inputs = jax.tree.map(lambda x: x, batched_obs)
+        inputs = self._input_transform(inputs)
+        
+        if not self._is_pytorch_model:
+            # Convert to jax.Array (already batched)
+            inputs = jax.tree.map(lambda x: jnp.asarray(x), inputs)
+            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+        else:
+            # Convert inputs to PyTorch tensors and move to correct device
+            inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device), inputs)
+            sample_rng_or_pytorch_device = self._pytorch_device
+
+        # Prepare kwargs for sample_actions
+        sample_kwargs = dict(self._sample_kwargs)
+        if noise is not None:
+            noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
+            sample_kwargs["noise"] = noise
+
+        observation = _model.Observation.from_dict(inputs)
+        start_time = time.monotonic()
+        outputs = {
+            "state": inputs["state"],
+            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+        }
+        model_time = time.monotonic() - start_time
+        
+        if self._is_pytorch_model:
+            outputs = jax.tree.map(lambda x: np.asarray(x.detach().cpu()), outputs)
+        else:
+            outputs = jax.tree.map(lambda x: np.asarray(x), outputs)
+
+        outputs = self._output_transform(outputs)
+        
+        # Split batch results back into individual results
+        results = []
+        for i in range(batch_size):
+            result = {}
+            for key, value in outputs.items():
+                if key == "policy_timing":
+                    result[key] = value  # Timing is shared
+                elif isinstance(value, np.ndarray) and len(value.shape) > 0:
+                    result[key] = value[i]
+                else:
+                    result[key] = value
+            results.append(result)
+        
+        return results
+
     @property
     def metadata(self) -> dict[str, Any]:
         return self._metadata

@@ -21,8 +21,15 @@ def _parse_image(image) -> np.ndarray:
     image = np.asarray(image)
     if np.issubdtype(image.dtype, np.floating):
         image = (255 * image).astype(np.uint8)
-    if image.shape[0] == 3:
-        image = einops.rearrange(image, "c h w -> h w c")
+    
+    # Handle both single images and batch of images
+    if len(image.shape) == 4:  # Batch of images: (batch, c, h, w)
+        if image.shape[1] == 3:  # Channel dimension is at index 1
+            image = einops.rearrange(image, "b c h w -> b h w c")
+    elif len(image.shape) == 3:  # Single image: (c, h, w)
+        if image.shape[0] == 3:  # Channel dimension is at index 0
+            image = einops.rearrange(image, "c h w -> h w c")
+    
     return image
 
 
@@ -52,9 +59,25 @@ class LiberoInputs(transforms.DataTransformFn):
         base_image = _parse_image(data["observation/image"])
         wrist_image = _parse_image(data["observation/wrist_image"])
 
+        # Handle batch dimensions for state and masks
+        state = data["observation/state"]
+        is_batch = len(state.shape) > 1
+        
+        if is_batch:
+            # Batch processing: create appropriate masks for each sample in batch
+            batch_size = state.shape[0]
+            base_mask = np.ones(batch_size, dtype=bool)
+            wrist_mask = np.ones(batch_size, dtype=bool)
+            right_wrist_mask = np.ones(batch_size, dtype=bool) if self.model_type == _model.ModelType.PI0_FAST else np.zeros(batch_size, dtype=bool)
+        else:
+            # Single sample processing (original behavior)
+            base_mask = np.True_
+            wrist_mask = np.True_
+            right_wrist_mask = np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_
+
         # Create inputs dict. Do not change the keys in the dict below.
         inputs = {
-            "state": data["observation/state"],
+            "state": state,
             "image": {
                 "base_0_rgb": base_image,
                 "left_wrist_0_rgb": wrist_image,
@@ -62,10 +85,10 @@ class LiberoInputs(transforms.DataTransformFn):
                 "right_wrist_0_rgb": np.zeros_like(base_image),
             },
             "image_mask": {
-                "base_0_rgb": np.True_,
-                "left_wrist_0_rgb": np.True_,
+                "base_0_rgb": base_mask,
+                "left_wrist_0_rgb": wrist_mask,
                 # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
-                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
+                "right_wrist_0_rgb": right_wrist_mask,
             },
         }
 
@@ -97,4 +120,14 @@ class LiberoOutputs(transforms.DataTransformFn):
         # dimension, we need to now parse out the correct number of actions in the return dict.
         # For Libero, we only return the first 7 actions (since the rest is padding).
         # For your own dataset, replace `7` with the action dimension of your dataset.
-        return {"actions": np.asarray(data["actions"][:, :7])}
+        actions = np.asarray(data["actions"])
+
+        # Handle both single sample and batch processing
+        if len(actions.shape) == 3:  # Batch: (batch_size, action_horizon, action_dim)
+            # Keep full horizon, slice action dim
+            return {"actions": actions[:, :, :7]}
+        elif len(actions.shape) == 2:  # Single: (action_horizon, action_dim)
+            # Keep full horizon, slice action dim
+            return {"actions": actions[:, :7]}
+        else:
+            raise ValueError(f"Unexpected actions shape: {actions.shape}")

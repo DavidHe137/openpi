@@ -5,6 +5,7 @@ from typing import Protocol, TypeAlias, TypeVar, runtime_checkable
 
 import flax.traverse_util as traverse_util
 import jax
+import jax.numpy as jnp
 import numpy as np
 from openpi_client import image_tools
 
@@ -259,10 +260,33 @@ class TokenizePrompt(DataTransformFn):
         else:
             state = None
 
-        if not isinstance(prompt, str):
-            prompt = prompt.item()
-
-        tokens, token_masks = self.tokenizer.tokenize(prompt, state)
+        # Handle both single prompts and batch of prompts
+        if isinstance(prompt, list):
+            # Batch processing: tokenize each prompt in the batch
+            batch_tokens = []
+            batch_masks = []
+            
+            for i, single_prompt in enumerate(prompt):
+                if not isinstance(single_prompt, str):
+                    single_prompt = single_prompt.item()
+                
+                # Get state for this sample if needed
+                sample_state = state[i] if state is not None and len(state.shape) > 1 else state
+                
+                tokens, token_masks = self.tokenizer.tokenize(single_prompt, sample_state)
+                batch_tokens.append(tokens)
+                batch_masks.append(token_masks)
+            
+            # Stack into batch format
+            tokens = jnp.stack(batch_tokens, axis=0)
+            token_masks = jnp.stack(batch_masks, axis=0)
+        else:
+            # Single prompt processing (original behavior)
+            if not isinstance(prompt, str):
+                prompt = prompt.item()
+            
+            tokens, token_masks = self.tokenizer.tokenize(prompt, state)
+        
         return {**data, "tokenized_prompt": tokens, "tokenized_prompt_mask": token_masks}
 
 
@@ -274,11 +298,46 @@ class TokenizeFASTInputs(DataTransformFn):
         if (prompt := data.pop("prompt", None)) is None:
             raise ValueError("Prompt is required")
 
-        if not isinstance(prompt, str):
-            prompt = prompt.item()
+        # Handle both single prompts and batch of prompts
+        if isinstance(prompt, list):
+            # Batch processing: tokenize each prompt in the batch
+            batch_tokens = []
+            batch_token_masks = []
+            batch_ar_masks = []
+            batch_loss_masks = []
+            
+            state = data["state"]
+            actions = data.get("actions")
+            
+            for i, single_prompt in enumerate(prompt):
+                if not isinstance(single_prompt, str):
+                    single_prompt = single_prompt.item()
+                
+                # Get state and actions for this sample
+                sample_state = state[i] if len(state.shape) > 1 else state
+                sample_actions = actions[i] if actions is not None and len(actions.shape) > 1 else actions
+                
+                tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize(
+                    single_prompt, sample_state, sample_actions
+                )
+                batch_tokens.append(tokens)
+                batch_token_masks.append(token_mask)
+                batch_ar_masks.append(ar_mask)
+                batch_loss_masks.append(loss_mask)
+            
+            # Stack into batch format
+            tokens = jnp.stack(batch_tokens, axis=0)
+            token_mask = jnp.stack(batch_token_masks, axis=0)
+            ar_mask = jnp.stack(batch_ar_masks, axis=0)
+            loss_mask = jnp.stack(batch_loss_masks, axis=0)
+        else:
+            # Single prompt processing (original behavior)
+            if not isinstance(prompt, str):
+                prompt = prompt.item()
 
-        state, actions = data["state"], data.get("actions")
-        tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize(prompt, state, actions)
+            state, actions = data["state"], data.get("actions")
+            tokens, token_mask, ar_mask, loss_mask = self.tokenizer.tokenize(prompt, state, actions)
+        
         return {
             **data,
             "tokenized_prompt": tokens,

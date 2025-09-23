@@ -361,8 +361,9 @@ class LeRobotLiberoDataConfigWithReasoning(DataConfigFactory):
     """
 
     extra_delta_transform: bool = False
-    mapping_file_path: str = "/coc/flash7/zhenyang/VLA-data-augmentation/ECoT_LeRobot_data_ID_mapping/mapping.json"
-    reasoning_file_path: str = "/coc/flash7/zhenyang/data/embodied_features_and_demos_libero/libero_reasonings.json"
+    mapping_file_path: str = None
+    reasoning_file_path: str = None
+    eval: bool = True
     reasoning_components: list[str] = dataclasses.field(default_factory=lambda: ["subtask", "movement"])
 
     @override
@@ -397,15 +398,22 @@ class LeRobotLiberoDataConfigWithReasoning(DataConfigFactory):
         # We defined these transforms in `libero_policy.py`. You can check the detailed comments there for
         # how to modify the transforms to match your dataset. Once you created your own transforms, you can
         # replace the transforms below with your own.
-        data_transforms = _transforms.Group(
-            inputs=[
-                libero_policy.LiberoInputs(model_type=model_config.model_type),
+        
+        # Start with base inputs
+        inputs = [libero_policy.LiberoInputs(model_type=model_config.model_type)]
+        
+        # Only add ReplacePromptWithReasoning transform if both mapping and reasoning files are provided
+        if not self.eval and self.mapping_file_path is not None and self.reasoning_file_path is not None:
+            inputs.append(
                 _transforms.ReplacePromptWithReasoning(
                     mapping_file_path=self.mapping_file_path,
                     reasoning_file_path=self.reasoning_file_path,
                     reasoning_components=self.reasoning_components,
                 )
-            ],
+            )
+        
+        data_transforms = _transforms.Group(
+            inputs=inputs,
             outputs=[libero_policy.LiberoOutputs()],
         )
 
@@ -870,6 +878,7 @@ _CONFIGS = [
             extra_delta_transform=False,
             mapping_file_path="/coc/flash7/zhenyang/VLA-data-augmentation/ECoT_LeRobot_data_ID_mapping/mapping.json",
             reasoning_file_path="/coc/flash7/zhenyang/data/embodied_features_and_demos_libero/libero_reasonings.json",
+            eval=False,
             reasoning_components=["subtask", "movement"],
         ),
 
