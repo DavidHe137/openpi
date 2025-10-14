@@ -142,6 +142,7 @@ def main(args: Args) -> None:
         for key, value in action.get("server_timing", {}).items():
             timing_recorder.record(f"server_{key}", value)
         for key, value in action.get("policy_timing", {}).items():
+            print(action["policy_timing"])
             timing_recorder.record(f"policy_{key}", value)
 
     timing_recorder.print_all_stats()

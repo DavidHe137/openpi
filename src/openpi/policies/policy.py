@@ -33,6 +33,7 @@ class Policy(BasePolicy):
         metadata: dict[str, Any] | None = None,
         pytorch_device: str = "cpu",
         is_pytorch: bool = False,
+        enable_profiling: bool = True,
     ):
         """Initialize the Policy.
 
@@ -46,6 +47,8 @@ class Policy(BasePolicy):
             pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda:0").
                           Only relevant when is_pytorch=True.
             is_pytorch: Whether the model is a PyTorch model. If False, assumes JAX model.
+            enable_profiling: Whether to enable granular timing profiling. When enabled,
+                            uses slower profiled execution path with detailed timing.
         """
         self._model = model
         self._input_transform = _transforms.compose(transforms)
@@ -54,6 +57,7 @@ class Policy(BasePolicy):
         self._metadata = metadata or {}
         self._is_pytorch_model = is_pytorch
         self._pytorch_device = pytorch_device
+        self._enable_profiling = enable_profiling
 
         if self._is_pytorch_model:
             self._model = self._model.to(pytorch_device)
@@ -61,7 +65,17 @@ class Policy(BasePolicy):
             self._sample_actions = model.sample_actions
         else:
             # JAX model setup
-            self._sample_actions = nnx_utils.module_jit(model.sample_actions)
+            if enable_profiling and hasattr(model, "sample_actions_profiled"):
+                # Use non-JIT profiled version for timing
+                self._sample_actions = model.sample_actions_profiled
+                # Also JIT the individual components for performance
+                self._model._preprocess_observation_jit = nnx_utils.module_jit(model._preprocess_observation_jit)
+                self._model._embed_prefix_jit = nnx_utils.module_jit(model._embed_prefix_jit)
+                self._model._setup_prefix_kv_cache_jit = nnx_utils.module_jit(model._setup_prefix_kv_cache_jit)
+                self._model._run_diffusion_loop_jit = nnx_utils.module_jit(model._run_diffusion_loop_jit)
+            else:
+                # Use normal JIT-compiled version
+                self._sample_actions = nnx_utils.module_jit(model.sample_actions)
             self._rng = rng or jax.random.key(0)
 
     @override
@@ -89,10 +103,22 @@ class Policy(BasePolicy):
 
         observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
-        outputs = {
-            "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
-        }
+
+        if self._enable_profiling and hasattr(self._model, "sample_actions_profiled"):
+            # Use profiled execution path
+            actions, granular_timing = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+            outputs = {
+                "state": inputs["state"],
+                "actions": actions,
+            }
+        else:
+            # Use normal execution path
+            outputs = {
+                "state": inputs["state"],
+                "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            }
+            granular_timing = {}
+
         model_time = time.monotonic() - start_time
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
@@ -100,31 +126,34 @@ class Policy(BasePolicy):
             outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
         outputs = self._output_transform(outputs)
-        outputs["policy_timing"] = {
-            "infer_ms": model_time * 1000,
-        }
+
+        # Collect timing information
+        policy_timing = {"infer_ms": model_time * 1000}
+        policy_timing.update(granular_timing)
+
+        outputs["policy_timing"] = policy_timing
         return outputs
 
     def infer_batch(self, obs_batch: list[dict], *, noise: np.ndarray | None = None) -> list[dict]:
         """Run inference on a batch of observations.
-        
+
         Args:
             obs_batch: List of observation dictionaries
             noise: Optional noise tensor for batch (shape: batch_size, action_horizon, action_dim)
-            
+
         Returns:
             List of result dictionaries, one for each input observation
         """
         if not obs_batch:
             return []
-        
+
         # Check if all observations have the same structure
         first_obs = obs_batch[0]
         batch_size = len(obs_batch)
-        
+
         # Stack observations into batch format
         batched_obs = {}
-        for key in first_obs.keys():
+        for key in first_obs:
             if key in first_obs:
                 # Stack all values for this key
                 values = [obs[key] for obs in obs_batch]
@@ -133,7 +162,7 @@ class Policy(BasePolicy):
                 elif isinstance(values[0], dict):
                     # Handle nested dictionaries (like images)
                     batched_obs[key] = {}
-                    for subkey in values[0].keys():
+                    for subkey in values[0]:
                         subvalues = [obs[key][subkey] for obs in obs_batch]
                         if isinstance(subvalues[0], np.ndarray):
                             batched_obs[key][subkey] = np.stack(subvalues, axis=0)
@@ -143,11 +172,11 @@ class Policy(BasePolicy):
                     batched_obs[key] = values
             else:
                 batched_obs[key] = [obs.get(key, None) for obs in obs_batch]
-        
+
         # Apply transforms to batched observation
         inputs = jax.tree.map(lambda x: x, batched_obs)
         inputs = self._input_transform(inputs)
-        
+
         if not self._is_pytorch_model:
             # Convert to jax.Array (already batched)
             inputs = jax.tree.map(lambda x: jnp.asarray(x), inputs)
@@ -164,20 +193,18 @@ class Policy(BasePolicy):
             sample_kwargs["noise"] = noise
 
         observation = _model.Observation.from_dict(inputs)
-        start_time = time.monotonic()
         outputs = {
             "state": inputs["state"],
             "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
         }
-        model_time = time.monotonic() - start_time
-        
+
         if self._is_pytorch_model:
             outputs = jax.tree.map(lambda x: np.asarray(x.detach().cpu()), outputs)
         else:
             outputs = jax.tree.map(lambda x: np.asarray(x), outputs)
 
         outputs = self._output_transform(outputs)
-        
+
         # Split batch results back into individual results
         results = []
         for i in range(batch_size):
@@ -190,7 +217,7 @@ class Policy(BasePolicy):
                 else:
                     result[key] = value
             results.append(result)
-        
+
         return results
 
     @property

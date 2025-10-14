@@ -1,4 +1,5 @@
 import logging
+import time
 
 import einops
 import flax.nnx as nnx
@@ -213,28 +214,54 @@ class Pi0(_model.BaseModel):
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
 
-    @override
-    def sample_actions(
+    def _preprocess_observation_jit(
         self,
         rng: at.KeyArrayLike,
         observation: _model.Observation,
-        *,
-        num_steps: int | at.Int[at.Array, ""] = 10,
-        noise: at.Float[at.Array, "b ah ad"] | None = None,
-    ) -> _model.Actions:
+        num_steps: int | at.Int[at.Array, ""],
+    ) -> tuple[_model.Observation, at.Float[at.Array, "b ah ad"], float]:
+        """Preprocess observation and generate noise. JIT-compiled."""
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
         dt = -1.0 / num_steps
         batch_size = observation.state.shape[0]
-        if noise is None:
-            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        return observation, noise, dt
 
-        # first fill KV cache with a forward pass of the prefix
+    def _embed_prefix_jit(
+        self, observation: _model.Observation
+    ) -> tuple[
+        at.Float[at.Array, "b s emb"],
+        at.Bool[at.Array, "b s"],
+        at.Bool[at.Array, " s"],
+    ]:
+        """Embed prefix tokens (images + text). JIT-compiled."""
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        return prefix_tokens, prefix_mask, prefix_ar_mask
+
+    def _setup_prefix_kv_cache_jit(
+        self,
+        prefix_tokens: at.Float[at.Array, "b s emb"],
+        prefix_mask: at.Bool[at.Array, "b s"],
+        prefix_ar_mask: at.Bool[at.Array, " s"],
+    ) -> dict:
+        """Set up KV cache with autoregressive decoding. JIT-compiled."""
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        return kv_cache
+
+    def _run_diffusion_loop_jit(
+        self,
+        observation: _model.Observation,
+        noise: at.Float[at.Array, "b ah ad"],
+        dt: float,
+        prefix_mask: at.Bool[at.Array, "b s"],
+        kv_cache: dict,
+    ) -> _model.Actions:
+        """Run the full diffusion sampling loop. JIT-compiled."""
+        batch_size = observation.state.shape[0]
 
         def step(carry):
             x_t, time = carry
@@ -250,10 +277,11 @@ class Pi0(_model.BaseModel):
             # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
             # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
             full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            prefix_len = prefix_mask.shape[1]
             assert full_attn_mask.shape == (
                 batch_size,
                 suffix_tokens.shape[1],
-                prefix_tokens.shape[1] + suffix_tokens.shape[1],
+                prefix_len + suffix_tokens.shape[1],
             )
             # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
             positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
@@ -277,3 +305,62 @@ class Pi0(_model.BaseModel):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    @override
+    def sample_actions(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ) -> _model.Actions:
+        """Fast JIT-compiled version for normal inference."""
+        if noise is not None:
+            # If noise is provided, we need to handle it differently
+            observation = _model.preprocess_observation(None, observation, train=False)
+            dt = -1.0 / num_steps
+        else:
+            observation, noise, dt = self._preprocess_observation_jit(rng, observation, num_steps)
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self._embed_prefix_jit(observation)
+        kv_cache = self._setup_prefix_kv_cache_jit(prefix_tokens, prefix_mask, prefix_ar_mask)
+        return self._run_diffusion_loop_jit(observation, noise, dt, prefix_mask, kv_cache)
+
+    def sample_actions_profiled(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+    ) -> tuple[_model.Actions, dict[str, float]]:
+        """Profiled version that times individual JIT-compiled functions."""
+        timing = {}
+
+        # Phase 1: Preprocessing
+        start_time = time.monotonic()
+        if noise is not None:
+            # Handle provided noise case
+            observation = _model.preprocess_observation(None, observation, train=False)
+            dt = -1.0 / num_steps
+        else:
+            observation, noise, dt = self._preprocess_observation_jit(rng, observation, num_steps)
+        timing["preprocess_ms"] = (time.monotonic() - start_time) * 1000
+
+        # Phase 2: Prefix embedding (images + text)
+        start_time = time.monotonic()
+        prefix_tokens, prefix_mask, prefix_ar_mask = self._embed_prefix_jit(observation)
+        timing["prefix_embed_ms"] = (time.monotonic() - start_time) * 1000
+
+        # Phase 3: Autoregressive decoding for KV cache
+        start_time = time.monotonic()
+        kv_cache = self._setup_prefix_kv_cache_jit(prefix_tokens, prefix_mask, prefix_ar_mask)
+        timing["prefix_decode_ms"] = (time.monotonic() - start_time) * 1000
+
+        # Phase 4: Diffusion loop
+        start_time = time.monotonic()
+        actions = self._run_diffusion_loop_jit(observation, noise, dt, prefix_mask, kv_cache)
+        timing["diffusion_loop_ms"] = (time.monotonic() - start_time) * 1000
+
+        return actions, timing
