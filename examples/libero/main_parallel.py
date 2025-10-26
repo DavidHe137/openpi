@@ -41,11 +41,14 @@ class Args:
     task_suite_name: str = "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
+    num_workers: int = 6  # Number of workers to use
 
     #################################################################################################################
     # Utils
     #################################################################################################################
     video_out_path: str = "data/libero/videos"  # Path to save videos
+    results_out_path: str = "data/libero/results"  # Path to save results
+    experiment_name: str = "experiment"  # Experiment name
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -102,11 +105,14 @@ def eval_libero(
     action_plan = collections.deque()
 
     # Set initial states
-    obs = env.set_init_state(initial_states[episode_idx])
+    obs = env.set_init_state(initial_states)
 
     # Setup
     t = 0
     replay_images = []
+
+    predicted_action_chunks = []
+    executed_actions = []
 
     success = False
     _worker_status_dict[pid] = f"ep{episode_idx}: t=0 waiting"
@@ -162,9 +168,11 @@ def eval_libero(
                 assert len(action_chunk) >= args.replan_steps, (
                     f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
                 )
+                predicted_action_chunks.append(action_chunk)
                 action_plan.extend(action_chunk[: args.replan_steps])
 
             action = action_plan.popleft()
+            executed_actions.append(action)
 
             # Execute action in environment
             _worker_status_dict[pid] = f"ep{episode_idx}: t={t} stepping"
@@ -178,13 +186,30 @@ def eval_libero(
             logging.error(f"Caught exception: {e}")
             break
 
-    # Save a replay video of the episode
     _worker_status_dict[pid] = f"ep{episode_idx}: saving video"
     suffix = "success" if success else "failure"
     task_segment = task_description.replace(" ", "_")
+
+    # save results
+    predicted_action_chunks = np.array(predicted_action_chunks)
+    executed_actions = np.array(executed_actions)
+    (pathlib.Path(args.results_out_path) / f"{args.experiment_name}").mkdir(
+        parents=True, exist_ok=True
+    )
+    (pathlib.Path(args.video_out_path) / f"{args.experiment_name}").mkdir(
+        parents=True, exist_ok=True
+    )
+    np.savez(
+        pathlib.Path(args.results_out_path)
+        / f"{args.experiment_name}/results_{task_segment}_{episode_idx}_{suffix}.npz",
+        predicted_action_chunks=predicted_action_chunks,
+        executed_actions=executed_actions,
+    )
+
+    # Save a replay video of the episode
     imageio.mimwrite(
         pathlib.Path(args.video_out_path)
-        / f"rollout_{task_segment}_{episode_idx}_{suffix}.mp4",
+        / f"{args.experiment_name}/rollout_{task_segment}_{episode_idx}_{suffix}.mp4",
         [np.asarray(x) for x in replay_images],
         fps=10,
     )
@@ -213,7 +238,7 @@ def _print_worker_status(status_dict, num_workers):
     sys.stdout.flush()
 
 
-def monitor_worker_status(status_dict, stop_event, pbar, num_workers=4):
+def monitor_worker_status(status_dict, stop_event, results, num_workers):
     """Background thread to monitor and update worker status display."""
     last_status = {}
 
@@ -270,33 +295,30 @@ def main(args: Args) -> None:
             results_dict = manager.dict()
 
             with Pool(
-                processes=4,
+                processes=args.num_workers,
                 initializer=init_worker,
                 initargs=(task, args, status_dict, results_dict),
             ) as pool:
                 # Create progress bar
-                pbar = tqdm.tqdm(
-                    pool.imap(
-                        _eval_libero_wrapper,
-                        [
-                            (args, initial_states, episode_idx, max_steps)
-                            for episode_idx in range(args.num_trials_per_task)
-                        ],
-                    ),
-                    total=args.num_trials_per_task,
-                    desc=f"Task {task_id}",
+                results = pool.imap(
+                    _eval_libero_wrapper,
+                    [
+                        (args, initial_states[episode_idx], episode_idx, max_steps)
+                        for episode_idx in range(args.num_trials_per_task)
+                    ],
                 )
 
                 # Start background thread to monitor worker status
                 stop_event = threading.Event()
                 monitor_thread = threading.Thread(
-                    target=monitor_worker_status, args=(status_dict, stop_event, pbar)
+                    target=monitor_worker_status,
+                    args=(status_dict, stop_event, results, args.num_workers),
                 )
                 monitor_thread.start()
 
                 try:
                     # Collect results
-                    results = list(pbar)
+                    results = list(results)
 
                     # Count successes
                     task_episodes = len(results)
@@ -307,7 +329,6 @@ def main(args: Args) -> None:
                     # Stop monitoring thread
                     stop_event.set()
                     monitor_thread.join()
-                    pbar.close()
 
         # Log task results
         logging.info(
