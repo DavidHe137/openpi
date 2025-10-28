@@ -4,7 +4,7 @@
 #SBATCH --error=logs/sweep_flow_match_%A_%a.err
 #SBATCH --array=0-3
 #SBATCH --partition=overcap
-#SBATCH --time=4:00:00
+#SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=128G
