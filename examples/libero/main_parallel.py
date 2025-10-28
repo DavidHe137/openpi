@@ -2,6 +2,7 @@ import collections
 import dataclasses
 import logging
 import math
+import multiprocessing
 from multiprocessing import Manager
 from multiprocessing import Pool
 import os
@@ -385,5 +386,6 @@ def _quat2axisangle(quat):
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
     logging.basicConfig(level=logging.INFO)
     tyro.cli(main)
