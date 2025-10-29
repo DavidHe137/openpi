@@ -20,6 +20,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 import contextlib
 from dataclasses import dataclass
+from datetime import UTC
 from datetime import datetime
 import enum
 import json
@@ -208,13 +209,13 @@ async def benchmark(
         _ = policy.infer(test_obs)
         print("Warm-up completed.")
     except Exception as e:
-        raise RuntimeError(f"Failed to connect to server: {e}")
+        raise RuntimeError(f"Failed to connect to server: {e}") from e
 
     # Generate observations
     print(f"Generating {num_requests} observations...")
     observations = [get_observation(env) for _ in range(num_requests)]
 
-    print(f"Starting benchmark...")
+    print("Starting benchmark...")
     print(f"Request rate: {request_rate if request_rate != float('inf') else 'unlimited'} req/s")
     print(f"Max concurrency: {max_concurrency if max_concurrency else 'unlimited'}")
 
@@ -262,7 +263,7 @@ async def benchmark(
 
     # Return results
     return {
-        "date": datetime.now().isoformat(),
+        "date": datetime.now(tz=UTC).isoformat(),
         "host": host,
         "port": port,
         "env": env.value,
@@ -304,7 +305,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
 
     # Save results if requested
     if args.save_result:
-        current_dt = datetime.now().strftime("%Y%m%d-%H%M%S")
+        current_dt = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
 
         if args.result_filename:
             filename = args.result_filename
