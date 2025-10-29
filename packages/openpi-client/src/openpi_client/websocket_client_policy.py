@@ -1,9 +1,11 @@
+import asyncio
 import logging
 import time
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from typing_extensions import override
 import websockets.sync.client
+from websockets.asyncio.client import connect
 
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
@@ -53,3 +55,108 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     @override
     def reset(self) -> None:
         pass
+
+
+class AsyncWebsocketClientPolicy:
+    """Async version of WebsocketClientPolicy for high-performance concurrent requests.
+
+    This class uses async websockets with a connection pool to enable true concurrent
+    requests without blocking. Each request gets its own connection from the pool.
+    Ideal for benchmarking and high-throughput scenarios.
+    """
+
+    def __init__(self, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None) -> None:
+        self._uri = f"ws://{host}"
+        if port is not None:
+            self._uri += f":{port}"
+        self._packer = msgpack_numpy.Packer()
+        self._api_key = api_key
+        self._server_metadata = None
+        self._connection_pool: list[Any] = []
+        self._pool_lock = asyncio.Lock()
+        self._max_pool_size = 100
+
+    async def connect(self) -> Dict:
+        """Connect to the server and retrieve metadata."""
+        # Just get metadata, don't store a single connection
+        conn, self._server_metadata = await self._create_connection()
+        # Return this connection to pool for reuse
+        async with self._pool_lock:
+            if len(self._connection_pool) < self._max_pool_size:
+                self._connection_pool.append(conn)
+            else:
+                await conn.close()
+        return self._server_metadata
+
+    def get_server_metadata(self) -> Dict[str, Any]:
+        if self._server_metadata is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+        return self._server_metadata
+
+    async def _create_connection(self) -> Tuple[Any, Dict[str, Any]]:
+        """Create a new websocket connection and retrieve metadata."""
+        headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
+        extra_headers = headers if headers else {}
+        conn = await connect(self._uri, compression=None, max_size=None, additional_headers=extra_headers)
+        metadata_bytes = await conn.recv()
+        metadata = msgpack_numpy.unpackb(metadata_bytes)
+        return conn, metadata
+
+    async def _get_connection(self) -> Any:
+        """Get a connection from the pool or create a new one."""
+        async with self._pool_lock:
+            if self._connection_pool:
+                return self._connection_pool.pop()
+
+        # Create new connection if pool is empty
+        conn, _ = await self._create_connection()
+        return conn
+
+    async def _return_connection(self, conn: Any) -> None:
+        """Return a connection to the pool."""
+        async with self._pool_lock:
+            if len(self._connection_pool) < self._max_pool_size:
+                self._connection_pool.append(conn)
+            else:
+                await conn.close()
+
+    async def infer(self, obs: Dict) -> Dict:
+        """Send an observation and receive an action asynchronously.
+
+        Each request uses its own connection from the pool to avoid
+        concurrent recv() conflicts.
+        """
+        if self._server_metadata is None:
+            raise RuntimeError("Client not connected. Call connect() first.")
+
+        conn = await self._get_connection()
+        try:
+            data = self._packer.pack(obs)
+            await conn.send(data)
+            response = await conn.recv()
+            if isinstance(response, str):
+                # we're expecting bytes; if the server sends a string, it's an error.
+                raise RuntimeError(f"Error in inference server:\n{response}")
+            result = msgpack_numpy.unpackb(response)
+            await self._return_connection(conn)
+            return result
+        except Exception:
+            # Don't return broken connections to pool
+            await conn.close()
+            raise
+
+    async def close(self) -> None:
+        """Close all connections in the pool."""
+        async with self._pool_lock:
+            for conn in self._connection_pool:
+                await conn.close()
+            self._connection_pool.clear()
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()

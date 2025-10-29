@@ -13,6 +13,9 @@ On the client side, run:
         --env aloha_sim \
         --num-requests 100 \
         --request-rate 10
+
+# TODO:
+- isolate external latencies: networking, scheduling, etc.
 """
 
 import argparse
@@ -30,7 +33,7 @@ from typing import Any
 import warnings
 
 import numpy as np
-from openpi_client import websocket_client_policy as _websocket_client_policy
+from openpi_client.websocket_client_policy import AsyncWebsocketClientPolicy
 from tqdm.asyncio import tqdm
 
 from openpi.policies.aloha_policy import make_aloha_example
@@ -159,25 +162,24 @@ def calculate_metrics(
         completed=completed,
         total_requests=num_requests,
         request_throughput=completed / duration,
-        mean_latency_ms=float(np.mean(latencies)) * 1000,
-        median_latency_ms=float(np.median(latencies)) * 1000,
-        std_latency_ms=float(np.std(latencies)) * 1000,
-        percentiles_latency_ms=[(p, float(np.percentile(latencies, p)) * 1000) for p in selected_percentiles],
+        mean_latency_ms=float(np.mean(latencies)),
+        median_latency_ms=float(np.median(latencies)),
+        std_latency_ms=float(np.std(latencies)),
+        percentiles_latency_ms=[(p, float(np.percentile(latencies, p))) for p in selected_percentiles],
     )
 
 
-async def send_request(
-    policy: _websocket_client_policy.WebsocketClientPolicy, obs: dict, pbar: tqdm | None
-) -> RequestFuncOutput:
+async def send_request(policy: AsyncWebsocketClientPolicy, obs: dict, pbar: tqdm | None) -> RequestFuncOutput:
     """Send a request to the server."""
-    output = policy.infer(obs)
+    start_time = time.perf_counter()
+    _ = await policy.infer(obs)
+    latency = time.perf_counter() - start_time
     if pbar is not None:
         pbar.update(1)
-    latency = output["server_timing"]["infer_ms"]
     return RequestFuncOutput(
         success=True,
-        latency=latency,
-        start_time=time.time(),
+        latency=latency * 1000,
+        start_time=start_time,
         error=None,
     )
 
@@ -197,16 +199,16 @@ async def benchmark(
     uri = f"ws://{host}:{port}"
     print(f"Connecting to server at {uri}...")
 
-    # Test connection
+    # Test connection and warm-up
     try:
-        policy = _websocket_client_policy.WebsocketClientPolicy(host=host, port=port)
-        metadata = policy.get_server_metadata()
+        policy = AsyncWebsocketClientPolicy(host=host, port=port)
+        metadata = await policy.connect()
         print(f"Server metadata: {metadata}")
 
         # Warm-up request
         print("Running warm-up request...")
         test_obs = get_observation(env)
-        _ = policy.infer(test_obs)
+        _ = await policy.infer(test_obs)
         print("Warm-up completed.")
     except Exception as e:
         raise RuntimeError(f"Failed to connect to server: {e}") from e
@@ -236,6 +238,8 @@ async def benchmark(
         tasks.append(task)
 
     outputs = await asyncio.gather(*tasks)
+
+    await policy.close()
 
     if pbar is not None:
         pbar.close()
@@ -278,7 +282,7 @@ async def benchmark(
         "median_latency_ms": metrics.median_latency_ms,
         "std_latency_ms": metrics.std_latency_ms,
         **{f"p{int(p) if int(p) == p else p}_latency_ms": value for p, value in metrics.percentiles_latency_ms},
-        "latencies": [o.latency * 1000 for o in outputs if o.success],
+        "latencies": [o.latency for o in outputs if o.success],
         "errors": [o.error for o in outputs if not o.success],
     }
 
@@ -306,26 +310,12 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     # Save results if requested
     if args.save_result:
         current_dt = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
+        filename = f"benchmarks/benchmark-{args.env}-{current_dt}.json"
 
-        if args.result_filename:
-            filename = args.result_filename
-        else:
-            rate_str = f"{args.request_rate}qps" if args.request_rate != float("inf") else "unlimited"
-            concurrency_str = f"-concurrency{args.max_concurrency}" if args.max_concurrency else ""
-            filename = f"benchmark-{args.env}-{rate_str}{concurrency_str}-{current_dt}.json"
-
-        if args.result_dir:
-            os.makedirs(args.result_dir, exist_ok=True)
-            filename = os.path.join(args.result_dir, filename)
-
-        # Remove detailed data if not requested
-        if not args.save_detailed:
-            result_to_save = {k: v for k, v in result.items() if k not in ["latencies", "errors"]}
-        else:
-            result_to_save = result
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
 
         with open(filename, "w", encoding="utf-8") as f:
-            json.dump(result_to_save, f, indent=2)
+            json.dump(result, f, indent=2)
 
         print(f"\nResults saved to: {filename}")
 
@@ -398,23 +388,6 @@ if __name__ == "__main__":
         "--save-result",
         action="store_true",
         help="Save benchmark results to a JSON file",
-    )
-    parser.add_argument(
-        "--save-detailed",
-        action="store_true",
-        help="Include detailed per-request data (latencies, errors) in saved results",
-    )
-    parser.add_argument(
-        "--result-dir",
-        type=str,
-        default=None,
-        help="Directory to save results (default: current directory)",
-    )
-    parser.add_argument(
-        "--result-filename",
-        type=str,
-        default=None,
-        help="Custom filename for results (default: auto-generated)",
     )
 
     # Random seed
