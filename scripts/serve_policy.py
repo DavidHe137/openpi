@@ -2,6 +2,7 @@ import dataclasses
 import enum
 import logging
 import socket
+from typing import Any
 
 import tyro
 
@@ -79,11 +80,16 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
 }
 
 
-def create_default_policy(env: EnvMode, *, default_prompt: str | None = None) -> _policy.Policy:
+def create_default_policy(
+    env: EnvMode, *, default_prompt: str | None = None, sample_kwargs: dict[str, Any] | None = None
+) -> _policy.Policy:
     """Create a default policy for the given environment."""
     if checkpoint := DEFAULT_CHECKPOINT.get(env):
         return _policy_config.create_trained_policy(
-            _config.get_config(checkpoint.config), checkpoint.dir, default_prompt=default_prompt
+            _config.get_config(checkpoint.config),
+            checkpoint.dir,
+            default_prompt=default_prompt,
+            sample_kwargs=sample_kwargs,
         )
     raise ValueError(f"Unsupported environment mode: {env}")
 
@@ -99,7 +105,9 @@ def create_policy(args: Args) -> _policy.Policy:
                 sample_kwargs={"num_steps": args.num_steps},
             )
         case Default():
-            return create_default_policy(args.env, default_prompt=args.default_prompt)
+            return create_default_policy(
+                args.env, default_prompt=args.default_prompt, sample_kwargs={"num_steps": args.num_steps}
+            )
 
 
 def main(args: Args) -> None:
