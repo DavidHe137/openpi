@@ -86,7 +86,7 @@ def get_observation(env: EnvMode) -> dict:
 async def get_request(
     num_requests: int,
     request_rate: float,
-) -> AsyncGenerator[int, None]:
+) -> AsyncGenerator[tuple[int, float], None]:
     """
     Asynchronously generates requests at a specified rate
 
@@ -132,7 +132,7 @@ async def get_request(
             sleep_interval_s = start_ts + delay_ts[request_index] - current_ts
             if sleep_interval_s > 0:
                 await asyncio.sleep(sleep_interval_s)
-        yield request_index
+        yield request_index, delay_ts[request_index]
 
 
 def calculate_metrics(
@@ -231,8 +231,10 @@ async def benchmark(
 
     benchmark_start_time = time.perf_counter()
     tasks = []
+    arrival_times = []
 
-    async for request_idx in get_request(num_requests, request_rate):
+    async for request_idx, arrival_time in get_request(num_requests, request_rate):
+        arrival_times.append(arrival_time)
         task = asyncio.create_task(limited_request(observations[request_idx]))
         tasks.append(task)
 
@@ -282,6 +284,7 @@ async def benchmark(
         "std_latency_ms": metrics.std_latency_ms,
         **{f"p{int(p) if int(p) == p else p}_latency_ms": value for p, value in metrics.percentiles_latency_ms},
         "latencies": [o.latency for o in outputs if o.success],
+        "arrival_times": arrival_times,
         "errors": [o.error for o in outputs if not o.success],
     }
 
