@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from typing_extensions import override
 import websockets.sync.client
-from websockets.asyncio.client import connect
+import websockets.asyncio.client
 
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
@@ -88,14 +88,26 @@ class AsyncWebsocketClientPolicy:
         self._server_metadata = results[0][1]
         return self._server_metadata
 
-    async def _create_connection(self) -> Tuple[Any, Dict[str, Any]]:
+    async def _create_connection(self) -> Tuple[websockets.asyncio.client.ClientConnection, Dict[str, Any]]:
         """Create a new websocket connection and retrieve metadata."""
-        headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
-        extra_headers = headers if headers else {}
-        conn = await connect(self._uri, compression=None, max_size=None, additional_headers=extra_headers)
-        metadata_bytes = await conn.recv()
-        metadata = msgpack_numpy.unpackb(metadata_bytes)
-        return conn, metadata
+        logging.info(f"Waiting for server at {self._uri}...")
+        start = time.time()
+        while True:
+            try:
+                headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
+                conn = await websockets.asyncio.client.connect(
+                    self._uri, compression=None, max_size=None, additional_headers=headers
+                )
+                metadata_bytes = await conn.recv()
+                metadata = msgpack_numpy.unpackb(metadata_bytes)
+                return conn, metadata
+
+            except ConnectionRefusedError:
+                timeout = 300
+                if time.time() - start > timeout:
+                    raise RuntimeError(f"Failed to connect to server after {timeout} seconds")
+                logging.info("Still waiting for server...")
+                await asyncio.sleep(5)
 
     async def _get_connection(self) -> Any:
         """Get a connection from the pool."""
