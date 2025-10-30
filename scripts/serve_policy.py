@@ -105,6 +105,8 @@ def create_policy(args: Args) -> _policy.Policy:
 def main(args: Args) -> None:
     policy = create_policy(args)
     policy_metadata = policy.metadata
+    policy_metadata["num_steps"] = args.num_steps
+    policy_metadata["action_horizon"] = policy._model.action_horizon
 
     # Record the policy's behavior.
     if args.record:

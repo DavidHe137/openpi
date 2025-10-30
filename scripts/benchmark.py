@@ -203,6 +203,8 @@ async def benchmark(
         policy = AsyncWebsocketClientPolicy(host=host, port=port, num_connections=max_concurrency)
         metadata = await policy.connect()
         print(f"Server metadata: {metadata}")
+        assert "num_steps" in metadata, "num_steps not found in server metadata"
+        assert "action_horizon" in metadata, "action_horizon not found in server metadata"
 
         # Warm-up request
         print("Running warm-up request...")
@@ -272,6 +274,8 @@ async def benchmark(
         "host": host,
         "port": port,
         "env": env.value,
+        "num_steps": metadata["num_steps"],
+        "action_horizon": metadata["action_horizon"],
         "num_requests": num_requests,
         "request_rate": request_rate if request_rate != float("inf") else "inf",
         "max_concurrency": max_concurrency,
@@ -312,7 +316,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     # Save results if requested
     if args.save_result:
         current_dt = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
-        filename = f"benchmarks/benchmark-{args.env}-{current_dt}.json"
+        filename = f"{args.save_result_dir}/benchmark-{args.env}-{current_dt}.json"
 
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
@@ -390,6 +394,13 @@ if __name__ == "__main__":
         "--save-result",
         action="store_true",
         help="Save benchmark results to a JSON file",
+    )
+
+    parser.add_argument(
+        "--save-result-dir",
+        type=str,
+        default="benchmarks",
+        help="Directory to save benchmark results (default: benchmarks)",
     )
 
     # Random seed
