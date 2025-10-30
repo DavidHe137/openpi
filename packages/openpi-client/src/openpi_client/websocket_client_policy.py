@@ -60,12 +60,17 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
 class AsyncWebsocketClientPolicy:
     """Async version of WebsocketClientPolicy for high-performance concurrent requests.
 
-    This class uses async websockets with a connection pool to enable true concurrent
+    This class uses async websockets with a fixed-size connection pool to enable true concurrent
     requests without blocking. Each request gets its own connection from the pool.
-    Ideal for benchmarking and high-throughput scenarios.
     """
 
-    def __init__(self, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: Optional[int] = None,
+        api_key: Optional[str] = None,
+        num_connections: int = 100,
+    ) -> None:
         self._uri = f"ws://{host}"
         if port is not None:
             self._uri += f":{port}"
@@ -74,23 +79,13 @@ class AsyncWebsocketClientPolicy:
         self._server_metadata = None
         self._connection_pool: list[Any] = []
         self._pool_lock = asyncio.Lock()
-        self._max_pool_size = 100
+        self._num_connections = num_connections
 
     async def connect(self) -> Dict:
         """Connect to the server and retrieve metadata."""
-        # Just get metadata, don't store a single connection
-        conn, self._server_metadata = await self._create_connection()
-        # Return this connection to pool for reuse
-        async with self._pool_lock:
-            if len(self._connection_pool) < self._max_pool_size:
-                self._connection_pool.append(conn)
-            else:
-                await conn.close()
-        return self._server_metadata
-
-    def get_server_metadata(self) -> Dict[str, Any]:
-        if self._server_metadata is None:
-            raise RuntimeError("Client not connected. Call connect() first.")
+        results = await asyncio.gather(*[self._create_connection() for _ in range(self._num_connections)])
+        self._connection_pool = [conn for conn, _ in results]
+        self._server_metadata = results[0][1]
         return self._server_metadata
 
     async def _create_connection(self) -> Tuple[Any, Dict[str, Any]]:
@@ -103,22 +98,17 @@ class AsyncWebsocketClientPolicy:
         return conn, metadata
 
     async def _get_connection(self) -> Any:
-        """Get a connection from the pool or create a new one."""
+        """Get a connection from the pool."""
         async with self._pool_lock:
-            if self._connection_pool:
-                return self._connection_pool.pop()
-
-        # Create new connection if pool is empty
-        conn, _ = await self._create_connection()
-        return conn
+            assert self._connection_pool, (
+                "No connections left in pool. Either allocate more connections or reduce the number of concurrent requests."
+            )
+            return self._connection_pool.pop()
 
     async def _return_connection(self, conn: Any) -> None:
         """Return a connection to the pool."""
         async with self._pool_lock:
-            if len(self._connection_pool) < self._max_pool_size:
-                self._connection_pool.append(conn)
-            else:
-                await conn.close()
+            self._connection_pool.append(conn)
 
     async def infer(self, obs: Dict) -> Dict:
         """Send an observation and receive an action asynchronously.

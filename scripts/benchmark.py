@@ -10,7 +10,7 @@ On the client side, run:
     uv run scripts/benchmark.py \
         --host localhost \
         --port 8000 \
-        --env aloha_sim \
+        --env libero \
         --num-requests 100 \
         --request-rate 10
 
@@ -21,7 +21,6 @@ On the client side, run:
 import argparse
 import asyncio
 from collections.abc import AsyncGenerator
-import contextlib
 from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
@@ -190,7 +189,7 @@ async def benchmark(
     env: EnvMode,
     num_requests: int,
     request_rate: float,
-    max_concurrency: int | None,
+    max_concurrency: int,
     selected_percentiles: list[float],
     *,
     disable_tqdm: bool = False,
@@ -201,7 +200,7 @@ async def benchmark(
 
     # Test connection and warm-up
     try:
-        policy = AsyncWebsocketClientPolicy(host=host, port=port)
+        policy = AsyncWebsocketClientPolicy(host=host, port=port, num_connections=max_concurrency)
         metadata = await policy.connect()
         print(f"Server metadata: {metadata}")
 
@@ -219,12 +218,12 @@ async def benchmark(
 
     print("Starting benchmark...")
     print(f"Request rate: {request_rate if request_rate != float('inf') else 'unlimited'} req/s")
-    print(f"Max concurrency: {max_concurrency if max_concurrency else 'unlimited'}")
+    print(f"Max concurrency: {max_concurrency}")
 
     pbar = None if disable_tqdm else tqdm(total=num_requests)
 
     # Semaphore for max concurrency
-    semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else contextlib.nullcontext()
+    semaphore = asyncio.Semaphore(max_concurrency)
 
     async def limited_request(obs):
         async with semaphore:
@@ -364,8 +363,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-concurrency",
         type=int,
-        default=None,
-        help="Maximum number of concurrent requests (default: unlimited)",
+        default=100,
+        help="Maximum number of concurrent requests (default: 100). You can run `ulimit -n` to see the OS maximum number of open files",
     )
 
     # Display options
