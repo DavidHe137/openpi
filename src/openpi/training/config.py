@@ -398,10 +398,10 @@ class LeRobotLiberoDataConfigWithReasoning(DataConfigFactory):
         # We defined these transforms in `libero_policy.py`. You can check the detailed comments there for
         # how to modify the transforms to match your dataset. Once you created your own transforms, you can
         # replace the transforms below with your own.
-        
+
         # Start with base inputs
         inputs = [libero_policy.LiberoInputs(model_type=model_config.model_type)]
-        
+
         # Only add ReplacePromptWithReasoning transform if both mapping and reasoning files are provided
         if not self.eval and self.mapping_file_path is not None and self.reasoning_file_path is not None:
             inputs.append(
@@ -411,7 +411,7 @@ class LeRobotLiberoDataConfigWithReasoning(DataConfigFactory):
                     reasoning_components=self.reasoning_components,
                 )
             )
-        
+
         data_transforms = _transforms.Group(
             inputs=inputs,
             outputs=[libero_policy.LiberoOutputs()],
@@ -764,7 +764,9 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_libero_low_mem_finetune",
         # Here is an example of loading a pi0 model for LoRA fine-tuning.
-        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora", action_horizon=100
+        ),
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
@@ -847,20 +849,42 @@ _CONFIGS = [
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
-
     TrainConfig(
-        name="pi05_libero90_lora",
+        name="pi05_libero_lora",
         # model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        model=pi0_config.Pi0Config(
+            pi05=True, action_horizon=100, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ),
         data=LeRobotLiberoDataConfig(
-            repo_id="libero_90_lerobot", # NOTE: using pre converted libero_90 dataset
+            repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
-
         num_train_steps=30_000,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_libero/params"), # NOTE: using pi05_libero base model
-
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params"
+        ),  # NOTE: using pi05_libero base model
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_libero90_lora",
+        # model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        model=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero_90_lerobot",  # NOTE: using pre converted libero_90 dataset
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        num_train_steps=30_000,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params"
+        ),  # NOTE: using pi05_libero base model
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),
@@ -870,10 +894,12 @@ _CONFIGS = [
     TrainConfig(
         name="pi05_libero90_lora_reasoning_prompt",
         # Model config with LoRA for efficient fine-tuning
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        model=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ),
         # Use reasoning data config that replaces task prompts with reasoning components
         data=LeRobotLiberoDataConfigWithReasoning(
-            repo_id="libero_90_lerobot", # NOTE: using pre converted libero_90 dataset
+            repo_id="libero_90_lerobot",  # NOTE: using pre converted libero_90 dataset
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
             mapping_file_path="/coc/flash7/zhenyang/VLA-data-augmentation/ECoT_LeRobot_data_ID_mapping/mapping.json",
@@ -881,10 +907,10 @@ _CONFIGS = [
             eval=False,
             reasoning_components=["subtask", "movement"],
         ),
-
         num_train_steps=30_000,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_libero/params"), # NOTE: using pi05_libero base model
-
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_libero/params"
+        ),  # NOTE: using pi05_libero base model
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),

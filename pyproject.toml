@@ -38,6 +38,10 @@ dependencies = [
     "rich>=14.0.0",
     "polars>=1.30.0",
     "notebook>=7.4.5",
+    "ipdb>=0.13.13",
+    "tensorboard>=2.15.2",
+    "tensorboard-plugin-profile>=2.20.7",
+    "seaborn>=0.13.2",
 ]
 
 
