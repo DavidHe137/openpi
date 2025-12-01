@@ -1,0 +1,11 @@
+======================================
+Array Task ID: 6
+Running with batch_size= and port=8006
+======================================
+Starting background process: uv run scripts/serve_policy.py     --env=LIBERO_REALTIME     --batch_size=     --port=8006
+Background process started with PID: 2384246
+Running benchmark...
+Namespace(host='localhost', port=8006, env='libero', num_requests=300, request_rate=5.0, max_concurrency=100, disable_tqdm=False, metric_percentiles='95,99', save_result=True, save_result_dir='benchmarks/latency_batching/realtime_fake_batch', seed=0)
+Connecting to server at ws://localhost:8006...
+Cleaning up...
+Cleanup complete

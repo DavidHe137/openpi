@@ -1,0 +1,54 @@
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+╭─ Value error ────────────────────────────────────────────────────────────────╮
+│ Error parsing --batch-size: invalid literal for int() with base 10: ''       │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ Argument helptext:                                                           │
+│     --batch-size INT                                                         │
+│     Batch size to use for inference. (default: 1)                            │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ For full helptext, see serve_policy.py --help                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+Traceback (most recent call last):
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 204, in benchmark
+    metadata = await policy.connect()
+               ^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/packages/openpi-client/src/openpi_client/websocket_client_policy.py", line 86, in connect
+    results = await asyncio.gather(*[self._create_connection() for _ in range(self._num_connections)])
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/packages/openpi-client/src/openpi_client/websocket_client_policy.py", line 98, in _create_connection
+    conn = await websockets.asyncio.client.connect(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/websockets/asyncio/client.py", line 541, in __await_impl__
+    self.connection = await self.create_connection()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/websockets/asyncio/client.py", line 467, in create_connection
+    _, connection = await loop.create_connection(factory, **kwargs)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 1094, in create_connection
+    raise OSError('Multiple exceptions: {}'.format(
+OSError: Multiple exceptions: [Errno 111] Connect call failed ('::1', 8001, 0, 0), [Errno 111] Connect call failed ('127.0.0.1', 8001)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 418, in <module>
+    main(args)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 299, in main
+    return asyncio.run(main_async(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 307, in main_async
+    result = await benchmark(
+             ^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 216, in benchmark
+    raise RuntimeError(f"Failed to connect to server: {e}") from e
+RuntimeError: Failed to connect to server: Multiple exceptions: [Errno 111] Connect call failed ('::1', 8001, 0, 0), [Errno 111] Connect call failed ('127.0.0.1', 8001)

@@ -24,14 +24,14 @@ class Args:
     # Model server parameters
     #################################################################################################################
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 8080
     resize_size: int = 224
     replan_steps: int = 5
 
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
-    task_suite_name: str = "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
+    task_suite_name: str = "libero_10"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
 
@@ -73,6 +73,8 @@ def eval_libero(args: Args) -> None:
     # Start evaluation
     total_episodes, total_successes = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+        if task_id != 8:
+            continue
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -85,6 +87,9 @@ def eval_libero(args: Args) -> None:
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
+            if episode_idx > 0:
+                continue
+
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment
@@ -172,6 +177,8 @@ def eval_libero(args: Args) -> None:
 
             task_episodes += 1
             total_episodes += 1
+
+            client.save_data()
 
             # Save a replay video of the episode
             suffix = "success" if done else "failure"

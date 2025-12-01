@@ -1,0 +1,130 @@
+======================================
+Array Task ID: 5
+Running with batch_size=32 and port=8005
+======================================
+Starting background process: uv run scripts/serve_policy.py     --env=LIBERO_REALTIME     --batch_size=32     --port=8005
+Background process started with PID: 2428035
+Running benchmark...
+Namespace(host='localhost', port=8005, env='libero', num_requests=300, request_rate=5.0, max_concurrency=100, disable_tqdm=False, metric_percentiles='95,99', save_result=True, save_result_dir='benchmarks/latency_batching/realtime_fake_batch', seed=0)
+Connecting to server at ws://localhost:8005...
+Server metadata: {'num_steps': 10, 'action_horizon': 50, 'env': 'libero_realtime', 'batch_size': 32}
+Running warm-up request...
+Warm-up completed.
+Generating 300 observations...
+Starting benchmark...
+Request rate: 5.0 req/s
+Max concurrency: 100
+=============== Benchmark Results ================
+Total requests:                          300       
+Successful requests:                     300       
+Failed requests:                         0         
+Benchmark duration (s):                  62.32     
+Request throughput (req/s):              4.81      
+--------------- Latency Statistics ---------------
+Mean latency (ms):                       2578.36   
+Median latency (ms):                     2576.90   
+Std latency (ms):                        481.03    
+P95 latency (ms):                        3351.24   
+P99 latency (ms):                        3424.71   
+==================================================
+
+Results saved to: benchmarks/latency_batching/realtime_fake_batch/benchmark-libero-20251105-165156.json
+Namespace(host='localhost', port=8005, env='libero', num_requests=300, request_rate=10.0, max_concurrency=100, disable_tqdm=False, metric_percentiles='95,99', save_result=True, save_result_dir='benchmarks/latency_batching/realtime_fake_batch', seed=0)
+Connecting to server at ws://localhost:8005...
+Server metadata: {'num_steps': 10, 'action_horizon': 50, 'env': 'libero_realtime', 'batch_size': 32}
+Running warm-up request...
+Warm-up completed.
+Generating 300 observations...
+Starting benchmark...
+Request rate: 10.0 req/s
+Max concurrency: 100
+=============== Benchmark Results ================
+Total requests:                          300       
+Successful requests:                     300       
+Failed requests:                         0         
+Benchmark duration (s):                  33.06     
+Request throughput (req/s):              9.08      
+--------------- Latency Statistics ---------------
+Mean latency (ms):                       2633.01   
+Median latency (ms):                     2640.36   
+Std latency (ms):                        480.39    
+P95 latency (ms):                        3366.76   
+P99 latency (ms):                        3435.85   
+==================================================
+
+Results saved to: benchmarks/latency_batching/realtime_fake_batch/benchmark-libero-20251105-165239.json
+Namespace(host='localhost', port=8005, env='libero', num_requests=300, request_rate=20.0, max_concurrency=100, disable_tqdm=False, metric_percentiles='95,99', save_result=True, save_result_dir='benchmarks/latency_batching/realtime_fake_batch', seed=0)
+Connecting to server at ws://localhost:8005...
+Server metadata: {'num_steps': 10, 'action_horizon': 50, 'env': 'libero_realtime', 'batch_size': 32}
+Running warm-up request...
+Warm-up completed.
+Generating 300 observations...
+Starting benchmark...
+Request rate: 20.0 req/s
+Max concurrency: 100
+=============== Benchmark Results ================
+Total requests:                          300       
+Successful requests:                     300       
+Failed requests:                         0         
+Benchmark duration (s):                  19.19     
+Request throughput (req/s):              15.63     
+--------------- Latency Statistics ---------------
+Mean latency (ms):                       3595.70   
+Median latency (ms):                     3567.02   
+Std latency (ms):                        638.83    
+P95 latency (ms):                        4656.26   
+P99 latency (ms):                        4898.24   
+==================================================
+
+Results saved to: benchmarks/latency_batching/realtime_fake_batch/benchmark-libero-20251105-165308.json
+Namespace(host='localhost', port=8005, env='libero', num_requests=300, request_rate=50.0, max_concurrency=100, disable_tqdm=False, metric_percentiles='95,99', save_result=True, save_result_dir='benchmarks/latency_batching/realtime_fake_batch', seed=0)
+Connecting to server at ws://localhost:8005...
+Server metadata: {'num_steps': 10, 'action_horizon': 50, 'env': 'libero_realtime', 'batch_size': 32}
+Running warm-up request...
+Warm-up completed.
+Generating 300 observations...
+Starting benchmark...
+Request rate: 50.0 req/s
+Max concurrency: 100
+=============== Benchmark Results ================
+Total requests:                          300       
+Successful requests:                     300       
+Failed requests:                         0         
+Benchmark duration (s):                  19.18     
+Request throughput (req/s):              15.64     
+--------------- Latency Statistics ---------------
+Mean latency (ms):                       5103.13   
+Median latency (ms):                     5227.33   
+Std latency (ms):                        902.23    
+P95 latency (ms):                        6951.42   
+P99 latency (ms):                        6956.33   
+==================================================
+
+Results saved to: benchmarks/latency_batching/realtime_fake_batch/benchmark-libero-20251105-165336.json
+Namespace(host='localhost', port=8005, env='libero', num_requests=300, request_rate=100.0, max_concurrency=100, disable_tqdm=False, metric_percentiles='95,99', save_result=True, save_result_dir='benchmarks/latency_batching/realtime_fake_batch', seed=0)
+Connecting to server at ws://localhost:8005...
+Server metadata: {'num_steps': 10, 'action_horizon': 50, 'env': 'libero_realtime', 'batch_size': 32}
+Running warm-up request...
+Warm-up completed.
+Generating 300 observations...
+Starting benchmark...
+Request rate: 100.0 req/s
+Max concurrency: 100
+=============== Benchmark Results ================
+Total requests:                          300       
+Successful requests:                     300       
+Failed requests:                         0         
+Benchmark duration (s):                  19.16     
+Request throughput (req/s):              15.66     
+--------------- Latency Statistics ---------------
+Mean latency (ms):                       5239.64   
+Median latency (ms):                     5216.98   
+Std latency (ms):                        921.27    
+P95 latency (ms):                        6940.98   
+P99 latency (ms):                        6958.01   
+==================================================
+
+Results saved to: benchmarks/latency_batching/realtime_fake_batch/benchmark-libero-20251105-165404.json
+Cleaning up...
+Stopping background process (PID: 2428035)
+Cleanup complete

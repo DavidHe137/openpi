@@ -1,0 +1,372 @@
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:root:Task suite: libero_10
+INFO:root:Running experiments with latency values: [150.0, 200.0, 250.0, 300.0, 400.0]
+INFO:root:================================================================================
+INFO:root:Running experiment with latency: 150.0 ms
+INFO:root:================================================================================
+INFO:root:Videos will be saved to: data/libero/videos/20251104_135542_rtcTrue_lat150.0_hrzn50_parallel/horizon_50
+INFO:root:Results will be saved to: data/libero/20251104_135542_rtcTrue_lat150.0_hrzn50_parallel/horizon_50/results.csv
+INFO:root:Number of workers: 6
+INFO:root:RTC setting: True, action horizon: 50
+  0%|          | 0/10 [00:00<?, ?it/s][robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:root:Loading model...
+INFO:2025-11-04 13:55:53,773:jax._src.xla_bridge:925: Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+INFO:jax._src.xla_bridge:Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+INFO:2025-11-04 13:55:53,781:jax._src.xla_bridge:925: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+INFO:jax._src.xla_bridge:Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+INFO:absl:orbax-checkpoint version: 0.11.13
+INFO:absl:Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x7f44196ceb10>
+INFO:absl:Restoring checkpoint from /coc/flash8/rbansal66/openpi/checkpoints/pi05_libero_lora/libero_lora_finetune_single_gpu/10000/params.
+INFO:absl:[thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID.
+INFO:absl:[process=0] /jax/checkpoint/read/bytes_per_sec: 765.7 MiB/s (total bytes: 6.3 GiB) (time elapsed: 8 seconds) (per-host)
+INFO:absl:Finished restoring checkpoint in 8.48 seconds from /coc/flash8/rbansal66/openpi/checkpoints/pi05_libero_lora/libero_lora_finetune_single_gpu/10000/params.
+INFO:root:Norm stats not found in /coc/flash8/rbansal66/openpi_rollout/openpi/assets/pi05_libero_lora/physical-intelligence/libero, skipping.
+INFO:root:Loaded norm stats from /coc/flash8/rbansal66/openpi/checkpoints/pi05_libero_lora/libero_lora_finetune_single_gpu/10000/assets/physical-intelligence/libero
+INFO:root:Creating server (host: samantha, ip: 127.0.1.1)
+INFO:websockets.server:server listening on 0.0.0.0:8080
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34724) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34730) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34746) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34748) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34758) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34760) opened
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3075745 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3075811 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3075748 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3075812 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3075747 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3075813 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075745 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075748 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075811 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075812 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075747 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075813 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075745 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075748 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075811 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075812 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075813 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075747 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075745 caught exception: executing action in terminated episode
+ERROR:root:Worker 3075748 caught exception: executing action in terminated episode
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34758) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34724) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34730) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34746) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34748) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34760) closed
+INFO:root:Task 0 success rate: 0/20 (0.0%)
+INFO:root:Cumulative success rate: 0/20 (0.0%)
+ 10%|█         | 1/10 [03:39<32:51, 219.10s/it][robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35952) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35956) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35966) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35972) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35984) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35992) opened
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3170803 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3170801 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3170802 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3170800 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3170799 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3170804 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170803 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170801 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170800 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170799 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170802 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170804 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170803 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170801 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170799 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170800 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170804 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170802 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170803 caught exception: executing action in terminated episode
+ERROR:root:Worker 3170801 caught exception: executing action in terminated episode
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35972) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35966) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35952) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35956) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35984) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35992) closed
+INFO:root:Task 1 success rate: 0/20 (0.0%)
+INFO:root:Cumulative success rate: 0/40 (0.0%)
+ 20%|██        | 2/10 [05:52<22:27, 168.41s/it][robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+slurmstepd: error: *** JOB 1901250 ON samantha CANCELLED AT 2025-11-04T14:01:36 ***
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34374) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34388) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34398) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34400) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35424) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35436) opened
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3225690 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3225691 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3225692 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3225687 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3225688 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3225689 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225690 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225691 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225692 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225687 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225688 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225689 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225690 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225691 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225692 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225687 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225688 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225689 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225690 caught exception: executing action in terminated episode
+ERROR:root:Worker 3225691 caught exception: executing action in terminated episode
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34398) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35424) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34374) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34400) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35436) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 34388) closed
+INFO:root:Task 2 success rate: 0/20 (0.0%)
+INFO:root:Cumulative success rate: 0/60 (0.0%)
+ 30%|███       | 3/10 [07:51<17:01, 145.93s/it][robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35228) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35230) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35232) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33930) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33934) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33948) opened
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3275567 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3275568 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3275571 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3275566 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3275570 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3275569 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275567 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275571 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275568 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275570 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275569 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275566 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275567 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275571 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275570 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275569 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275568 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275566 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275567 caught exception: executing action in terminated episode
+ERROR:root:Worker 3275571 caught exception: executing action in terminated episode
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35230) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33934) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33948) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35228) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35232) closed
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33930) closed
+INFO:root:Task 3 success rate: 0/20 (0.0%)
+INFO:root:Cumulative success rate: 0/80 (0.0%)
+ 40%|████      | 4/10 [09:51<13:35, 135.99s/it][robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35448) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35454) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35458) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35460) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35468) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 35472) opened
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3329194 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3329197 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3329193 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3329195 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3329198 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3329196 caught exception: executing action in terminated episode

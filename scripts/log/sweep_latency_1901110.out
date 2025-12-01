@@ -1,0 +1,10 @@
+======================================
+Job ID: 1901110
+Running with args.use_rtc=False
+======================================
+Starting background process for horizon  (default): serve_policy.py --env=LIBERO
+Background process started with PID: 3734807
+Running libero client...
+Cleaning up...
+Stopping background process (PID: 3734807)
+Cleanup complete

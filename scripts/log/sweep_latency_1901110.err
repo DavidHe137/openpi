@@ -1,0 +1,9 @@
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+╭─ Parsing error ────────────────────────────────────╮
+│ Unrecognized arguments: $USE_RTC_FLAG              │
+│ ────────────────────────────────────────────────── │
+│ For full helptext, run main_rtc_parallel.py --help │
+╰────────────────────────────────────────────────────╯

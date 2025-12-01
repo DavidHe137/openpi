@@ -5,15 +5,16 @@
 #SBATCH --array=0-6
 #SBATCH --partition=overcap
 #SBATCH --time=24:00:00
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=128G
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --gres=gpu:a40:1
 
 # Exit on error
 set -e  
 
-BATCH_SIZES=(1 2 4 8 16 32 64)
+BATCH_SIZES=(64)
 BATCH_SIZE=${BATCH_SIZES[$SLURM_ARRAY_TASK_ID]}
 
 port=$((8000 + ${SLURM_ARRAY_TASK_ID:-0}))
@@ -42,7 +43,7 @@ trap cleanup EXIT INT TERM
 
 # Start the background process
 cmd="uv run scripts/serve_policy.py \
-    --env=LIBERO \
+    --env=LIBERO_REALTIME \
     --batch_size=$BATCH_SIZE \
     --port=$port"
 
@@ -54,7 +55,7 @@ BACKGROUND_PID=$!
 echo "Background process started with PID: $BACKGROUND_PID"
 
 # Wait for the background service to initialize
-sleep 5
+sleep 50
 
 # Run the foreground script
 echo "Running benchmark..."

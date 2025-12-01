@@ -1,0 +1,103 @@
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:root:Task suite: libero_10
+INFO:root:Running experiments with latency values: [150.0, 200.0, 250.0, 300.0, 400.0]
+INFO:root:================================================================================
+INFO:root:Running experiment with latency: 150.0 ms
+INFO:root:================================================================================
+INFO:root:Videos will be saved to: data/libero/videos/20251104_134148_rtcTrue_lat150.0_hrzn10_parallel/horizon_10
+INFO:root:Results will be saved to: data/libero/20251104_134148_rtcTrue_lat150.0_hrzn10_parallel/horizon_10/results.csv
+INFO:root:Number of workers: 6
+INFO:root:RTC setting: True, action horizon: 10
+  0%|          | 0/10 [00:00<?, ?it/s][robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:root:Loading model...
+INFO:2025-11-04 13:42:01,713:jax._src.xla_bridge:925: Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+INFO:jax._src.xla_bridge:Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+INFO:2025-11-04 13:42:01,721:jax._src.xla_bridge:925: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+INFO:jax._src.xla_bridge:Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+INFO:absl:orbax-checkpoint version: 0.11.13
+INFO:absl:Created BasePyTreeCheckpointHandler: use_ocdbt=True, use_zarr3=False, pytree_metadata_options=PyTreeMetadataOptions(support_rich_types=False), array_metadata_store=<orbax.checkpoint._src.metadata.array_metadata_store.Store object at 0x7f9970a8ed10>
+INFO:absl:Restoring checkpoint from /coc/flash8/rbansal66/openpi/checkpoints/pi05_libero_lora/libero_lora_finetune_single_gpu/10000/params.
+INFO:absl:[thread=MainThread] Failed to get flag value for EXPERIMENTAL_ORBAX_USE_DISTRIBUTED_PROCESS_ID.
+INFO:absl:[process=0] /jax/checkpoint/read/bytes_per_sec: 719.0 MiB/s (total bytes: 6.3 GiB) (time elapsed: 9 seconds) (per-host)
+INFO:absl:Finished restoring checkpoint in 9.03 seconds from /coc/flash8/rbansal66/openpi/checkpoints/pi05_libero_lora/libero_lora_finetune_single_gpu/10000/params.
+INFO:root:Norm stats not found in /coc/flash8/rbansal66/openpi_rollout/openpi/assets/pi05_libero_lora/physical-intelligence/libero, skipping.
+INFO:root:Loaded norm stats from /coc/flash8/rbansal66/openpi/checkpoints/pi05_libero_lora/libero_lora_finetune_single_gpu/10000/assets/physical-intelligence/libero
+INFO:root:Creating server (host: deebot, ip: 127.0.1.1)
+INFO:websockets.server:server listening on 0.0.0.0:8080
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33502) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33518) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33530) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33534) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33540) opened
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 33552) opened
+slurmstepd: error: *** JOB 1901210 ON deebot CANCELLED AT 2025-11-04T13:43:02 ***
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3378603 caught exception: executing action in terminated episode
+/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/numba/np/arraymath.py:3845: DeprecationWarning: `np.MachAr` is deprecated (NumPy 1.22).
+  @overload(np.MachAr)
+ERROR:root:Worker 3378600 caught exception: executing action in terminated episode
+  0%|          | 0/10 [03:55<?, ?it/s]
+multiprocessing.pool.RemoteTraceback: 
+"""
+Traceback (most recent call last):
+  File "/usr/lib/python3.8/multiprocessing/pool.py", line 125, in worker
+    result = (True, func(*args, **kwds))
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/main_rtc_parallel.py", line 128, in _eval_libero_wrapper
+    return eval_libero(*task_args)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/main_rtc_parallel.py", line 258, in eval_libero
+    imageio.mimwrite(
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/imageio/v2.py", line 494, in mimwrite
+    with imopen(uri, "wI", **imopen_args) as file:
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/imageio/core/imopen.py", line 113, in imopen
+    request = Request(uri, io_mode, format_hint=format_hint, extension=extension)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/imageio/core/request.py", line 247, in __init__
+    self._parse_uri(uri)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/imageio/core/request.py", line 412, in _parse_uri
+    raise FileNotFoundError("The directory %r does not exist" % dn)
+FileNotFoundError: The directory '/coc/flash8/rbansal66/openpi_rollout/openpi/data/libero/videos/20251104_134148_rtcTrue_lat150.0_hrzn10_parallel/horizon_10' does not exist
+"""
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "examples/libero/main_rtc_parallel.py", line 602, in <module>
+    tyro.cli(main)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/tyro/_cli.py", line 191, in cli
+    return run_with_args_from_cli()
+  File "examples/libero/main_rtc_parallel.py", line 535, in main
+    run_experiment_for_latency(args, latency_value, timestamp, task_suite, num_tasks_in_suite, custom, bddl_file_path, language)
+  File "examples/libero/main_rtc_parallel.py", line 411, in run_experiment_for_latency
+    episode_results = list(results)
+  File "/usr/lib/python3.8/multiprocessing/pool.py", line 868, in next
+    raise value
+FileNotFoundError: The directory '/coc/flash8/rbansal66/openpi_rollout/openpi/data/libero/videos/20251104_134148_rtcTrue_lat150.0_hrzn10_parallel/horizon_10' does not exist

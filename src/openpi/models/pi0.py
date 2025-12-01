@@ -13,6 +13,7 @@ from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
+import pickle
 
 logger = logging.getLogger("openpi")
 
@@ -102,6 +103,8 @@ class Pi0(_model.BaseModel):
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
+
+        self.output_actions_save = []
 
     @at.typecheck
     def embed_prefix(
@@ -275,6 +278,140 @@ class Pi0(_model.BaseModel):
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
 
+    def guided_inference(
+        self,
+        rng: at.KeyArrayLike,
+        prev_action: _model.Actions,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,       
+        s: int = 5,
+        d: int = 4,
+        beta: float = 8.0,
+    ) -> _model.Actions:
+        observation = _model.preprocess_observation(None, observation, train=False)
+        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
+        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
+        dt = -1.0 / num_steps
+        batch_size = observation.state.shape[0]
+        noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        
+        # get prev_action from s-th step to the end, and then pad s steps with zeros
+        prev_action_slice = prev_action[:, s:, :]  # get prev_action from s-th step to the end
+        # jax.debug.print("prev_action_slice shape: {prev_action_slice_shape}", prev_action_slice_shape=prev_action_slice.shape)
+        # create s steps with zeros
+        zero_actions = jnp.zeros((batch_size, s, self.action_dim))
+        # concatenate prev_action_slice and zero_actions
+        prev_action_slice = jnp.concatenate([prev_action_slice, zero_actions], axis=1)
+
+        def make_W(d: int, s: int) -> jnp.ndarray:
+            """
+            generate the weight vector W ∈ ℝ^H
+            parameters
+            ----
+            H : int  # sequence length
+            d : int  # "deterministic region" threshold
+            s : int  # "truncated" window length
+            return
+            ----
+            W : jnp.ndarray, shape (H,)
+            """
+            H = self.action_horizon
+            i = jnp.arange(H)           # 0,1,2,...,H-1
+
+            # three-segment condition
+            cond_1 = i < d
+            cond_2 = (i >= d) & (i < H - s)
+            cond_3 = i >= H - s         # actually can be else
+
+            # segment (1): all 1
+            w1 = jnp.ones_like(i, dtype=float)
+
+            # segment (2): exponential decay
+            c_i = (H - s - i) / (H - s - d + 1)
+            w2  = jnp.exp(c_i) - 1
+            w2  = c_i * w2 / (jnp.e - 1)      # (e^{c_i} - 1) / (e - 1)
+
+            # segment (3): all 0
+            w3 = jnp.zeros_like(i, dtype=float)
+
+            # concatenate three segments
+            W = jnp.where(cond_1, w1,
+                jnp.where(cond_2, w2, w3)
+            )
+
+            D = jnp.diag(W)
+
+            D_batch = jnp.stack([D] * 1, axis=0)
+            return D_batch
+
+        # create W
+        diag_W = make_W(d, s)
+
+        # first fill KV cache with a forward pass of the prefix
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+
+        def func_a_1_prime(x_t, time):
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
+            # other
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
+            # prefix tokens
+            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
+            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
+            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            assert full_attn_mask.shape == (
+                batch_size,
+                suffix_tokens.shape[1],
+                prefix_tokens.shape[1] + suffix_tokens.shape[1],
+            )
+            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens], mask=full_attn_mask, positions=positions, kv_cache=kv_cache, adarms_cond=[None, adarms_cond]
+            )
+            assert prefix_out is None
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+            return x_t - time * v_t, v_t
+
+        def step(carry):
+            x_t, time = carry
+            (a_1_prime, v_t), f_vjp = jax.vjp(func_a_1_prime, x_t, time)
+
+            e = prev_action_slice - a_1_prime
+            e = jnp.matmul(diag_W, e)
+            #Compute vector-Jacobian product
+            grad_a_1_prime_x_t = f_vjp((e, jnp.zeros_like(v_t)))
+            # jax.debug.print("grad_a_1_prime_x_t 0 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[0].shape)
+            # jax.debug.print("grad_a_1_prime_x_t 1 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[1].shape)
+            r_t = time * time / (time * time + (1 - time) * (1 - time))
+
+            a_2_prime = x_t + dt * (v_t - jax.lax.min(beta, time / ((1 - time) * r_t * r_t + 1e-6)) * grad_a_1_prime_x_t[0])
+            
+            return a_2_prime, time + dt
+
+        def cond(carry):
+            x_t, time = carry
+            # robust to floating-point error
+            return time >= -dt / 2
+
+        x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+        
+        return x_0
+
+    def save_data(self) -> None:
+        with open('save_data/output_actions_float32_save.pkl', 'wb') as f:
+            pickle.dump(self.output_actions_save, f)
+    
     @override
     def sample_actions(
         self,

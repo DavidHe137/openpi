@@ -1,0 +1,41 @@
+import torch
+from openpi.shared.pi0_infer import Pi0Inference
+import time
+
+if __name__ == "__main__":
+    import argparse
+    import numpy as np
+    np.random.seed(100)
+    torch.manual_seed(100)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--num_views', type=int, default=2, help='Number of views')
+    parser.add_argument('--prompt_len', type=int, default=0, help='Prompt length')
+    parser.add_argument('--chunk_size', type=int, default=63, help='Chunk size')
+    parser.add_argument('--batch_size', type=int, default=1, help='Batch size')
+    args = parser.parse_args()
+
+    infer = Pi0Inference({
+        'language_embeds' : torch.randn(args.prompt_len, 2048, dtype = torch.bfloat16),
+    }, num_views=args.num_views, chunk_size=args.chunk_size, batch_size=args.batch_size)
+
+    # Always use batched shapes
+    input_image = torch.randn(args.batch_size, args.num_views, 224, 224, 3, dtype = torch.bfloat16).cuda()
+    input_state = torch.randn(args.batch_size, 32, dtype = torch.bfloat16).cuda()
+    input_noise = torch.randn(args.batch_size, args.chunk_size, 32, dtype = torch.bfloat16).cuda()
+
+    # Warm up
+    for _ in range(3):
+        _ = infer.forward(input_image, input_state, input_noise)
+        torch.cuda.synchronize()
+
+    # Benchmark
+    iterations = 100
+    times = []
+    for _ in range(iterations):
+        t0 = time.time()
+        _ = infer.forward(input_image, input_state, input_noise)
+        torch.cuda.synchronize()
+        t1 = time.time()
+        times.append(t1 - t0)
+    print('batch_size', args.batch_size, 'views', args.num_views, 'prompt_len', args.prompt_len, 'chunk_size', args.chunk_size)
+    print('runs', len(times), 'median time per inference:', '%.3f'%(sorted(times)[len(times)//2]*1000), 'ms')

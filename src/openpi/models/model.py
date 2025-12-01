@@ -20,7 +20,6 @@ import torch
 from openpi.models_pytorch import pi0_pytorch
 from openpi.shared import image_tools
 import openpi.shared.array_typing as at
-
 logger = logging.getLogger("openpi")
 
 # Type variable for array types (JAX arrays, PyTorch tensors, or numpy arrays)
@@ -281,6 +280,9 @@ class BaseModel(nnx.Module, abc.ABC):
 
     @abc.abstractmethod
     def sample_actions(self, rng: at.KeyArrayLike, observation: Observation, **kwargs) -> Actions: ...
+    
+    @abc.abstractmethod
+    def guided_inference(self, rng: at.KeyArrayLike, prev_action: Actions, observation: Observation, **kwargs) -> Actions: ...
 
 
 def restore_params(

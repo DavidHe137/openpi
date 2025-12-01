@@ -1,0 +1,95 @@
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+INFO:root:Creating server (host: chappie, ip: 127.0.1.1)
+INFO:openpi.serving.websocket_policy_server:Worker started
+INFO:openpi.serving.websocket_policy_server:Initializing policy in worker process
+INFO:root:Loading model...
+INFO:root:Norm stats not found in /coc/flash8/rbansal66/openpi_rollout/openpi/assets/pi0_libero/physical-intelligence/libero, skipping.
+INFO:root:Loaded norm stats from /coc/flash8/rbansal66/openpi_rollout/openpi/.cache/openpi/openpi-assets/checkpoints/pi0_libero_pytorch_dexmal/assets/physical-intelligence/libero
+INFO:openpi.serving.websocket_policy_server:Warming up policy...
+INFO:openpi.serving.websocket_policy_server:Warming up batch size 16
+INFO:2025-11-05 02:02:20,944:jax._src.xla_bridge:925: Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+INFO:jax._src.xla_bridge:Unable to initialize backend 'rocm': module 'jaxlib.xla_extension' has no attribute 'GpuAllocatorConfig'
+INFO:2025-11-05 02:02:20,945:jax._src.xla_bridge:925: Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+INFO:jax._src.xla_bridge:Unable to initialize backend 'tpu': INTERNAL: Failed to open libtpu.so: libtpu.so: cannot open shared object file: No such file or directory
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+Process Process-1:
+Traceback (most recent call last):
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/serving/websocket_policy_server.py", line 139, in worker
+    self._warmup(batch_size)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/serving/websocket_policy_server.py", line 252, in _warmup
+    self._policy.infer_batch(batch)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/policies/policy.py", line 218, in infer_batch
+    outputs = self._output_transform(outputs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/transforms.py", line 71, in __call__
+    data = transform(data)
+           ^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/transforms.py", line 242, in __call__
+    actions[..., :dims] += np.expand_dims(np.where(mask, state[..., :dims], 0), axis=-2)
+ValueError: non-broadcastable output operand with shape (1,50,7) doesn't match the broadcast shape (16,50,7)
+Traceback (most recent call last):
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/serve_policy.py", line 157, in <module>
+    main(tyro.cli(Args))
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/serve_policy.py", line 152, in main
+    server.serve_forever()
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/serving/websocket_policy_server.py", line 51, in serve_forever
+    asyncio.run(self.run())
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/serving/websocket_policy_server.py", line 74, in run
+    raise RuntimeError("Worker process died before connecting")
+RuntimeError: Worker process died before connecting
+Traceback (most recent call last):
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 204, in benchmark
+    metadata = await policy.connect()
+               ^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/packages/openpi-client/src/openpi_client/websocket_client_policy.py", line 86, in connect
+    results = await asyncio.gather(*[self._create_connection() for _ in range(self._num_connections)])
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/packages/openpi-client/src/openpi_client/websocket_client_policy.py", line 98, in _create_connection
+    conn = await websockets.asyncio.client.connect(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/websockets/asyncio/client.py", line 541, in __await_impl__
+    self.connection = await self.create_connection()
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/websockets/asyncio/client.py", line 467, in create_connection
+    _, connection = await loop.create_connection(factory, **kwargs)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 1094, in create_connection
+    raise OSError('Multiple exceptions: {}'.format(
+OSError: Multiple exceptions: [Errno 111] Connect call failed ('::1', 8004, 0, 0), [Errno 111] Connect call failed ('127.0.0.1', 8004)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 418, in <module>
+    main(args)
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 299, in main
+    return asyncio.run(main_async(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nethome/rbansal66/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 307, in main_async
+    result = await benchmark(
+             ^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/benchmark.py", line 216, in benchmark
+    raise RuntimeError(f"Failed to connect to server: {e}") from e
+RuntimeError: Failed to connect to server: Multiple exceptions: [Errno 111] Connect call failed ('::1', 8004, 0, 0), [Errno 111] Connect call failed ('127.0.0.1', 8004)

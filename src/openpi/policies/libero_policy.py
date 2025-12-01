@@ -13,7 +13,7 @@ def make_libero_example() -> dict:
         "observation/state": np.random.rand(8),
         "observation/image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
         "observation/wrist_image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-        "prompt": "do something",
+        "prompt": "put both moka pots on the stove",
     }
 
 
@@ -56,6 +56,11 @@ class LiberoInputs(transforms.DataTransformFn):
         # and two wrist views (left and right). If your dataset does not have a particular type
         # of image, e.g. wrist images, you can comment it out here and replace it with zeros like we do for the
         # right wrist image below.
+        if "observation" in data:
+            data["observation/image"] = data["observation"]["observation/image"]
+            data["observation/wrist_image"] = data["observation"]["observation/wrist_image"]
+            data["observation/state"] = data["observation"]["observation/state"]
+            data["prompt"] = data["observation"]["prompt"]
         base_image = _parse_image(data["observation/image"])
         wrist_image = _parse_image(data["observation/wrist_image"])
 
@@ -120,6 +125,7 @@ class LiberoOutputs(transforms.DataTransformFn):
         # dimension, we need to now parse out the correct number of actions in the return dict.
         # For Libero, we only return the first 7 actions (since the rest is padding).
         # For your own dataset, replace `7` with the action dimension of your dataset.
+
         actions = np.asarray(data["actions"])
 
         # Handle both single sample and batch processing
@@ -128,6 +134,10 @@ class LiberoOutputs(transforms.DataTransformFn):
             return {"actions": actions[:, :, :7]}
         elif len(actions.shape) == 2:  # Single: (action_horizon, action_dim)
             # Keep full horizon, slice action dim
-            return {"actions": actions[:, :7]}
+            return {
+                "actions": np.asarray(data["actions"][:, :7]),
+                "state": data["state"],
+                "origin_actions": data["origin_actions"],
+            }
         else:
             raise ValueError(f"Unexpected actions shape: {actions.shape}")

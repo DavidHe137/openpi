@@ -1,0 +1,87 @@
+warning: The `tool.uv.dev-dependencies` field (used in `packages/openpi-client/pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:root:Task suite: libero_10
+INFO:root:Running experiments with latency values: [10.0, 50.0, 100.0, 150.0, 200.0, 250.0, 300.0, 400.0]
+INFO:root:================================================================================
+INFO:root:Running experiment with latency: 10.0 ms
+INFO:root:================================================================================
+INFO:root:Videos will be saved to: data/libero/videos/20251104_133011_rtcTrue_lat10.0_hrzn50_parallel/horizon_50
+INFO:root:Results will be saved to: data/libero/20251104_133011_rtcTrue_lat10.0_hrzn50_parallel/horizon_50/results.csv
+INFO:root:Number of workers: 6
+INFO:root:RTC setting: True, action horizon: 50
+  0%|          | 0/10 [00:00<?, ?it/s][robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+INFO:root:Loading model...
+2025-11-04 13:30:13.169752: E external/xla/xla/stream_executor/cuda/cuda_platform.cc:51] failed call to cuInit: INTERNAL: CUDA error: Failed call to cuInit: CUDA_ERROR_UNKNOWN: unknown error
+Traceback (most recent call last):
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/jax/_src/xla_bridge.py", line 915, in backends
+    backend = _init_backend(platform)
+              ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/jax/_src/xla_bridge.py", line 1001, in _init_backend
+    backend = registration.factory()
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/jax/_src/xla_bridge.py", line 693, in factory
+    return xla_client.make_c_api_client(plugin_name, updated_options, None)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/jaxlib/xla_client.py", line 207, in make_c_api_client
+    return _xla.get_c_api_client(plugin_name, options, distributed_client)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+jaxlib.xla_extension.XlaRuntimeError: FAILED_PRECONDITION: No visible GPU devices.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/serve_policy.py", line 138, in <module>
+    main(tyro.cli(Args))
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/serve_policy.py", line 114, in main
+    policy = create_policy(args)
+             ^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/scripts/serve_policy.py", line 101, in create_policy
+    return _policy_config.create_trained_policy(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/policies/policy_config.py", line 57, in create_trained_policy
+    model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/src/openpi/models/model.py", line 312, in restore_params
+    mesh = jax.sharding.Mesh(jax.devices(), ("x",))
+                             ^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/jax/_src/xla_bridge.py", line 1115, in devices
+    return get_backend(backend).devices()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/jax/_src/xla_bridge.py", line 1049, in get_backend
+    return _get_backend_uncached(platform)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/jax/_src/xla_bridge.py", line 1028, in _get_backend_uncached
+    bs = backends()
+         ^^^^^^^^^^
+  File "/coc/flash8/rbansal66/openpi_rollout/openpi/.venv/lib/python3.11/site-packages/jax/_src/xla_bridge.py", line 931, in backends
+    raise RuntimeError(err_msg)
+RuntimeError: Unable to initialize backend 'cuda': FAILED_PRECONDITION: No visible GPU devices. (you may need to uninstall the failing plugin package, or set JAX_PLATFORMS=cpu to skip this backend.)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+[robosuite WARNING] No private macro file found! (macros.py:53)
+[robosuite WARNING] It is recommended to use a private macro file (macros.py:54)
+[robosuite WARNING] To setup, run: python /coc/flash8/rbansal66/openpi_rollout/openpi/examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py (macros.py:55)
+srun: error: claptrap: task 0: Exited with exit code 1
+srun: Terminating StepId=1901173.0
+slurmstepd: error: *** STEP 1901173.1 ON glados CANCELLED AT 2025-11-04T13:34:56 ***
+srun: Job step aborted: Waiting up to 302 seconds for job step to finish.
+slurmstepd: error: *** JOB 1901173 ON claptrap CANCELLED AT 2025-11-04T13:34:56 ***
+srun: error: glados: task 0: Terminated
+srun: Terminating StepId=1901173.1
