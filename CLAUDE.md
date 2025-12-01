@@ -1,1 +1,2 @@
 - use `uv run` when running python
+- Don't create READMEs or extra documentation unless explictly requested
