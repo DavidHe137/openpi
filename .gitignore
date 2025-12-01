@@ -175,3 +175,7 @@ policy_logs/
 !*.schema.json
 credentials/
 secrets/
+
+# Results
+logs/
+nsight/
