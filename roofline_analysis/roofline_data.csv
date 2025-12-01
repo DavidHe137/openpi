@@ -1,0 +1,23 @@
+component,times,shape_type,N,K,M,roofline_ms
+Vision Encoder,1,gemm,512,588,1152,0.004
+Vision Encoder,27,gemm,512,1152,3456,0.602
+Vision Encoder,27,attn,16,262144,72,0.178
+Vision Encoder,27,gemm,512,1152,1152,0.201
+Vision Encoder,27,gemm,512,1152,4304,0.750
+Vision Encoder,27,gemm,512,4304,1152,0.750
+LLM,1,gemm,512,1152,2048,0.013
+LLM,18,gemm,512,2048,2560,0.529
+LLM,17,attn,8,262144,256,0.200
+LLM,17,gemm,512,2048,2048,0.399
+LLM,17,gemm,512,2048,32768,6.391
+LLM,17,gemm,512,16384,2048,3.195
+Action Expert,1,gemm,1,32,1024,0.000
+Action Expert,10,gemm,63,32,1024,0.001
+Action Expert,10,gemm,63,1024,1024,0.021
+Action Expert,180,gemm,64,1024,2560,0.934
+Action Expert,180,gemm,512,256,576,0.149
+Action Expert,180,gemm,512,576,256,0.149
+Action Expert,180,gemm,64,2048,1024,0.747
+Action Expert,180,gemm,64,1024,8192,2.990
+Action Expert,180,gemm,64,4096,1024,1.495
+Action Expert,10,gemm,63,1024,32,0.001

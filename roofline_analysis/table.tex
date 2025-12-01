@@ -1,0 +1,53 @@
+
+\begin{table*}
+\centering
+\begin{tabular}{cc>{\columncolor{gray!20}}r|rrl|c>{\columncolor{gray!20}}r}
+\textbf{Times} & \textbf{Shape} & \textbf{Roofline} & \textbf{cuBLAS} & \textbf{Triton} & \textbf{Strategy} & \textbf{Oprs} & \textbf{Actual}\\
+\hline
+1 & 512$\times$588$\times$1152 & 0.004 & 0.036 & 0.044 & triton 64,64,32 & img2col, bias & 0.046\\
+27 & 512$\times$1152$\times$3456 & 0.602 & 0.984 & 0.870 & triton 64,64,32 & ln, bias & 0.926\\
+27 & attn 16$\times 512^2 \times$72 & 0.178 & / & / & torch & softmax & 0.430\\
+27 & 512$\times$1152$\times$1152 & 0.201 & 0.474 & 0.396 & partial split-4 & bias, res & 0.409\\
+27 & 512$\times$1152$\times$4304 & 0.750 & 1.221 & 1.074 & triton 64,64,64 & ln, gelu & 1.160\\
+27 & 512$\times$4304$\times$1152 & 0.750 & 1.190 & 1.143 & triton 64,64,64,4 & bias, res & 1.158\\
+\hline
+ & \textbf{Vision Encoder} & \textbf{2.485} & 4.334 & 3.957 &  &  & \textbf{4.059}\\
+\hline
+1 & 512$\times$1152$\times$2048 & 0.013 & 0.041 & 0.041 & triton 64,64,64 & ln, bias & 0.042\\
+18 & 512$\times$2048$\times$2560 & 0.529 & 0.823 & 0.761 & triton 64,64,64 & rms, rope & 0.862\\
+17 & attn 8$\times 512^2 \times$256 & 0.200 & / & / & torch & softmax & 0.406\\
+17 & 512$\times$2048$\times$2048 & 0.399 & 0.495 & 0.511 & triton 128,64,64 & res & 0.524\\
+17 & 512$\times$2048$\times$32768 & 6.391 & 7.359 & 7.317 & fused gate & ln, gate & 7.274\\
+17 & 512$\times$16384$\times$2048 & 3.195 & 3.751 & 3.696 & triton 128,64,64 & res & 3.740\\
+\hline
+ & \textbf{LLM} & \textbf{10.727} & 12.875 & 12.732 &  &  & \textbf{12.503}\\
+\hline
+1 & 1$\times$32$\times$1024 & 0.000 & 0.027 & 0.026 & triton 16, 16, 32 & bias & 0.026\\
+10 & 63$\times$32$\times$1024 & 0.001 & 0.057 & 0.036 & triton 32, 32, 32 & bias, silu & 0.038\\
+10 & 63$\times$1024$\times$1024 & 0.021 & 0.072 & 0.060 & triton 32, 32, 64 & bias & 0.063\\
+180 & 64$\times$1024$\times$2560 & 0.934 & 1.718 & 1.479 & triton 64, 32, 64 & rms, rope & 1.738\\
+180 & 512$\times$256$\times$576 & 0.149 & 0.723 & 0.602 & triton 32, 32, 64 & softmax & 1.071\\
+180 & 512$\times$576$\times$256 & 0.149 & 0.883 & 0.554 & triton 32, 32, 64 &  & 0.590\\
+180 & 64$\times$2048$\times$1024 & 0.747 & 1.164 & 1.203 & triton 32, 32, 128 & res & 1.237\\
+180 & 64$\times$1024$\times$8192 & 2.990 & 3.703 & 3.559 & fused gate & rms, gate & 3.847\\
+180 & 64$\times$4096$\times$1024 & 1.495 & 2.367 & 2.226 & triton 16, 32, 256 & res & 2.290\\
+10 & 63$\times$1024$\times$32 & 0.001 & 0.055 & 0.048 & triton 16, 16, 256 & res & 0.061\\
+\hline
+ & \textbf{Action Expert} & \textbf{6.486} & 10.808 & 9.831 &  &  & \textbf{11.001}\\
+\hline
+ & \textbf{In total} & \textbf{19.698} & 28.017 & 26.520 &  &  & \textbf{27.299}\\
+\hline
+
+
+	\subsection{Roofline of the GEMMs}
+
+	The basic approach is the ``roofline'' model, which lower bounds the time of a computation by the maximum of doing all memory operations and all compute operations. In the context of model inference, this translates to calculation of the HBM bandwidth and tensor core cycles.
+
+	For one BF16 GEMM operation of dimension $N\times K \times M$, the lower-bound is as follows:
+	$$
+	t_{\mathrm{roofline}} = \mathrm{max}(\frac{2K  M}{T_\mathrm{bandwidth}}, \frac{N K  M}{T_\mathrm{compute}}).
+	$$
+	In the above equation, we consider memory operation only for the second matrix. It is because in a network the first matrix and the resultant matrix are usually the activation features, which can be allocated on the L2 cache. The network parameters on the other hand, are too large to be fully cached so we should account for it.
+
+	For RTX 4090, the claimed memory bandwidth is 1.01 TB/s. The claimed BF16 MAC/s (with FP32 accumulation) is 82.6 T, but we observe that the using card has a boosted frequency of 2.79G Hz and hence 91.4 TMAC/s in total. These parameters are used in our computation in Tab.~\ref{tab:kernel_config} (for 2 input views).
+	Summing the roofline values gives the following results:
