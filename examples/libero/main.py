@@ -14,6 +14,8 @@ from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
 
+from examples.libero import visualize
+
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 
@@ -41,6 +43,12 @@ class Args:
     video_out_path: str = "data/libero/videos"  # Path to save videos
 
     seed: int = 7  # Random Seed (for reproducibility)
+
+    #################################################################################################################
+    # Visualization parameters
+    #################################################################################################################
+    visualize_chunks: bool = True  # Whether to overlay action chunk visualization
+    viz_time_window: int = 10  # Number of timesteps to show before/after playhead
 
 
 def eval_libero(args: Args) -> None:
@@ -103,6 +111,11 @@ def eval_libero(args: Args) -> None:
             t = 0
             replay_images = []
 
+            # Tracking data for action chunk visualization
+            frame_metadata = []  # List of ActionFrameMetadata
+            current_chunk_id = 0
+            active_chunk_id = None  # ID of the chunk currently being executed
+
             logging.info(f"Starting episode {task_episodes + 1}...")
             pbar = tqdm.tqdm(
                 total=max_steps + args.num_steps_wait,
@@ -160,7 +173,21 @@ def eval_libero(args: Args) -> None:
                         )
                         action_plan.extend(action_chunk[: args.replan_steps])
 
+                        # Track new chunk prediction
+                        active_chunk_id = current_chunk_id
+                        current_chunk_id += 1
+
                     action = action_plan.popleft()
+
+                    # Track action execution for visualization
+                    action_index = args.replan_steps - len(action_plan) - 1
+                    frame_metadata.append(
+                        visualize.ActionFrameMetadata(
+                            timestep=t,
+                            chunk_id=active_chunk_id,
+                            action_index=action_index,
+                        )
+                    )
 
                     # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())
@@ -178,7 +205,19 @@ def eval_libero(args: Args) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            client.save_data()
+            # client.save_data()
+
+            # Apply visualization overlay to frames
+            if args.visualize_chunks:
+                logging.info("Applying action chunk visualization to frames...")
+                visualized_frames = visualize.add_action_chunk_visualization(
+                    replay_images,
+                    frame_metadata,
+                    replan_steps=args.replan_steps,
+                    time_window=args.viz_time_window,
+                )
+            else:
+                visualized_frames = replay_images
 
             # Save a replay video of the episode
             suffix = "success" if done else "failure"
@@ -186,7 +225,7 @@ def eval_libero(args: Args) -> None:
             imageio.mimwrite(
                 pathlib.Path(args.video_out_path)
                 / f"rollout_{task_segment}_{suffix}.mp4",
-                [np.asarray(x) for x in replay_images],
+                [np.asarray(x) for x in visualized_frames],
                 fps=10,
             )
 
