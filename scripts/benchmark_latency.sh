@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=benchmark_latency
-#SBATCH --output=logs/benchmark_latency_%A_%a.out
-#SBATCH --error=logs/benchmark_latency_%A_%a.err
+#SBATCH --output=../openpi/logs/benchmark_latency_%A_%a.out
+#SBATCH --error=../openpi/logs/benchmark_latency_%A_%a.err
 #SBATCH --array=0-20
 #SBATCH --partition=overcap
 #SBATCH --time=24:00:00
@@ -9,7 +9,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=128G
-#SBATCH --gres=gpu:a40:1
+#SBATCH --gres=gpu:l40s:1
 
 # Exit on error
 set -e  
@@ -68,7 +68,7 @@ sleep 50
 echo "Running benchmark..."
 
 # for loop over request rates
-REQUEST_RATES=(10 20 50 100)
+REQUEST_RATES=(100)
 for REQUEST_RATE in ${REQUEST_RATES[@]}; do
     uv run scripts/benchmark.py \
         --host localhost \
@@ -79,5 +79,5 @@ for REQUEST_RATE in ${REQUEST_RATES[@]}; do
         --max-concurrency 300 \
         --metric-percentiles 95,99 \
         --save-result \
-        --save-result-dir benchmarks/a40_${MODEL}
+        --save-result-dir ../openpi/benchmarks/l40s_100_${MODEL}
 done
