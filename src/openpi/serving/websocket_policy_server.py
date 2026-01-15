@@ -250,8 +250,8 @@ class WebsocketPolicyServer:
                     logger.info(
                         f"Processing batch {batch_counter}: "
                         f"queue_depth={queue_depth}, "
-                        f"real_requests={num_real}/{batch_size}, "
-                        f"utilization={num_real / batch_size:.2%}"
+                        f"real_requests={num_real}/{len(batch)}, "
+                        f"utilization={num_real / len(batch):.2%}"
                     )
 
                     # Execute inference
@@ -264,7 +264,7 @@ class WebsocketPolicyServer:
                         processing_start_time=batch_start_time,
                         processing_end_time=batch_end_time,
                         num_real_requests=num_real,
-                        total_batch_size=batch_size,
+                        total_batch_size=len(batch),
                         request_ids=request_ids[:num_real],
                     )
 
