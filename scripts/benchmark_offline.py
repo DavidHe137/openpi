@@ -1,3 +1,4 @@
+# ruff: noqa
 #!/usr/bin/env python3
 """Offline benchmark for policy inference latency and throughput.
 
@@ -25,6 +26,7 @@ from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
+import gc
 import json
 import os
 import subprocess
@@ -93,7 +95,11 @@ def get_gpu_info() -> dict[str, Any]:
     """Get GPU information using nvidia-smi."""
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+            [
+                "nvidia-smi",
+                "--query-gpu=name,driver_version,memory.total",
+                "--format=csv,noheader",
+            ],
             capture_output=True,
             text=True,
             check=True,
@@ -106,7 +112,11 @@ def get_gpu_info() -> dict[str, Any]:
             "driver_version": gpu_info[1],
             "memory_total": gpu_info[2],
         }
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+    ):
         return {"gpu_available": False}
 
 
@@ -175,7 +185,7 @@ def warmup_policy(policy, batch_size: int, num_warmup: int) -> None:
             print("  First warmup complete (JIT compilation triggered)")
 
     # Synchronize GPU if PyTorch
-    if hasattr(policy, "_is_pytorch_model") and policy._is_pytorch_model and TORCH_AVAILABLE:  # noqa: SLF001
+    if hasattr(policy, "_is_pytorch_model") and policy._is_pytorch_model and TORCH_AVAILABLE:
         torch.cuda.synchronize()
 
     print("Warmup complete.")
@@ -394,10 +404,15 @@ def main(args: argparse.Namespace) -> None:
             # Print results
             print_batch_metrics(metrics)
 
-            # Cleanup GPU memory
+            # Cleanup GPU memory and torch.compile caches
             del policy
-            if TORCH_AVAILABLE and torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            gc.collect()
+            if TORCH_AVAILABLE:
+                # Reset torch.compile/dynamo state to free compiled model caches
+                torch._dynamo.reset()  # noqa: SLF001
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
 
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
