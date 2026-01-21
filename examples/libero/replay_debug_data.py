@@ -18,6 +18,11 @@ Usage:
         --debug_data_dir data/libero/multi_robot_videos/0/0_libero_10_8_success \
         --host localhost --port 8080
 
+    # Re-infer actions from policy in RTC mode (requires saved rtc params in debug data)
+    python examples/libero/replay_debug_data.py \
+        --debug_data_dir data/libero/multi_robot_videos_rtc/0/0_libero_10_0_success \
+        --host localhost --port 8080 --use_rtc
+
 The script will:
 1. Load metadata to get task info
 2. Load debug data chunks
@@ -27,11 +32,12 @@ The script will:
 """
 
 import argparse
+import csv
 import json
 import logging
 import pathlib
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import imageio
 import matplotlib.pyplot as plt
@@ -59,16 +65,21 @@ class ReplayConfig:
     num_steps_wait: int = 10
     max_steps: int = 500
     control_hz: int = 20
-    action_horizon: int = 50  # Number of actions per chunk (model's action horizon)
+    action_horizon: int = 10  # Number of actions per chunk (model's action horizon)
     action_dim: int = 7  # Actual robot action dimension (6 DoF + gripper for LIBERO)
     output_video: Optional[str] = None
     use_saved_actions: bool = False  # If True, use saved output_actions directly
+    use_rtc: bool = False  # If True, use RTC inference mode (requires saved rtc params)
     return_debug_data: bool = (
         False  # If True, request debug payloads from policy (if supported)
     )
     debug_report_path: Optional[str] = (
         None  # Where to write per-chunk debug comparison report (jsonl)
     )
+    plot_gt_horse_tails: bool = True  # Plot ground-truth discarded actions
+    plot_pred_horse_tails: bool = False  # Plot predicted discarded actions
+    output_html: Optional[str] = None  # Where to write interactive HTML plot
+    no_html: bool = False  # If True, skip HTML output
 
 
 def load_metadata(debug_data_dir: pathlib.Path) -> dict:
@@ -99,6 +110,27 @@ def load_debug_chunks(debug_data_dir: pathlib.Path) -> List[dict]:
     return chunks
 
 
+def load_timestamps(debug_data_dir: pathlib.Path) -> Dict[int, Tuple[int, int]]:
+    """Load per-step action selection info from timestamps.csv.
+
+    Returns a mapping:
+        env_step -> (action_chunk_index, action_index)
+    """
+    path = debug_data_dir / "timestamps.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Timestamps file not found: {path}")
+
+    out: Dict[int, Tuple[int, int]] = {}
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            env_step = int(row["env_step"])
+            chunk_idx = int(row["action_chunk_index"])
+            action_idx = int(row["action_index"])
+            out[env_step] = (chunk_idx, action_idx)
+    return out
+
+
 def unflatten_debug_data(flat_data: dict) -> dict:
     """Convert flattened debug data back to nested structure.
 
@@ -126,7 +158,9 @@ def unflatten_debug_data(flat_data: dict) -> dict:
     return result
 
 
-def create_observation_from_debug(debug_data: dict, prompt: str, step: int) -> dict:
+def create_observation_from_debug(
+    debug_data: dict, prompt: str, step_override: Optional[int] = None
+) -> dict:
     """Create observation dict from debug data for policy inference.
 
     Prefers 'raw_obs' (the exact observation before any transforms) if available,
@@ -136,9 +170,9 @@ def create_observation_from_debug(debug_data: dict, prompt: str, step: int) -> d
     if "raw_obs" in debug_data:
         raw_obs = debug_data["raw_obs"]
         # raw_obs is the exact dict that was passed to policy.infer()
-        # Just update the step counter
         obs = dict(raw_obs)
-        obs["step"] = step
+        if step_override is not None:
+            obs["step"] = step_override
         return obs
 
     raise ValueError("No raw_obs found in debug data")
@@ -202,6 +236,23 @@ def get_saved_output_actions_from_debug(debug_data: dict) -> np.ndarray:
     return np.asarray(actions)
 
 
+def get_rtc_params_from_debug(debug_data: dict) -> Tuple[np.ndarray, int, int]:
+    """Extract RTC params needed for INFERENCE_TIME_RTC replay.
+
+    Expected structure (saved by InferenceTimeRTCBroker):
+        debug_data["rtc"] = {"prev_action": <np.ndarray>, "s_param": <int>, "d_param": <int>}
+    """
+    rtc = debug_data.get("rtc")
+    if not isinstance(rtc, dict):
+        raise ValueError("No rtc params found in debug data (missing key 'rtc')")
+    prev_action = rtc.get("prev_action")
+    s_param = rtc.get("s_param")
+    d_param = rtc.get("d_param")
+    if prev_action is None or s_param is None or d_param is None:
+        raise ValueError("rtc params incomplete; expected prev_action/s_param/d_param")
+    return np.asarray(prev_action), int(s_param), int(d_param)
+
+
 def _compute_array_diff(a: np.ndarray, b: np.ndarray) -> dict:
     a = np.asarray(a)
     b = np.asarray(b)
@@ -241,6 +292,9 @@ def plot_action_comparison(
     output_path: pathlib.Path,
     action_horizon: int = 50,
     action_dim_names: Optional[List[str]] = None,
+    gt_horse_tails: Optional[List[dict]] = None,
+    pred_horse_tails: Optional[List[dict]] = None,
+    chunk_boundaries: Optional[List[int]] = None,
 ) -> None:
     """Plot comparison of replay actions vs saved actions for each dimension.
 
@@ -250,8 +304,22 @@ def plot_action_comparison(
         output_path: Path to save the plot image
         action_horizon: Number of actions per chunk (for grid spacing)
         action_dim_names: Optional names for each action dimension
+        gt_horse_tails: Optional list of dicts with keys {"start_step", "actions"} to plot
+            discarded ground-truth actions as faint "horse tail" lines.
+        pred_horse_tails: Optional list of dicts with keys {"start_step", "actions"} to plot
+            discarded predicted actions as faint "horse tail" lines.
+        chunk_boundaries: Optional list of step indices where a new chunk begins.
     """
     num_steps, action_dim = replay_actions.shape
+
+    gt_tail_colors = None
+    pred_tail_colors = None
+    if gt_horse_tails:
+        cmap = plt.get_cmap("tab20")
+        gt_tail_colors = [cmap(i % cmap.N) for i in range(len(gt_horse_tails))]
+    if pred_horse_tails:
+        cmap = plt.get_cmap("tab20b")
+        pred_tail_colors = [cmap(i % cmap.N) for i in range(len(pred_horse_tails))]
 
     if action_dim_names is None:
         # Default names for LIBERO 7-DoF actions
@@ -296,6 +364,49 @@ def plot_action_comparison(
             alpha=0.8,
         )
 
+        # Plot ground-truth horse tail predictions (discarded actions)
+        if gt_horse_tails:
+            added_label = False
+            for idx, tail in enumerate(gt_horse_tails):
+                start_step = int(tail["start_step"])
+                tail_actions = np.asarray(tail["actions"])
+                if tail_actions.size == 0 or dim >= tail_actions.shape[1]:
+                    continue
+                tail_steps = np.arange(
+                    start_step, start_step + tail_actions.shape[0]
+                )
+                ax.plot(
+                    tail_steps,
+                    tail_actions[:, dim],
+                    color=gt_tail_colors[idx],
+                    linewidth=1,
+                    alpha=0.35,
+                    label="GT horse tail (discarded)" if not added_label else None,
+                )
+                added_label = True
+
+        # Plot predicted horse tail predictions (discarded actions)
+        if pred_horse_tails:
+            added_label = False
+            for idx, tail in enumerate(pred_horse_tails):
+                start_step = int(tail["start_step"])
+                tail_actions = np.asarray(tail["actions"])
+                if tail_actions.size == 0 or dim >= tail_actions.shape[1]:
+                    continue
+                tail_steps = np.arange(
+                    start_step, start_step + tail_actions.shape[0]
+                )
+                ax.plot(
+                    tail_steps,
+                    tail_actions[:, dim],
+                    color=pred_tail_colors[idx],
+                    linewidth=1,
+                    alpha=0.35,
+                    linestyle="--",
+                    label="Pred horse tail (discarded)" if not added_label else None,
+                )
+                added_label = True
+
         # Shade the difference
         ax.fill_between(
             timesteps,
@@ -319,28 +430,44 @@ def plot_action_comparison(
         ax.legend(loc="upper right", fontsize=9)
         ax.grid(True, alpha=0.3, which="major")
 
-        # Add vertical lines at action horizon boundaries
-        for boundary in range(0, num_steps + 1, action_horizon):
-            ax.axvline(x=boundary, color="gray", linestyle="--", linewidth=1, alpha=0.5)
+        # Add vertical lines at chunk boundaries
+        if chunk_boundaries:
+            for boundary in chunk_boundaries:
+                if 0 <= boundary <= num_steps:
+                    ax.axvline(
+                        x=boundary,
+                        color="gray",
+                        linestyle="--",
+                        linewidth=1,
+                        alpha=0.5,
+                    )
+        else:
+            for boundary in range(0, num_steps + 1, action_horizon):
+                ax.axvline(
+                    x=boundary,
+                    color="gray",
+                    linestyle="--",
+                    linewidth=1,
+                    alpha=0.5,
+                )
 
-    # Set x-axis ticks at action horizon boundaries
-    xticks = np.arange(0, num_steps + 1, action_horizon)
-    axes[-1].set_xticks(xticks)
+    # Set x-axis ticks at chunk boundaries (fallback to action horizon boundaries)
+    if chunk_boundaries:
+        axes[-1].set_xticks(chunk_boundaries)
+    else:
+        xticks = np.arange(0, num_steps + 1, action_horizon)
+        axes[-1].set_xticks(xticks)
     axes[-1].set_xlabel("Timestep")
 
     # Overall title with determinism verdict
     total_max_diff = np.max(differences)
     total_mean_diff = np.mean(differences)
-    is_deterministic = total_max_diff < 1e-5
-
-    verdict_color = "green" if is_deterministic else "red"
 
     fig.suptitle(
         f"Action Comparison: Replay vs Saved\n"
         f"Total Max Diff: {total_max_diff:.8f} | Total Mean Diff: {total_mean_diff:.8f}\n",
         fontsize=14,
         fontweight="bold",
-        color=verdict_color,
     )
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
@@ -348,11 +475,205 @@ def plot_action_comparison(
     plt.close(fig)
 
 
+def plot_action_comparison_html(
+    replay_actions: np.ndarray,
+    saved_actions: np.ndarray,
+    output_path: pathlib.Path,
+    action_horizon: int = 50,
+    action_dim_names: Optional[List[str]] = None,
+    gt_horse_tails: Optional[List[dict]] = None,
+    pred_horse_tails: Optional[List[dict]] = None,
+    chunk_boundaries: Optional[List[int]] = None,
+) -> None:
+    """Create an interactive HTML plot with hoverable traces."""
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        import plotly.io as pio
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "plotly is required for HTML output; install it or pass --no_html"
+        ) from exc
+
+    num_steps, action_dim = replay_actions.shape
+    if action_dim_names is None:
+        action_dim_names = ["X", "Y", "Z", "RX", "RY", "RZ", "Gripper"]
+        if action_dim > len(action_dim_names):
+            action_dim_names.extend(
+                [f"Dim {i}" for i in range(len(action_dim_names), action_dim)]
+            )
+
+    fig = make_subplots(
+        rows=action_dim,
+        cols=1,
+        shared_xaxes=True,
+        subplot_titles=[
+            action_dim_names[i] if i < len(action_dim_names) else f"Dim {i}"
+            for i in range(action_dim)
+        ],
+    )
+
+    timesteps = np.arange(num_steps)
+    for dim in range(action_dim):
+        fig.add_trace(
+            go.Scatter(
+                x=timesteps,
+                y=saved_actions[:, dim],
+                mode="lines",
+                name="Saved (Original)",
+                line=dict(color="blue"),
+                hovertemplate="Saved<br>step=%{x}<br>value=%{y}<extra></extra>",
+            ),
+            row=dim + 1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=timesteps,
+                y=replay_actions[:, dim],
+                mode="lines",
+                name="Replay",
+                line=dict(color="red", dash="dash"),
+                hovertemplate="Replay<br>step=%{x}<br>value=%{y}<extra></extra>",
+            ),
+            row=dim + 1,
+            col=1,
+        )
+
+        if gt_horse_tails:
+            for idx, tail in enumerate(gt_horse_tails):
+                tail_actions = np.asarray(tail["actions"])
+                if tail_actions.size == 0 or dim >= tail_actions.shape[1]:
+                    continue
+                start_step = int(tail["start_step"])
+                tail_steps = np.arange(
+                    start_step, start_step + tail_actions.shape[0]
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=tail_steps,
+                        y=tail_actions[:, dim],
+                        mode="lines",
+                        name=f"GT Tail {idx + 1}",
+                        line=dict(width=1),
+                        opacity=0.5,
+                        hovertemplate=(
+                            f"GT Tail {idx + 1}<br>step=%{{x}}<br>value=%{{y}}"
+                            "<extra></extra>"
+                        ),
+                    ),
+                    row=dim + 1,
+                    col=1,
+                )
+
+        if pred_horse_tails:
+            for idx, tail in enumerate(pred_horse_tails):
+                tail_actions = np.asarray(tail["actions"])
+                if tail_actions.size == 0 or dim >= tail_actions.shape[1]:
+                    continue
+                start_step = int(tail["start_step"])
+                tail_steps = np.arange(
+                    start_step, start_step + tail_actions.shape[0]
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=tail_steps,
+                        y=tail_actions[:, dim],
+                        mode="lines",
+                        name=f"Pred Tail {idx + 1}",
+                        line=dict(width=1, dash="dot"),
+                        opacity=0.5,
+                        hovertemplate=(
+                            f"Pred Tail {idx + 1}<br>step=%{{x}}<br>value=%{{y}}"
+                            "<extra></extra>"
+                        ),
+                    ),
+                    row=dim + 1,
+                    col=1,
+                )
+
+    boundaries = chunk_boundaries or list(range(0, num_steps + 1, action_horizon))
+    for boundary in boundaries:
+        if 0 <= boundary <= num_steps:
+            fig.add_vline(
+                x=boundary, line_width=1, line_dash="dash", line_color="gray", opacity=0.5
+            )
+
+    fig.update_layout(
+        height=250 * action_dim,
+        title="Action Comparison: Replay vs Saved (Interactive)",
+        showlegend=True,
+        clickmode="event+select",
+    )
+    fig.update_xaxes(title_text="Timestep", row=action_dim, col=1)
+    div_id = "action_comparison_plot"
+    plot_html = pio.to_html(
+        fig,
+        include_plotlyjs="cdn",
+        full_html=False,
+        div_id=div_id,
+    )
+    highlight_script = f"""
+<script>
+  (function() {{
+    const plot = document.getElementById("{div_id}");
+    if (!plot) return;
+    const resetButton = document.getElementById("reset-highlight");
+    function applyHighlightByName(traceName) {{
+      const n = plot.data.length;
+      const widths = [];
+      const opacities = [];
+      for (let i = 0; i < n; i++) {{
+        const isSelected = (plot.data[i].name === traceName);
+        widths.push(isSelected ? 3 : 1);
+        opacities.push(isSelected ? 1.0 : 0.2);
+      }}
+      Plotly.restyle(plot, {{"line.width": widths, "opacity": opacities}});
+    }}
+    function clearHighlight() {{
+      const n = plot.data.length;
+      const widths = Array(n).fill(1);
+      const opacities = Array(n).fill(1.0);
+      Plotly.restyle(plot, {{"line.width": widths, "opacity": opacities}});
+    }}
+    plot.on('plotly_click', function(evt) {{
+      if (!evt || !evt.points || !evt.points.length) return;
+      const traceName = evt.points[0].data && evt.points[0].data.name;
+      if (!traceName) return;
+      applyHighlightByName(traceName);
+    }});
+    plot.on('plotly_doubleclick', function() {{
+      clearHighlight();
+    }});
+    document.addEventListener('keydown', function(evt) {{
+      if (evt.key === 'Escape') {{
+        clearHighlight();
+      }}
+    }});
+    if (resetButton) {{
+      resetButton.addEventListener('click', function() {{
+        clearHighlight();
+      }});
+    }}
+  }})();
+</script>
+"""
+    html = "<!doctype html><html><head><meta charset='utf-8'></head><body>"
+    html += (
+        "<div style='margin:8px 0;'>"
+        "<button id='reset-highlight' type='button'>Reset highlight</button>"
+        "</div>"
+    )
+    html += plot_html + highlight_script + "</body></html>"
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+
 def replay_episode(
     config: ReplayConfig,
     policy: Optional[_websocket_client_policy.WebsocketClientPolicy],
     console: Console,
-) -> Tuple[bool, np.ndarray, np.ndarray]:
+) -> Tuple[bool, np.ndarray, np.ndarray, List[dict], List[dict], List[int]]:
     """Replay a single episode from debug data.
 
     Args:
@@ -365,10 +686,14 @@ def replay_episode(
         - success: True if episode was successful, False otherwise
         - replay_actions: Actions used during replay, shape (num_steps, action_dim)
         - saved_actions: Original saved actions, shape (num_steps, action_dim)
+        - gt_horse_tails: Ground-truth discarded action tails
+        - pred_horse_tails: Predicted discarded action tails
+        - chunk_boundaries: Step indices where a new action chunk began
     """
     # Load metadata and chunks
     metadata = load_metadata(config.debug_data_dir)
     chunks = load_debug_chunks(config.debug_data_dir)
+    timestamps_by_step = load_timestamps(config.debug_data_dir)
 
     console.print(f"[bold blue]Loaded {len(chunks)} debug chunks[/bold blue]")
     console.print(f"  Task Suite: {metadata['task_suite_name']}")
@@ -377,6 +702,8 @@ def replay_episode(
     console.print(
         f"  Mode: {'Using saved actions' if config.use_saved_actions else 'Re-inferring from policy'}"
     )
+    if not config.use_saved_actions:
+        console.print(f"  Infer Type: {'RTC' if config.use_rtc else 'SYNC'}")
     console.print()
 
     # Setup environment
@@ -423,16 +750,25 @@ def replay_episode(
         )
         all_saved_actions.append(saved_chunk_actions)
 
+    # Precompute chunk boundaries based on timestamps.
+    chunk_boundaries: List[int] = []
+    if timestamps_by_step:
+        sorted_steps = sorted(timestamps_by_step.keys())
+        prev_chunk_idx, prev_action_idx = timestamps_by_step[sorted_steps[0]]
+        chunk_boundaries.append(sorted_steps[0])
+        for step_idx in range(1, len(sorted_steps)):
+            step = sorted_steps[step_idx]
+            chunk_idx, action_idx = timestamps_by_step[step]
+            if chunk_idx != prev_chunk_idx:
+                chunk_boundaries.append(step)
+            prev_chunk_idx, prev_action_idx = chunk_idx, action_idx
+
     # Replay loop
     frames: List[np.ndarray] = []
     replay_actions_list: List[np.ndarray] = []  # Track actions used during replay
     saved_actions_list: List[np.ndarray] = []  # Track corresponding saved actions
-    chunk_idx = 0
-    action_idx = 0
-    current_actions = None
-    current_saved_actions = None  # Saved actions for current chunk
     step = 0
-    chunk_debug_report_path: pathlib.Path | None = None
+    chunk_debug_report_path: Optional[pathlib.Path] = None
     if config.return_debug_data:
         if config.debug_report_path is None:
             chunk_debug_report_path = (
@@ -452,6 +788,18 @@ def replay_episode(
         task_progress = progress.add_task("[cyan]Replaying episode...", total=None)
         ran_out_of_chunks = False
         last_action = None
+        inferred_actions_by_chunk: Dict[int, np.ndarray] = {}
+        # SYNC-mode iterator state (unused when using timestamps mapping).
+        chunk_idx = 0
+        action_idx = 0
+        current_actions = None
+        current_saved_actions = None  # Saved actions for current chunk
+        use_timestamp_map = bool(timestamps_by_step) and not config.use_rtc
+
+        def _null_action_from_chunk(chunk_actions: np.ndarray) -> np.ndarray:
+            null_action = np.asarray(chunk_actions[-1]).copy()
+            null_action[:-1] = 0.0
+            return null_action
 
         while not env.is_episode_complete() and step < config.max_steps:
             # Get observation for frame capture
@@ -459,211 +807,139 @@ def replay_episode(
             frames.append(obs["observation/image"])
 
             # Determine which action to use
-            if ran_out_of_chunks:
-                # Keep using last action after running out of chunks
-                action = last_action
-            elif current_actions is None or action_idx >= len(current_actions):
-                if chunk_idx >= len(chunks):
-                    # Ran out of chunks
+            if config.use_rtc or use_timestamp_map:
+                # RTC and replan-sync execution use per-step (chunk_idx, action_idx) mapping recorded during rollout.
+                if step not in timestamps_by_step:
                     if not ran_out_of_chunks:
                         console.print(
-                            "[yellow]Warning: Ran out of debug chunks, using last action[/yellow]"
+                            "[yellow]Warning: No timestamp entry for this step; using last action[/yellow]"
                         )
                         ran_out_of_chunks = True
-                    if last_action is not None:
-                        action = last_action
-                    else:
-                        console.print("[red]No actions available, stopping[/red]")
-                        break
+                    action = last_action
+                    saved_action = None
                 else:
-                    # Load next chunk
-                    chunk_data = unflatten_debug_data(chunks[chunk_idx])
+                    chunk_idx, action_idx = timestamps_by_step[step]
 
-                    # Always get saved actions for comparison
-                    current_saved_actions = all_saved_actions[chunk_idx]
-                    saved_output_actions = None
-                    if config.return_debug_data:
-                        try:
-                            saved_output_actions = get_saved_output_actions_from_debug(
-                                chunk_data
-                            )
-                        except Exception:
-                            saved_output_actions = None
+                    # Get saved actions for comparison (if available)
+                    saved_action = None
+                    if 0 <= chunk_idx < len(all_saved_actions) and action_idx >= 0:
+                        saved_action = all_saved_actions[chunk_idx][action_idx]
 
+                    # Lazily infer actions for the referenced chunk index (or use saved actions).
                     if config.use_saved_actions:
-                        # Use saved output_actions directly (extract only action_dim dimensions)
-                        current_actions = current_saved_actions.copy()
+                        if not (0 <= chunk_idx < len(all_saved_actions)):
+                            action = last_action
+                        else:
+                            chunk_actions = np.asarray(all_saved_actions[chunk_idx])
+                            if action_idx < 0 or action_idx >= len(chunk_actions):
+                                # Mirror broker null-action semantics
+                                action = _null_action_from_chunk(chunk_actions)
+                            else:
+                                action = chunk_actions[action_idx]
                     else:
-                        # Re-infer from policy with saved noise
                         if policy is None:
                             raise ValueError(
                                 "Policy is required when not using saved actions"
                             )
-                        noise = get_noise_from_debug(chunk_data)
-
-                        # Create observation from debug data
-                        debug_obs = create_observation_from_debug(
-                            chunk_data, task_description, step
-                        )
-
-                        # Call policy with the saved noise
-                        response = policy.infer(
-                            debug_obs,
-                            noise=noise,
-                            return_debug_data=config.return_debug_data,
-                        )
-                        # Policy response already has correct action_dim from post-processing
-                        current_actions = response["actions"]
-
-                        # If requested, compare Triton/JAX debug payloads at the chunk boundary.
-                        if (
-                            config.return_debug_data
-                            and chunk_debug_report_path is not None
-                        ):
-                            triton_debug = (
-                                response.get("debug_data", {})
-                                if isinstance(response, dict)
-                                else {}
-                            )
-                            triton_output_actions = triton_debug.get(
-                                "output_actions", None
-                            )
-                            triton_final_actions = triton_debug.get(
-                                "final_actions", None
-                            )
-                            triton_noise = triton_debug.get("noise", None)
-                            triton_obs_after = triton_debug.get(
-                                "obs_after_preprocess", None
-                            )
-
-                            record = {
-                                "chunk_idx": int(chunk_idx),
-                                "step": int(step),
-                                "has_saved_output_actions": saved_output_actions
-                                is not None,
-                                "has_triton_output_actions": triton_output_actions
-                                is not None,
-                                "has_triton_final_actions": triton_final_actions
-                                is not None,
-                                "has_triton_noise": triton_noise is not None,
-                                "has_triton_obs_after_preprocess": triton_obs_after
-                                is not None,
-                            }
-
-                            # Confirm the server actually used the same noise.
-                            if noise is not None and triton_noise is not None:
-                                record["noise_diff"] = _compute_array_diff(
-                                    np.asarray(noise), np.asarray(triton_noise)
-                                )
+                        if chunk_idx not in inferred_actions_by_chunk:
+                            if not (0 <= chunk_idx < len(chunks)):
+                                inferred_actions_by_chunk[chunk_idx] = np.asarray([])
                             else:
-                                record["noise_diff"] = None
-
-                            if (
-                                saved_output_actions is not None
-                                and triton_output_actions is not None
-                            ):
-                                record["output_actions_diff"] = _compute_array_diff(
-                                    saved_output_actions,
-                                    np.asarray(triton_output_actions),
+                                chunk_data = unflatten_debug_data(chunks[chunk_idx])
+                                noise = get_noise_from_debug(chunk_data)
+                                # Use the exact observation saved at inference time.
+                                debug_obs = create_observation_from_debug(
+                                    chunk_data, task_description, step_override=None
                                 )
-                            else:
-                                record["output_actions_diff"] = None
-
-                            # Compare preprocessing (saved vs Triton), to localize divergence.
-                            saved_state_after = _safe_get(
-                                chunk_data, ["obs_after_preprocess", "state"]
-                            )
-                            triton_state_after = None
-                            if isinstance(triton_obs_after, dict):
-                                triton_state_after = triton_obs_after.get("state", None)
-                            if (
-                                saved_state_after is not None
-                                and triton_state_after is not None
-                            ):
-                                record["obs_after_preprocess_state_diff"] = (
-                                    _compute_array_diff(
-                                        np.asarray(saved_state_after),
-                                        np.asarray(triton_state_after),
+                                if config.use_rtc:
+                                    prev_action, s_param, d_param = get_rtc_params_from_debug(
+                                        chunk_data
                                     )
-                                )
-                            else:
-                                record["obs_after_preprocess_state_diff"] = None
-
-                            # Images are large; we still compute exact diff stats but do not store arrays.
-                            saved_base_after = _safe_get(
-                                chunk_data,
-                                ["obs_after_preprocess", "images", "base_0_rgb"],
-                            )
-                            saved_left_after = _safe_get(
-                                chunk_data,
-                                ["obs_after_preprocess", "images", "left_wrist_0_rgb"],
-                            )
-                            triton_imgs_after = None
-                            if isinstance(triton_obs_after, dict):
-                                triton_imgs_after = triton_obs_after.get("images", None)
-                            if isinstance(triton_imgs_after, dict):
-                                triton_base_after = triton_imgs_after.get(
-                                    "base_0_rgb", None
-                                )
-                                triton_left_after = triton_imgs_after.get(
-                                    "left_wrist_0_rgb", None
-                                )
-                            else:
-                                triton_base_after = None
-                                triton_left_after = None
-
-                            record["obs_after_preprocess_base_rgb_diff"] = (
-                                _compute_array_diff(
-                                    np.asarray(saved_base_after),
-                                    np.asarray(triton_base_after),
-                                )
-                                if saved_base_after is not None
-                                and triton_base_after is not None
-                                else None
-                            )
-                            record["obs_after_preprocess_left_wrist_rgb_diff"] = (
-                                _compute_array_diff(
-                                    np.asarray(saved_left_after),
-                                    np.asarray(triton_left_after),
-                                )
-                                if saved_left_after is not None
-                                and triton_left_after is not None
-                                else None
-                            )
-
-                            # Compare post-processed actions too.
-                            if triton_final_actions is not None:
-                                record["final_actions_diff"] = _compute_array_diff(
-                                    current_saved_actions,
-                                    np.asarray(triton_final_actions),
-                                )
-                            else:
-                                record["final_actions_diff"] = _compute_array_diff(
-                                    current_saved_actions, np.asarray(current_actions)
+                                    response = policy.infer(
+                                        debug_obs,
+                                        use_rtc=True,
+                                        prev_action=prev_action,
+                                        s_param=s_param,
+                                        d_param=d_param,
+                                        noise=noise,
+                                        return_debug_data=config.return_debug_data,
+                                    )
+                                else:
+                                    response = policy.infer(
+                                        debug_obs,
+                                        noise=noise,
+                                        return_debug_data=config.return_debug_data,
+                                    )
+                                inferred_actions_by_chunk[chunk_idx] = np.asarray(
+                                    response["actions"]
                                 )
 
-                            _append_jsonl(chunk_debug_report_path, record)
-
-                    chunk_idx += 1
-                    action_idx = 0
+                        chunk_actions = inferred_actions_by_chunk[chunk_idx]
+                        if chunk_actions.size == 0:
+                            action = last_action
+                        elif action_idx < 0 or action_idx >= len(chunk_actions):
+                            action = _null_action_from_chunk(chunk_actions)
+                        else:
+                            action = chunk_actions[action_idx]
 
                     progress.update(
                         task_progress,
-                        description=f"[cyan]Step {step}, Chunk {chunk_idx}/{len(chunks)}",
+                        description=f"[cyan]Step {step}, Chunk {chunk_idx + 1}/{len(chunks)}",
                     )
-
-                    # Get action from the new chunk
-                    action = current_actions[action_idx]
-                    saved_action = current_saved_actions[action_idx]
-                    action_idx += 1
             else:
-                # Get next action from current chunk
-                action = current_actions[action_idx]
-                saved_action = current_saved_actions[action_idx]
-                action_idx += 1
+                # SYNC path: consume chunks sequentially.
+                if ran_out_of_chunks:
+                    action = last_action
+                    saved_action = None
+                elif current_actions is None or action_idx >= len(current_actions):
+                    if chunk_idx >= len(chunks):
+                        if not ran_out_of_chunks:
+                            console.print(
+                                "[yellow]Warning: Ran out of debug chunks, using last action[/yellow]"
+                            )
+                            ran_out_of_chunks = True
+                        action = last_action
+                        saved_action = None
+                    else:
+                        chunk_data = unflatten_debug_data(chunks[chunk_idx])
+                        current_saved_actions = all_saved_actions[chunk_idx]
+
+                        if config.use_saved_actions:
+                            current_actions = current_saved_actions.copy()
+                        else:
+                            if policy is None:
+                                raise ValueError(
+                                    "Policy is required when not using saved actions"
+                                )
+                            noise = get_noise_from_debug(chunk_data)
+                            debug_obs = create_observation_from_debug(
+                                chunk_data, task_description, step_override=step
+                            )
+                            response = policy.infer(
+                                debug_obs,
+                                noise=noise,
+                                return_debug_data=config.return_debug_data,
+                            )
+                            current_actions = response["actions"]
+
+                        chunk_idx += 1
+                        action_idx = 0
+
+                        progress.update(
+                            task_progress,
+                            description=f"[cyan]Step {step}, Chunk {chunk_idx}/{len(chunks)}",
+                        )
+
+                        action = current_actions[action_idx]
+                        saved_action = current_saved_actions[action_idx]
+                        action_idx += 1
+                else:
+                    action = current_actions[action_idx]
+                    saved_action = current_saved_actions[action_idx]  # type: ignore[index]
+                    action_idx += 1
 
             # Track actions for comparison (only when we have valid saved actions)
-            if not ran_out_of_chunks:
+            if not ran_out_of_chunks and saved_action is not None:
                 replay_actions_list.append(
                     action.copy() if hasattr(action, "copy") else np.array(action)
                 )
@@ -710,7 +986,45 @@ def replay_episode(
     )
     saved_actions = np.array(saved_actions_list) if saved_actions_list else np.array([])
 
-    return success, replay_actions, saved_actions
+    # Build horse tail lists after replay (predictions are only available after inference).
+    gt_horse_tails: List[dict] = []
+    pred_horse_tails: List[dict] = []
+    if timestamps_by_step:
+        sorted_steps = sorted(timestamps_by_step.keys())
+        prev_chunk_idx, prev_action_idx = timestamps_by_step[sorted_steps[0]]
+        for step_idx in range(1, len(sorted_steps)):
+            step = sorted_steps[step_idx]
+            chunk_idx, action_idx = timestamps_by_step[step]
+            if chunk_idx != prev_chunk_idx and prev_action_idx >= 0:
+                start_idx = prev_action_idx + 1
+                if config.plot_gt_horse_tails and 0 <= prev_chunk_idx < len(all_saved_actions):
+                    prev_actions = all_saved_actions[prev_chunk_idx]
+                    if start_idx < len(prev_actions):
+                        gt_horse_tails.append(
+                            {
+                                "start_step": step,
+                                "actions": np.asarray(prev_actions[start_idx:]),
+                            }
+                        )
+                if config.plot_pred_horse_tails and prev_chunk_idx in inferred_actions_by_chunk:
+                    pred_actions = inferred_actions_by_chunk[prev_chunk_idx]
+                    if pred_actions.size > 0 and start_idx < len(pred_actions):
+                        pred_horse_tails.append(
+                            {
+                                "start_step": step,
+                                "actions": np.asarray(pred_actions[start_idx:]),
+                            }
+                        )
+            prev_chunk_idx, prev_action_idx = chunk_idx, action_idx
+
+    return (
+        success,
+        replay_actions,
+        saved_actions,
+        gt_horse_tails,
+        pred_horse_tails,
+        chunk_boundaries,
+    )
 
 
 def main():
@@ -727,6 +1041,11 @@ def main():
         "--use_saved_actions",
         action="store_true",
         help="Use saved output_actions directly instead of re-inferring from policy",
+    )
+    parser.add_argument(
+        "--use_rtc",
+        action="store_true",
+        help="If set, use RTC inference mode when re-inferring from policy (requires saved rtc params in debug data).",
     )
     parser.add_argument(
         "--host",
@@ -769,6 +1088,27 @@ def main():
         default=None,
         help="Where to write the per-chunk debug comparison report (jsonl). Default: <debug_data_dir>/triton_debug_compare.jsonl",
     )
+    parser.add_argument(
+        "--plot_gt_horse_tails",
+        action="store_true",
+        help="Plot ground-truth discarded action tails from debug data.",
+    )
+    parser.add_argument(
+        "--plot_pred_horse_tails",
+        action="store_true",
+        help="Plot predicted discarded action tails from replay inference.",
+    )
+    parser.add_argument(
+        "--output_html",
+        type=str,
+        default=None,
+        help="Path for interactive HTML plot (default: <debug_data_dir>/action_comparison.html).",
+    )
+    parser.add_argument(
+        "--no_html",
+        action="store_true",
+        help="Skip generating the interactive HTML plot.",
+    )
 
     args = parser.parse_args()
 
@@ -782,8 +1122,13 @@ def main():
         max_steps=args.max_steps,
         output_video=args.output_video,
         use_saved_actions=args.use_saved_actions,
+        use_rtc=args.use_rtc,
         return_debug_data=args.return_debug_data,
         debug_report_path=args.debug_report_path,
+        plot_gt_horse_tails=args.plot_gt_horse_tails,
+        plot_pred_horse_tails=args.plot_pred_horse_tails,
+        output_html=args.output_html,
+        no_html=args.no_html,
     )
 
     console.print(
@@ -799,6 +1144,11 @@ def main():
 
     policy = None
     if not config.use_saved_actions:
+        if config.use_rtc and not config.return_debug_data:
+            console.print(
+                "[yellow]Note: --use_rtc relies on rtc params saved inside debug_data; "
+                "make sure the episode was generated with --save_debug_data.[/yellow]"
+            )
         # Connect to policy server
         console.print(
             f"[bold]Connecting to policy server at {config.host}:{config.port}...[/bold]"
@@ -815,7 +1165,14 @@ def main():
 
     # Run replay
     try:
-        success, replay_actions, saved_actions = replay_episode(config, policy, console)
+        (
+            success,
+            replay_actions,
+            saved_actions,
+            gt_horse_tails,
+            pred_horse_tails,
+            chunk_boundaries,
+        ) = replay_episode(config, policy, console)
 
         # Generate action comparison plot
         if len(replay_actions) > 0 and len(saved_actions) > 0:
@@ -828,7 +1185,31 @@ def main():
                 saved_actions,
                 plot_path,
                 action_horizon=config.action_horizon,
+                gt_horse_tails=gt_horse_tails,
+                pred_horse_tails=pred_horse_tails,
+                chunk_boundaries=chunk_boundaries,
             )
+            if not config.no_html:
+                html_path = (
+                    pathlib.Path(config.output_html)
+                    if config.output_html
+                    else config.debug_data_dir / "action_comparison.html"
+                )
+                try:
+                    plot_action_comparison_html(
+                        replay_actions,
+                        saved_actions,
+                        html_path,
+                        action_horizon=config.action_horizon,
+                        gt_horse_tails=gt_horse_tails,
+                        pred_horse_tails=pred_horse_tails,
+                        chunk_boundaries=chunk_boundaries,
+                    )
+                    console.print(
+                        f"[bold]Generated interactive HTML: {html_path}[/bold]"
+                    )
+                except RuntimeError as exc:
+                    console.print(f"[yellow]Skipping HTML plot: {exc}[/yellow]")
 
             # Print summary statistics
             differences = np.abs(replay_actions - saved_actions)
@@ -841,14 +1222,6 @@ def main():
             console.print(f"  Total timesteps compared: {len(replay_actions)}")
             console.print(f"  Max absolute difference: {max_diff:.10f}")
             console.print(f"  Mean absolute difference: {mean_diff:.10f}")
-            if is_deterministic:
-                console.print(
-                    "[bold green]  Verdict: DETERMINISTIC (max diff < 1e-5)[/bold green]"
-                )
-            else:
-                console.print(
-                    "[bold red]  Verdict: NON-DETERMINISTIC (max diff >= 1e-5)[/bold red]"
-                )
 
         console.print()
         console.print(

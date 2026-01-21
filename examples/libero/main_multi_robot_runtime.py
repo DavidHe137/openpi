@@ -15,6 +15,7 @@ from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import (
     ActionChunkBrokerType,
     SyncBrokerConfig,
+    ReplanSyncBrokerConfig,
     RTCBrokerConfig,
 )
 import tyro
@@ -47,10 +48,12 @@ class Job:
 class ActionChunkBrokerArgs:
     """Arguments for action chunk broker configuration."""
 
-    broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
+    broker_type: ActionChunkBrokerType = ActionChunkBrokerType.REPLAN_SYNC
     # RTC-specific params
     s_min: int = 5
     d_init: int = 4
+    # ReplanSync-specific params
+    replan_after: int = 10
 
 
 @dataclass
@@ -62,7 +65,7 @@ class Args:
     port: int = 8080
     resize_size: int = 224
     action_horizon: int = (
-        50  # Action horizon for ActionChunkBroker (matches Libero model config)
+        10  # Action horizon for ActionChunkBroker (matches Libero model config)
     )
     action_chunk_broker: ActionChunkBrokerArgs = field(
         default_factory=ActionChunkBrokerArgs
@@ -76,7 +79,7 @@ class Args:
     #################################################################################################################
     task_suite_name: str = "libero_10"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
-    num_trials_per_robot: int = 10  # Number of rollouts per robot per task
+    num_trials_per_robot: int = 2  # Number of rollouts per robot per task
     max_steps: int = 300  # Maximum number of control steps per episode
 
     #################################################################################################################
@@ -96,7 +99,9 @@ class Args:
     debug: bool = False  # Run in single process with immediate progress output
     save_debug_data: bool = False  # Save debug data (obs before/after preprocess, noise, output) to npy files
 
-    def create_broker_config(self, policy) -> Union[SyncBrokerConfig, RTCBrokerConfig]:
+    def create_broker_config(
+        self, policy
+    ) -> Union[SyncBrokerConfig, ReplanSyncBrokerConfig, RTCBrokerConfig]:
         """Helper to create the appropriate broker config from args."""
         if self.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC:
             return RTCBrokerConfig(
@@ -104,6 +109,13 @@ class Args:
                 action_horizon=self.action_horizon,
                 s_min=self.action_chunk_broker.s_min,
                 d_init=self.action_chunk_broker.d_init,
+                return_debug_data=self.save_debug_data,
+            )
+        elif self.action_chunk_broker.broker_type == ActionChunkBrokerType.REPLAN_SYNC:
+            return ReplanSyncBrokerConfig(
+                policy=policy,
+                action_horizon=self.action_horizon,
+                replan_after=self.action_chunk_broker.replan_after,
                 return_debug_data=self.save_debug_data,
             )
         else:  # SYNC
@@ -128,7 +140,7 @@ def delay_start(
 ):
     """Return the period (in seconds) that a robot waits between requests."""
     period = 0.0
-    if action_chunk_broker_config.broker_type == ActionChunkBrokerType.SYNC:
+    if action_chunk_broker_config.broker_type in [ActionChunkBrokerType.SYNC, ActionChunkBrokerType.REPLAN_SYNC]:
         period = action_horizon / control_hz
     elif action_chunk_broker_config.broker_type == ActionChunkBrokerType.RTC:
         period = action_chunk_broker_config.s_min / control_hz
@@ -281,8 +293,8 @@ def create_jobs(args: Args) -> List[Job]:
     jobs: List[Job] = []
     for task_id in range(num_tasks_in_suite):
         task = task_suite.get_task(task_id)
-        if task_id != 8:
-            continue
+        # if task_id != 8:
+        #     continue
         all_initial_states = task_suite.get_task_init_states(task_id)
 
         if len(all_initial_states) < args.num_trials_per_robot:

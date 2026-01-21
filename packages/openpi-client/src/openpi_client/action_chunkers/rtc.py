@@ -23,6 +23,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker, _base_policy.BasePolicy):
         self,
         policy: _websocket_client_policy.WebsocketClientPolicy,
         action_horizon: int,
+        return_debug_data: bool = False,
         s_min: int = 5,
         d_init: int = 3,
         delay_buffer_size: int = 10,
@@ -30,6 +31,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker, _base_policy.BasePolicy):
     ):
         self._policy = policy
         self._action_horizon = action_horizon
+        self._return_debug_data = return_debug_data
         self._obs: Dict = {}
         self._cur_step: int = -1
 
@@ -56,9 +58,28 @@ class InferenceTimeRTCBroker(ActionChunkBroker, _base_policy.BasePolicy):
     ) -> ActionChunk:
         request_timestamp = time.time()
         response = self._policy.infer(
-            obs, use_rtc=True, s_param=steps_since_last_inference, d_param=estimated_delay, prev_action=prev_action
+            obs,
+            use_rtc=True,
+            s_param=steps_since_last_inference,
+            d_param=estimated_delay,
+            prev_action=prev_action,
+            return_debug_data=self._return_debug_data,
         )
         actions = response["actions"]
+        debug_data = response.get("debug_data", {})
+        if debug_data is None:
+            debug_data = {}
+        if not isinstance(debug_data, dict):
+            debug_data = {"_server_debug_data": debug_data}
+
+        # When debug data saving is enabled, persist RTC params needed for deterministic replay.
+        # This is consumed by `examples/libero/replay_debug_data.py --use_rtc`.
+        if self._return_debug_data:
+            debug_data["rtc"] = {
+                "prev_action": np.asarray(prev_action),
+                "s_param": int(steps_since_last_inference),
+                "d_param": int(estimated_delay),
+            }
         response_timestamp = time.time()
 
         return ActionChunk(
@@ -66,6 +87,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker, _base_policy.BasePolicy):
             request_timestamp=request_timestamp,
             response_timestamp=response_timestamp,
             start_step=infer_step,
+            debug_data=debug_data,
         )
 
     def _convert_latency_to_delay(self, latency: float) -> int:
@@ -108,7 +130,9 @@ class InferenceTimeRTCBroker(ActionChunkBroker, _base_policy.BasePolicy):
             if len(self._action_chunks) == 0:
                 assert self._cur_step == 0, "First inference should be for step 0"
                 # TODO: don't hardcode the action dimension
-                action_chunk = self._infer(obs, self._cur_step, 0, 0, np.zeros((10, 7)))
+                action_chunk = self._infer(
+                    obs, self._cur_step, 0, 0, np.zeros((self._action_horizon, 7))
+                )
                 self._action_chunks.append(action_chunk)
 
             if self._action_index >= self._s_min:

@@ -334,6 +334,44 @@ class Policy(BasePolicy):
 
         observation = self.create_batch_obs([req.observation for req in requests])
 
+        per_request_noise = [getattr(req, "noise", None) for req in requests]
+        if noise is None and any(n is not None for n in per_request_noise):
+            # Standardize to per-request arrays of shape (action_horizon, action_dim)
+            base_shape = None
+            for n in per_request_noise:
+                if n is None:
+                    continue
+                arr = np.asarray(n)
+                # Allow an extra leading batch dim of 1 (common in saved debug payloads).
+                if arr.ndim == 3 and arr.shape[0] == 1:
+                    arr = arr[0]
+                if arr.ndim != 2:
+                    raise ValueError(
+                        f"Expected per-request noise with shape (action_horizon, action_dim) "
+                        f"(or (1, action_horizon, action_dim)), but got shape {arr.shape}"
+                    )
+                base_shape = arr.shape
+                break
+
+            if base_shape is None:
+                # All noise entries were None; leave `noise` unset.
+                noise = None
+            else:
+                batched_noise = []
+                for n in per_request_noise:
+                    if n is None:
+                        batched_noise.append(np.random.randn(*base_shape).astype(np.float32))
+                        continue
+                    arr = np.asarray(n)
+                    if arr.ndim == 3 and arr.shape[0] == 1:
+                        arr = arr[0]
+                    if arr.shape != base_shape:
+                        raise ValueError(
+                            f"Inconsistent per-request noise shapes in batch: expected {base_shape}, got {arr.shape}"
+                        )
+                    batched_noise.append(arr)
+                noise = np.stack(batched_noise, axis=0)
+
         if self._is_triton_optimized:
             # Batched Triton inference path - TODO Rohan: can be squashed into Jax batch path once below TODO is resolved
 

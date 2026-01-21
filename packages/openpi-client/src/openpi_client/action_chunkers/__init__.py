@@ -4,7 +4,7 @@ from typing import Type
 
 from openpi_client import base_policy as _base_policy
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
-from openpi_client.action_chunkers.sync import SyncBroker
+from openpi_client.action_chunkers.sync import SyncBroker, ReplanSyncBroker
 from openpi_client.action_chunkers.rtc import InferenceTimeRTCBroker
 
 
@@ -18,6 +18,13 @@ class SyncBrokerConfig:
 
 
 @dataclass
+class ReplanSyncBrokerConfig(SyncBrokerConfig):
+    """Configuration for ReplanSyncBroker."""
+
+    replan_after: int = 10
+
+
+@dataclass
 class RTCBrokerConfig(SyncBrokerConfig):
     """Configuration for InferenceTimeRTCBroker."""
 
@@ -28,6 +35,7 @@ class RTCBrokerConfig(SyncBrokerConfig):
 # Mappings outside the enum to avoid conflicts
 _CLASS_MAPPING = {
     "sync": SyncBroker,
+    "replan_sync": ReplanSyncBroker,
     "rtc": InferenceTimeRTCBroker,
     # TODO:
     # "naive_async": NaiveAsyncBroker,
@@ -37,6 +45,7 @@ _CLASS_MAPPING = {
 
 _CONFIG_MAPPING = {
     "sync": SyncBrokerConfig,
+    "replan_sync": ReplanSyncBrokerConfig,
     "rtc": RTCBrokerConfig,
     # TODO:
     # "naive_async": NaiveAsyncBrokerConfig,
@@ -47,6 +56,7 @@ _CONFIG_MAPPING = {
 
 class ActionChunkBrokerType(Enum):
     SYNC = "sync"
+    REPLAN_SYNC = "replan_sync"
     RTC = "rtc"
     # TODO: naive_async, temporal_ensembling, vlash
 
