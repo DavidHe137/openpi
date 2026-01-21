@@ -22,7 +22,7 @@ def main(args):
 
     # Run inference on a dummy example.
     example = libero_policy.make_libero_example()
-    request = InferRequest(observation=example, infer_type=InferType.SYNC, params=None)
+    request = InferRequest(robot_id="test_robot", observation=example, infer_type=InferType.SYNC, params=None)
     requests = [request] * args.batch_size
 
     print("Warming up...")

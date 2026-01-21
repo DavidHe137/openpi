@@ -130,8 +130,9 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     _progress_queue = progress_queue
 
     ws_client = _websocket_client_policy.WebsocketClientPolicy(
-        args.host,
-        args.port,
+        robot_id=f"robot_{robot_idx}",
+        host=args.host,
+        port=args.port,
     )
 
     # Create broker config and instantiate
@@ -345,8 +346,9 @@ def main(args: Args) -> None:
 
     jobs = create_jobs(args)
     _ = _websocket_client_policy.WebsocketClientPolicy(
-        args.host,
-        args.port,
+        robot_id=f"robot_{robot_idx}",
+        host=args.host,
+        port=args.port,
     )  # to wait for the server to be ready
     run_robots(args, jobs)
     aggregate_results(pathlib.Path(args.output_dir))

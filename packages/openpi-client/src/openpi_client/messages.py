@@ -33,6 +33,7 @@ class TrainTimeRTCParams:
 
 @dataclass
 class InferRequest:
+    robot_id: str
     observation: dict
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None

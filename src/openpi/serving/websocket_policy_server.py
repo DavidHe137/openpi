@@ -256,9 +256,12 @@ class WebsocketPolicyServer:
 
         requests = []
 
-        requests.append(InferRequest(observation=observation, infer_type=InferType.SYNC, params=None))
+        requests.append(
+            InferRequest(robot_id="test_robot", observation=observation, infer_type=InferType.SYNC, params=None)
+        )
         requests.append(
             InferRequest(
+                robot_id="test_robot",
                 observation=observation,
                 infer_type=InferType.INFERENCE_TIME_RTC,
                 params=RTCParams(

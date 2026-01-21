@@ -23,6 +23,7 @@ class Args:
 
 def main(args: Args) -> None:
     ws_client_policy = _websocket_client_policy.WebsocketClientPolicy(
+        robot_id="aloha_real",
         host=args.host,
         port=args.port,
     )

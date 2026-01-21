@@ -21,7 +21,10 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     See WebsocketPolicyServer for a corresponding server implementation.
     """
 
-    def __init__(self, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None) -> None:
+    def __init__(
+        self, robot_id: str, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None
+    ) -> None:
+        self._robot_id = robot_id
         self._uri = f"ws://{host}"
         if port is not None:
             self._uri += f":{port}"
@@ -65,7 +68,12 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             infer_type = messages.InferType.INFERENCE_TIME_RTC
             params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)  # type: ignore
         request = messages.InferRequest(
-            observation=obs, infer_type=infer_type, params=params, return_debug_data=return_debug_data, noise=noise
+            robot_id=self._robot_id,
+            observation=obs,
+            infer_type=infer_type,
+            params=params,
+            return_debug_data=return_debug_data,
+            noise=noise,
         )
         data = msgpack_numpy.packb(asdict(request))
 
@@ -166,7 +174,7 @@ class AsyncWebsocketClientPolicy:
         if use_rtc:
             infer_type = messages.InferType.INFERENCE_TIME_RTC
             params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)  # type: ignore
-        request = messages.InferRequest(observation=obs, infer_type=infer_type, params=params)
+        request = messages.InferRequest(robot_id=self._robot_id, observation=obs, infer_type=infer_type, params=params)
         data = msgpack_numpy.packb(asdict(request))
 
         conn = await self._get_connection()

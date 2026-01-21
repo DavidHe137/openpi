@@ -73,7 +73,11 @@ def eval_libero(args: Args) -> None:
     if max_steps is None:
         raise ValueError(f"Unknown task suite: {args.task_suite_name}")
 
-    client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
+    client = _websocket_client_policy.WebsocketClientPolicy(
+        robot_id="robot_0",
+        host=args.host,
+        port=args.port,
+    )
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
