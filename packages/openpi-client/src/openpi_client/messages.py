@@ -39,10 +39,12 @@ class InferRequest:
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     return_debug_data: bool = False
     noise: Optional[np.ndarray] = None  # optional, noise for deterministic replay
+    deadline: Optional[float] = None
 
 
 @dataclass
 class InferResponse:
     actions: np.ndarray
+    execution_horizon: int
     times: dict
     debug_data: Optional[dict] = field(default=None)

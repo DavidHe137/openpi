@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+import heapq
 import http
 import logging
 import multiprocessing as mp
@@ -16,7 +17,38 @@ import websockets.frames
 import zmq
 import zmq.asyncio
 
+from openpi.serving.schemas import InferRequestForServer
+from openpi.serving.schemas import InferResponseForServer
+
 logger = logging.getLogger(__name__)
+
+
+class RequestQueue:
+    def __init__(self):
+        self._last_processed_timestamp: dict[str, float] = {}
+        self._queue = []
+
+    def add(self, request: InferRequestForServer) -> None:
+        deadline = request.deadline
+        heapq.heappush(self._queue, (deadline, request))
+
+    def clear_front(self) -> None:
+        while self._queue:
+            request = self._queue[0][1]
+            if self._last_processed_timestamp.get(request.robot_id, 0) > request.request_timestamp:
+                self._queue.pop(0)
+            else:
+                break
+
+    def pop(self) -> InferRequest:
+        # call clear_front and check empty before popping
+        request = heapq.heappop(self._queue)[1]
+        self._last_processed_timestamp[request.robot_id] = request.request_timestamp
+        return request
+
+    @property
+    def empty(self) -> bool:
+        return not self._queue
 
 
 class WebsocketPolicyServer:
@@ -49,7 +81,6 @@ class WebsocketPolicyServer:
         )
         self.responses = dict[int, asyncio.futures.Future]()
         self._worker_identity: bytes | None = None  # Worker identity (learned from first message)
-        self.last_request_id = 0
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -119,13 +150,13 @@ class WebsocketPolicyServer:
                     continue
 
                 # Handle normal request/response messages
-                request_id, action = message
+                response_for_server = message
 
-                if request_id in self.responses:
-                    self.responses[request_id].set_result(action)
-                    logger.info(f"Set result for request {request_id}")
+                if response_for_server.request_id in self.responses:
+                    self.responses[response_for_server.request_id].set_result(response_for_server.actions)
+                    logger.info(f"Set result for request {response_for_server.request_id}")
                 else:
-                    logger.warning(f"Received response for unknown request {request_id}")
+                    logger.warning(f"Received response for unknown request {response_for_server.request_id}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -159,50 +190,39 @@ class WebsocketPolicyServer:
         poller = zmq.Poller()
         poller.register(socket, zmq.POLLIN)
 
+        request_queue = RequestQueue()
+
         try:
             while True:
-                request_ids = []
-                batch = []
-
+                # TODO: can probably clean this up
                 # Wait indefinitely for the first message
                 poller.poll()  # Block until at least one message arrives
 
-                # Receive the first message
-                request_id, obs = socket.recv_pyobj()
-                request_ids.append(request_id)
-                batch.append(obs)
+                while socket in (socks := dict(poller.poll(timeout=0))) and socks[socket] == zmq.POLLIN:
+                    request: InferRequestForServer = socket.recv_pyobj()
+                    request_queue.add(request)
 
-                # Collect additional messages up to batch_size.
-                while len(batch) < batch_size:
-                    socks = dict(poller.poll(timeout=0))
-                    if socket in socks and socks[socket] == zmq.POLLIN:
-                        # DEALER receives messages without identity frame
-                        request_id, obs = socket.recv_pyobj()
-                        request_ids.append(request_id)
-                        batch.append(obs)
-                    else:
-                        # No more messages immediately available, process what we have
-                        break
+                batch = []
+                request_queue.clear_front()
+                while not request_queue.empty and len(batch) < batch_size:
+                    request: InferRequestForServer = request_queue.pop()
+                    request_queue.clear_front()
+                    batch.append(request)
 
-                if batch:
-                    num_real = len(batch)
-                    # Pad batch to batch_size with to avoid JIT recompilation
-                    while len(batch) < batch_size:
-                        batch.append(batch[-1])
+                if not batch:
+                    continue
 
-                    # TODO: can we support multiple infer_types in the same batch?
-                    assert len({request.infer_type for request in batch}) == 1, (
-                        "All requests must have the same infer_type"
-                    )
+                assert len({request.infer_type for request in batch}) == 1, "All requests must have the same infer_type"
 
-                    logger.info(f"Inferring batch of size {batch_size} (padded from {num_real} real requests)")
-                    actions = self._policy.infer_batch(batch)
+                # TODO: figure out best layers of abstraction
+                logger.info(f"Inferring batch of size {len(batch)}")
+                actions = self._policy.infer_batch(batch)
+                responses = [InferResponseForServer.from_infer_response(action) for action in actions]
 
-                    # Only send back results for real requests (not padding)
-                    for i in range(num_real):
-                        # DEALER automatically adds identity frame when sending
-                        socket.send_pyobj((request_ids[i], actions[i]))
-                        logger.info(f"Sent result for request {request_ids[i]} via ZeroMQ")
+                for response in responses:
+                    # DEALER automatically adds identity frame when sending
+                    socket.send_pyobj(response)
+                    logger.info(f"Sent result for request {response.request_id} via ZeroMQ")
         finally:
             socket.close()
             zmq_ctx.term()
@@ -216,11 +236,11 @@ class WebsocketPolicyServer:
         while True:
             try:
                 message = msgpack_numpy.unpackb(await websocket.recv())
-                request = InferRequest(**message)
+                infer_request = InferRequest(**message)
+                request_for_server = InferRequestForServer.from_infer_request(infer_request)
 
-                request_id = self.last_request_id + 1
-                self.last_request_id = request_id
-                self.responses[request_id] = asyncio.Future()
+                self.responses[request_for_server.request_id] = asyncio.Future()
+                request_for_server.arrived()
 
                 # Worker identity should already be learned from ready message
                 if self._worker_identity is None:
@@ -228,10 +248,10 @@ class WebsocketPolicyServer:
 
                 # ROUTER sends: identity frame + message frame
                 await self._socket.send(self._worker_identity, zmq.SNDMORE)
-                await self._socket.send_pyobj((request_id, request))
-                logger.info(f"Sent request {request_id} via ZeroMQ")
+                await self._socket.send_pyobj(request_for_server)
+                logger.info(f"Sent request {request_for_server.request_id} via ZeroMQ")
 
-                action = await self.responses[request_id]
+                action = await self.responses[request_for_server.request_id]
                 await websocket.send(packer.pack(action))
 
             except websockets.ConnectionClosed:

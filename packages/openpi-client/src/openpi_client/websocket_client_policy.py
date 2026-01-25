@@ -22,7 +22,11 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     """
 
     def __init__(
-        self, robot_id: str, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None
+        self,
+        robot_id: str,
+        host: str = "0.0.0.0",
+        port: Optional[int] = None,
+        api_key: Optional[str] = None,
     ) -> None:
         self._robot_id = robot_id
         self._uri = f"ws://{host}"
@@ -43,7 +47,10 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             try:
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
                 conn = websockets.sync.client.connect(
-                    self._uri, compression=None, max_size=None, additional_headers=headers
+                    self._uri,
+                    compression=None,
+                    max_size=None,
+                    additional_headers=headers,
                 )
                 metadata = msgpack_numpy.unpackb(conn.recv())
                 return conn, metadata
@@ -56,6 +63,7 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
         self,
         obs: Dict,
         use_rtc: bool = False,
+        deadline: Optional[float] = None,
         prev_action: Optional[np.ndarray] = None,
         s_param: Optional[int] = None,
         d_param: Optional[int] = None,
@@ -70,6 +78,7 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
         request = messages.InferRequest(
             robot_id=self._robot_id,
             observation=obs,
+            deadline=deadline,
             infer_type=infer_type,
             params=params,
             return_debug_data=return_debug_data,
@@ -119,7 +128,9 @@ class AsyncWebsocketClientPolicy:
         self._server_metadata = results[0][1]
         return self._server_metadata
 
-    async def _create_connection(self) -> Tuple[websockets.asyncio.client.ClientConnection, Dict[str, Any]]:
+    async def _create_connection(
+        self,
+    ) -> Tuple[websockets.asyncio.client.ClientConnection, Dict[str, Any]]:
         """Create a new websocket connection and retrieve metadata."""
         logging.info(f"Waiting for server at {self._uri}...")
         start = time.time()
@@ -127,7 +138,10 @@ class AsyncWebsocketClientPolicy:
             try:
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
                 conn = await websockets.asyncio.client.connect(
-                    self._uri, compression=None, max_size=None, additional_headers=headers
+                    self._uri,
+                    compression=None,
+                    max_size=None,
+                    additional_headers=headers,
                 )
                 metadata_bytes = await conn.recv()
                 metadata = msgpack_numpy.unpackb(metadata_bytes)
@@ -174,7 +188,12 @@ class AsyncWebsocketClientPolicy:
         if use_rtc:
             infer_type = messages.InferType.INFERENCE_TIME_RTC
             params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)  # type: ignore
-        request = messages.InferRequest(robot_id=self._robot_id, observation=obs, infer_type=infer_type, params=params)
+        request = messages.InferRequest(
+            robot_id=self._robot_id,
+            observation=obs,
+            infer_type=infer_type,
+            params=params,
+        )
         data = msgpack_numpy.packb(asdict(request))
 
         conn = await self._get_connection()
