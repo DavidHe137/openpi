@@ -1,4 +1,7 @@
+from dataclasses import dataclass
 from openpi_client.runtime import environment as _environment
+from openpi_client.schemas import Action
+from openpi_client.schemas import Observation
 import numpy as np
 from openpi_client import image_tools
 from libero.libero.envs import OffScreenRenderEnv
@@ -7,6 +10,13 @@ from typing import List
 from typing_extensions import override
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
+
+
+@dataclass
+class LiberoObservation(Observation):
+    image: np.ndarray
+    wrist_image: np.ndarray
+    prompt: str
 
 
 class LiberoSimEnvironment(_environment.Environment):
@@ -71,7 +81,7 @@ class LiberoSimEnvironment(_environment.Environment):
     def is_episode_complete(self) -> bool:
         return self._done
 
-    def get_observation(self) -> dict:
+    def get_observation(self) -> LiberoObservation:
         if self._last_obs is None:
             raise RuntimeError("Observation is not set. Call reset() first.")
 
@@ -87,21 +97,23 @@ class LiberoSimEnvironment(_environment.Environment):
             image_tools.resize_with_pad(wrist_img, self._resize_size, self._resize_size)
         )
 
-        return {
-            "observation/image": img,
-            "observation/wrist_image": wrist_img,
-            "observation/state": np.concatenate(
-                (
-                    obs["robot0_eef_pos"],
-                    utils._quat2axisangle(obs["robot0_eef_quat"]),
-                    obs["robot0_gripper_qpos"],
-                )
-            ),
-            "prompt": str(self._task_description),
-            "step": self._step_counter,
-        }
+        state = np.concatenate(
+            (
+                obs["robot0_eef_pos"],
+                utils._quat2axisangle(obs["robot0_eef_quat"]),
+                obs["robot0_gripper_qpos"],
+            )
+        )
 
-    def apply_action(self, action: dict) -> None:
+        return LiberoObservation(
+            step=self._step_counter,
+            state=state,
+            image=img,
+            wrist_image=wrist_img,
+            prompt=str(self._task_description),
+        )
+
+    def apply_action(self, action: Action) -> None:
         """Take one or more low-level action steps in the LIBERO simulator.
 
         To simulate latency affecting the environment, we optionally repeat
@@ -109,8 +121,7 @@ class LiberoSimEnvironment(_environment.Environment):
         control_hz, so higher latency results in fewer distinct decisions per
         unit of simulated time.
         """
-        # ActionChunkBroker returns a dict with key "actions"
-        act = action["actions"]
+        act = action.action
 
         # Always execute at least one step with the new action
         obs, _, done, info = self._env.step(act.tolist())

@@ -1,10 +1,13 @@
 import csv
 import json
 import pathlib
+import time
 from dataclasses import dataclass, field, fields, asdict
 from typing import List, Type, TypeVar
 
 import numpy as np
+from jaxtyping import Float
+from openpi_client.websocket_client_policy import messages
 import pandas as pd
 
 T = TypeVar("T", bound="CSVDataclass")
@@ -12,6 +15,7 @@ J = TypeVar("J", bound="JSONDataclass")
 P = TypeVar("P", bound="ParquetDataclass")
 
 
+@dataclass(frozen=True)
 class CSVDataclass:
     """Mixin class that adds CSV serialization to dataclasses."""
 
@@ -22,19 +26,12 @@ class CSVDataclass:
             return
 
         with open(filepath, "w", newline="") as f:
-            allowed_fields = [
-                f for f in fields(cls) if f.type in (int, float, bool, str)
-            ]
+            allowed_fields = [f for f in fields(cls) if f.type in (int, float, bool, str)]
             fieldnames = [f.name for f in allowed_fields]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for instance in instances:
-                writer.writerow(
-                    {
-                        field.name: getattr(instance, field.name)
-                        for field in allowed_fields
-                    }
-                )
+                writer.writerow({field.name: getattr(instance, field.name) for field in allowed_fields})
 
     @classmethod
     def from_csv(cls: Type[T], filepath: pathlib.Path) -> List[T]:
@@ -61,6 +58,7 @@ class CSVDataclass:
         return instances
 
 
+@dataclass(frozen=True)
 class JSONDataclass:
     """Mixin class that adds JSON serialization to dataclasses."""
 
@@ -77,6 +75,7 @@ class JSONDataclass:
             return cls(**data)
 
 
+@dataclass(frozen=True)
 class ParquetDataclass:
     """Mixin class that adds Parquet serialization to dataclasses."""
 
@@ -99,9 +98,7 @@ class ParquetDataclass:
             values = data_dict[f.name]
             if values and isinstance(values[0], np.ndarray):
                 # Convert to list of lists for nested array storage
-                data_dict[f.name] = [
-                    v.tolist() if isinstance(v, np.ndarray) else v for v in values
-                ]
+                data_dict[f.name] = [v.tolist() if isinstance(v, np.ndarray) else v for v in values]
 
         # Create DataFrame and write to Parquet
         df = pd.DataFrame(data_dict)
@@ -123,7 +120,7 @@ class ParquetDataclass:
                 # to specify which fields should be numpy arrays
                 if isinstance(value, list) and value and isinstance(value[0], list):
                     kwargs[f.name] = np.array(value)
-                elif pd.isna(value):
+                elif value is None or value is pd.NA or (isinstance(value, float) and np.isnan(value)):
                     kwargs[f.name] = None
                 else:
                     kwargs[f.name] = value
@@ -133,32 +130,67 @@ class ParquetDataclass:
         return instances
 
 
-@dataclass
+@dataclass(frozen=True)
 class ActionChunk(ParquetDataclass, CSVDataclass):
+    """
+    We store all actions, including past execution horizon, as they might come in handy for debugging later
+    """
+
+    start_step: int
+    actions: np.ndarray
+    execution_horizon: int
     request_timestamp: float
     response_timestamp: float
-    start_step: int = field(default_factory=lambda: -1)
-    actions: np.ndarray = field(default_factory=lambda: np.array([]))
     debug_data: dict = field(default_factory=dict)  # optional, from model inference
 
-    def set_start_step(self, start_step: int) -> None:
-        self.start_step = start_step
+    @classmethod
+    def from_infer_response(cls, infer_response: messages.InferResponse) -> "ActionChunk":
+        # NOTE: copy attributes instead of composition to make it easier to serialize for parquet/csv
+        return ActionChunk(
+            start_step=infer_response.start_step,
+            actions=infer_response.actions,
+            execution_horizon=infer_response.execution_horizon,
+            request_timestamp=infer_response.request_timestamp,
+            response_timestamp=time.time(),
+        )
 
     @property
     def latency(self) -> float:
         return self.response_timestamp - self.request_timestamp
 
-    @property
-    def chunk_length(self) -> int:
-        return len(self.actions)
-
-    def get_action(self, index: int) -> List[float]:
+    def get_action(self, index: int) -> Float[np.ndarray, " action_dim"]:
         return self.actions[index]
 
 
-@dataclass
+# TODO: rename this
+@dataclass(frozen=True)
+class Action:
+    """
+    The action_chunk_index and index_in_chunk will be None for the null action.
+    """
+
+    step: int
+    action: Float[np.ndarray, " action_dim"]  # TODO: check the shape on this
+    action_chunk_index: int | None
+    index_in_chunk: int | None
+
+
+@dataclass(frozen=True)
 class Timestamp(CSVDataclass):
     timestamp: float
     env_step: int
     action_chunk_index: int
     action_index: int
+
+
+@dataclass
+class Observation:
+    state: Float[np.ndarray, " state_dim"]
+    step: int
+
+
+@dataclass
+class LiberoObservation(Observation):
+    prompt: str
+    image: Float[np.ndarray, " h w c"]
+    wrist_image: Float[np.ndarray, " h w c"]

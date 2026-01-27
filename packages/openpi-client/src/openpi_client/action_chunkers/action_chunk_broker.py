@@ -1,4 +1,5 @@
 from typing import List
+from typing import Optional
 from examples.libero.schemas import ActionChunk
 from abc import ABC
 
@@ -23,5 +24,5 @@ class ActionChunkBroker(ABC):
         return self._action_chunks
 
     @property
-    def current_action_chunk(self) -> ActionChunk:
-        return self._action_chunks[-1]
+    def current_action_chunk(self) -> Optional[ActionChunk]:
+        return self._action_chunks[-1] if self._action_chunks else None
