@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Type
 
-from openpi_client import base_policy as _base_policy
+from openpi_client import websocket_client_policy as _websocket_client_policy
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
 from openpi_client.action_chunkers.sync import SyncBroker
 from openpi_client.action_chunkers.rtc import InferenceTimeRTCBroker
@@ -12,8 +12,8 @@ from openpi_client.action_chunkers.rtc import InferenceTimeRTCBroker
 class SyncBrokerConfig:
     """Configuration for SyncBroker."""
 
-    policy: _base_policy.BasePolicy
-    action_horizon: int
+    ws_client: _websocket_client_policy.BidirectionalWebsocket
+    control_hz: int
     return_debug_data: bool = False
 
 

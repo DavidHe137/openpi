@@ -3,11 +3,11 @@ import json
 import pathlib
 import time
 from dataclasses import dataclass, field, fields, asdict
-from typing import List, Type, TypeVar
+from typing import List, Type, TypeVar, Optional
 
 import numpy as np
 from jaxtyping import Float
-from openpi_client.websocket_client_policy import messages
+from openpi_client import messages
 import pandas as pd
 
 T = TypeVar("T", bound="CSVDataclass")
@@ -171,26 +171,26 @@ class Action:
 
     step: int
     action: Float[np.ndarray, " action_dim"]  # TODO: check the shape on this
-    action_chunk_index: int | None
-    index_in_chunk: int | None
+    action_chunk_index: Optional[int]
+    index_in_chunk: Optional[int]
 
 
 @dataclass(frozen=True)
 class Timestamp(CSVDataclass):
     timestamp: float
     env_step: int
-    action_chunk_index: int
-    action_index: int
+    action_chunk_index: Optional[int]
+    action_index: Optional[int]
 
 
 @dataclass
 class Observation:
     state: Float[np.ndarray, " state_dim"]
     step: int
+    image: Float[np.ndarray, " h w c"]
+    wrist_image: Float[np.ndarray, " h w c"]
 
 
 @dataclass
 class LiberoObservation(Observation):
     prompt: str
-    image: Float[np.ndarray, " h w c"]
-    wrist_image: Float[np.ndarray, " h w c"]

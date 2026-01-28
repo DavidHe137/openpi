@@ -47,6 +47,7 @@ class InferRequest:
 
 @dataclass(frozen=True)
 class InferResponse:
+    robot_id: str
     request_id: int  # for routing response to correct connection
     start_step: int  # from request
     request_timestamp: float  # from request

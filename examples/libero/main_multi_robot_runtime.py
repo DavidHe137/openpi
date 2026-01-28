@@ -9,7 +9,7 @@ import datetime
 import numpy as np
 from libero.libero import benchmark
 from openpi_client import websocket_client_policy as _websocket_client_policy
-from openpi_client.runtime import runtime as _runtime
+from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import (
     ActionChunkBrokerType,
@@ -60,9 +60,6 @@ class Args:
     host: str = "0.0.0.0"
     port: int = 8080
     resize_size: int = 224
-    action_horizon: int = (
-        10  # Action horizon for ActionChunkBroker (matches Libero model config)
-    )
     action_chunk_broker: ActionChunkBrokerArgs = field(
         default_factory=ActionChunkBrokerArgs
     )
@@ -76,7 +73,7 @@ class Args:
     task_suite_name: str = "libero_10"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
     num_trials_per_robot: int = 10  # Number of rollouts per robot per task
-    max_steps: int = 300  # Maximum number of control steps per episode
+    max_steps: int = 500  # Maximum number of control steps per episode
 
     #################################################################################################################
     # Multi-robot / threading parameters
@@ -95,20 +92,22 @@ class Args:
     debug: bool = False  # Run in single process with immediate progress output
     save_debug_data: bool = False  # Save debug data (obs before/after preprocess, noise, output) to npy files
 
-    def create_broker_config(self, policy) -> Union[SyncBrokerConfig, RTCBrokerConfig]:
+    def create_broker_config(
+        self, ws_client: _websocket_client_policy.BidirectionalWebsocket
+    ) -> Union[SyncBrokerConfig, RTCBrokerConfig]:
         """Helper to create the appropriate broker config from args."""
         if self.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC:
             return RTCBrokerConfig(
-                policy=policy,
-                action_horizon=self.action_horizon,
+                ws_client=ws_client,
+                control_hz=self.control_hz,
                 s_min=self.action_chunk_broker.s_min,
                 d_init=self.action_chunk_broker.d_init,
                 return_debug_data=self.save_debug_data,
             )
         else:  # SYNC
             return SyncBrokerConfig(
-                policy=policy,
-                action_horizon=self.action_horizon,
+                ws_client=ws_client,
+                control_hz=self.control_hz,
                 return_debug_data=self.save_debug_data,
             )
 
@@ -129,7 +128,7 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     # Store queue globally for access in create_runtime
     _progress_queue = progress_queue
 
-    ws_client = _websocket_client_policy.WebsocketClientPolicy(
+    ws_client = _websocket_client_policy.BidirectionalWebsocket(
         robot_id=f"robot_{robot_idx}",
         host=args.host,
         port=args.port,
@@ -138,7 +137,7 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     # Create broker config and instantiate
     config = args.create_broker_config(ws_client)
     broker = args.action_chunk_broker.broker_type.create(config)
-    agent = _policy_agent.PolicyAgent(policy=broker)
+    agent = _policy_agent.PolicyAgent(broker=broker)
 
 
 def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
@@ -165,7 +164,7 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
         "num_episodes": len(job.initial_states),
     }
 
-    subscribers = [
+    subscribers: List[_subscriber.Subscriber] = [
         Saver(
             out_dir=pathlib.Path(args.output_dir),
             environment=env,
@@ -243,20 +242,17 @@ def create_jobs(args: Args) -> List[Job]:
     num_tasks_in_suite = task_suite.n_tasks
 
     logging.info(
-        "Setting up multi-robot LIBERO runtime over suite '%s' with %d tasks, num_robots=%d, trials_per_robot=%d, action_horizon=%d, control_hz=%d",
+        "Setting up multi-robot LIBERO runtime over suite '%s' with %d tasks, num_robots=%d, trials_per_robot=%d, control_hz=%d",
         args.task_suite_name,
         num_tasks_in_suite,
         args.num_robots,
         args.num_trials_per_robot,
-        args.action_horizon,
         args.control_hz,
     )
 
     jobs: List[Job] = []
     for task_id in range(num_tasks_in_suite):
         task = task_suite.get_task(task_id)
-        if task_id != 8:
-            continue
         all_initial_states = task_suite.get_task_init_states(task_id)
 
         if len(all_initial_states) < args.num_trials_per_robot:
@@ -346,7 +342,7 @@ def main(args: Args) -> None:
 
     jobs = create_jobs(args)
     _ = _websocket_client_policy.WebsocketClientPolicy(
-        robot_id=f"robot_{robot_idx}",
+        robot_id="robot",
         host=args.host,
         port=args.port,
     )  # to wait for the server to be ready

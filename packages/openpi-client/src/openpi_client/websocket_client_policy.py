@@ -117,7 +117,6 @@ class BidirectionalWebsocket:
             self._uri += f":{port}"
         self._packer = msgpack_numpy.Packer()
         self._api_key = api_key
-        self._ws_lock = threading.Lock()  # Thread-safe WebSocket access
         self._ws, self._server_metadata = self._wait_for_server()
 
     @property
@@ -169,14 +168,12 @@ class BidirectionalWebsocket:
         )
         data = msgpack_numpy.packb(asdict(request))
 
-        with self._ws_lock:
-            self._ws.send(data)  # type: ignore
+        self._ws.send(data)  # type: ignore
 
     def receive(
         self,
     ) -> ActionChunk:  # noqa: UP006
-        with self._ws_lock:
-            response = self._ws.recv()
+        response = self._ws.recv()
 
         response = msgpack_numpy.unpackb(response)
         if isinstance(response, str):

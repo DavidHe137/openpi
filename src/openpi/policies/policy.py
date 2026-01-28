@@ -13,6 +13,8 @@ import numpy as np
 from openpi_client import base_policy as _base_policy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
+from openpi_client.messages import InferType
+from openpi_client.messages import RTCParams
 import torch
 from typing_extensions import override
 
@@ -25,6 +27,8 @@ from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
+
+logger = logging.getLogger(__name__)
 
 
 class EnvMode(enum.Enum):
@@ -81,7 +85,10 @@ class Policy(BasePolicy):
             self._model.eval()
         else:
             self._rng = rng or jax.random.key(0)
-            self._model.sample_actions = nnx_utils.module_jit(self._model.sample_actions)
+            self._model.sample_actions = nnx_utils.module_jit(
+                self._model.sample_actions,
+                static_argnames=["return_debug_data", "use_rtc"],
+            )
         self._sample_actions = model.sample_actions
 
     @override
@@ -249,6 +256,7 @@ class Policy(BasePolicy):
         # Stack observations into batch format
         batched_obs = {}
 
+        # FIXME: no idea how the typing here works
         if self._is_triton_optimized:
             return {
                 "state": np.stack([obs["observation/state"] for obs in observations], axis=0),
@@ -297,8 +305,12 @@ class Policy(BasePolicy):
         return _model.Observation.from_dict(inputs)
 
     def infer_batch(
-        self, requests: list[InferRequest], *, noise: np.ndarray | None = None, return_debug_data: bool = False
-    ) -> list[InferResponse]:
+        self,
+        requests: list[InferRequest],
+        *,
+        noise: np.ndarray | None = None,
+        return_debug_data: bool = False,
+    ) -> list[InferResponse]:  # FIXME: return type is wrong
         """Run inference on a batch of request.
 
         Args:
@@ -319,7 +331,10 @@ class Policy(BasePolicy):
         raw_obs_list = None
         if any_debug_data:
             raw_obs_list = [
-                jax.tree.map(lambda x: np.array(x) if hasattr(x, "__array__") else x, req.observation)
+                jax.tree.map(
+                    lambda x: np.array(x) if hasattr(x, "__array__") else x,
+                    req.observation,
+                )
                 for req in requests
             ]
 
@@ -331,7 +346,17 @@ class Policy(BasePolicy):
             # Convert inputs to PyTorch tensors and move to correct device
             sample_rng_or_pytorch_device = self._pytorch_device
 
-        observation = self.create_batch_obs([req.observation for req in requests])
+        # FIXME: temporary hack
+        def rename_keys(obs: dict) -> dict:
+            return {
+                "observation/state": obs["state"],
+                "observation/image": obs["image"],
+                "observation/wrist_image": obs["wrist_image"],
+                "prompt": obs["prompt"],
+            }
+
+        # TODO: fix typing here, I think observation is sent over as a dict
+        observation = self.create_batch_obs([rename_keys(req.observation) for req in requests])
 
         if self._is_triton_optimized:
             # Batched Triton inference path - TODO Rohan: can be squashed into Jax batch path once below TODO is resolved
@@ -497,13 +522,50 @@ class Policy(BasePolicy):
             return make_aloha_example()
         if env == EnvMode.DROID:
             return make_droid_example()
-        if env in [EnvMode.LIBERO, EnvMode.LIBERO_REALTIME, EnvMode.LIBERO_PYTORCH, EnvMode.LIBERO_PI0]:
+        if env in [
+            EnvMode.LIBERO,
+            EnvMode.LIBERO_REALTIME,
+            EnvMode.LIBERO_PYTORCH,
+            EnvMode.LIBERO_PI0,
+        ]:
             return make_libero_example()
 
         raise ValueError(f"Unknown environment: {env}")
 
     def make_example_actions(self) -> np.ndarray:
         return self._model.make_example_actions()
+
+    def warmup(self, max_batch_size: int) -> None:
+        """Warm up policy by running inference to trigger JIT compilation."""
+        observation = self.make_example()
+
+        requests = [
+            InferRequest(
+                robot_id="test_robot",
+                start_step=0,
+                request_timestamp=0,
+                deadline=0,
+                observation=observation,
+                infer_type=InferType.SYNC,
+                params=None,
+            ),
+            InferRequest(
+                robot_id="test_robot",
+                start_step=0,
+                request_timestamp=0,
+                deadline=0,
+                observation=observation,
+                infer_type=InferType.INFERENCE_TIME_RTC,
+                params=RTCParams(prev_action=self.make_example_actions(), s_param=5, d_param=3),
+            ),
+        ]
+
+        for request in requests:
+            for batch_size in range(1, max_batch_size + 1):
+                logger.info(f"Warming up {request.infer_type} for batch_size={batch_size}")
+                # Warm up with full batch_size (we always pad to this size)
+                batch = [request] * batch_size
+                self.infer_batch(batch)
 
 
 class PolicyRecorder(_base_policy.BasePolicy):

@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
-from examples.libero.schemas import Timestamp, JSONDataclass, ActionChunk
+from openpi_client.schemas import (
+    Timestamp,
+    JSONDataclass,
+    ActionChunk,
+    Observation,
+    Action,
+)
 from examples.libero.env import LiberoSimEnvironment
 
 logger = logging.getLogger(__name__)
@@ -28,7 +34,7 @@ def _flatten_dict(
     return dict(items)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Result(JSONDataclass):
     success: bool
     robot_idx: int
@@ -68,16 +74,16 @@ class Saver(_subscriber.Subscriber):
         self._images = []
 
     @override
-    def on_step(self, observation: dict, action: dict) -> None:
+    def on_step(self, observation: Observation, action: Action) -> None:
         self._timestamps.append(
             Timestamp(
                 timestamp=time.perf_counter(),
-                action_chunk_index=action["action_chunk_index"],
-                action_index=action["action_chunk_current_step"],
-                env_step=observation["step"],
+                action_chunk_index=action.action_chunk_index,
+                action_index=action.index_in_chunk,
+                env_step=observation.step,
             )
         )
-        self._images.append(observation["observation/image"])
+        self._images.append(observation.image)
 
     @override
     def on_episode_end(self) -> None:

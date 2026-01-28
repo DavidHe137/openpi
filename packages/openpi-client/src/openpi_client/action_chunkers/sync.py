@@ -1,105 +1,94 @@
-from typing import Dict, List
+from collections import deque
+from typing import List
 
 import threading
 import time
-from typing_extensions import override
-
-from openpi_client import base_policy as _base_policy
-from examples.libero.schemas import ActionChunk
+from openpi_client.schemas import ActionChunk, Action, Observation
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
+from openpi_client import websocket_client_policy as _websocket_client_policy
 
 
-class SyncBroker(ActionChunkBroker, _base_policy.BasePolicy):
+# FIXME: Saver uses action_chunks, but the envy is not clear and it's easy to remove it from this class
+# TODO: add debug data, though I think there should be a cleaner way to do this
+# NOTE: use concurrent.futures to infer in background if this takes too long
+# TODO: base policy class that lives on server should be different from policy that lives on client
+class SyncBroker(ActionChunkBroker):
     """Wraps a policy to return action chunks asynchronously.
 
     The policy is called synchronously in the background thread whenever the current action chunk is exhausted.
     """
 
-    def __init__(self, policy: _base_policy.BasePolicy, action_horizon: int, return_debug_data: bool = False):
-        self._policy = policy
-        self._action_horizon = action_horizon
-        self._return_debug_data = return_debug_data
-        self._obs: Dict = {}
-        self._cur_step: int = -1
+    def __init__(
+        self,
+        ws_client: _websocket_client_policy.BidirectionalWebsocket,
+        control_hz: int,
+        return_debug_data: bool = False,  # TODO: add debug data
+    ):
+        self._ws_client = ws_client
 
+        self._action_queue: deque[Action] = deque()
         self._action_chunks: List[ActionChunk] = []
-        self._action_index: int = -1
+        self._step_duration = 1 / control_hz
 
         self._lock = threading.Lock()
-        self._condition = threading.Condition(self._lock)
-        self._infer_thread = threading.Thread(target=self._background_infer, daemon=True)
-        self._infer_thread.start()
+        self._background_thread = threading.Thread(target=self._receive_actions, daemon=True)
+        self._background_thread.start()
+        self._sent_request = False
 
-    def _infer(self, obs: Dict, infer_step: int) -> ActionChunk:
-        request_timestamp = time.time()
-        response = self._policy.infer(obs, return_debug_data=self._return_debug_data)
-        actions = response["actions"]
-        debug_data = response.get("debug_data", {})
-        response_timestamp = time.time()
+    def _infer(self, obs: Observation) -> None:
+        deadline = time.time() + len(self._action_queue) * self._step_duration
+        self._ws_client.send(obs, deadline=deadline)
+        self._sent_request = True
 
-        return ActionChunk(
-            actions=actions,
-            request_timestamp=request_timestamp,
-            response_timestamp=response_timestamp,
-            start_step=infer_step,
-            debug_data=debug_data,
+    def _receive_actions(self):
+        while True:
+            action_chunk = self._ws_client.receive()
+
+            with self._lock:
+                self._action_chunks.append(action_chunk)
+                while self._action_queue and self._action_queue[-1].step >= action_chunk.start_step:
+                    self._action_queue.pop()
+
+                # assumes that pausing is preferable to exeuting actions past the execution horizon
+                self._action_queue.extend(
+                    Action(
+                        step=action_chunk.start_step + i,
+                        action=action_chunk.get_action(i),
+                        action_chunk_index=len(self._action_chunks) - 1,
+                        index_in_chunk=i,
+                    )
+                    for i in range(action_chunk.execution_horizon)
+                )
+                self._sent_request = False
+
+    def _create_null_action(self, obs: Observation) -> Action:
+        # FIXME: hardcoded, should move this outside of this class
+        import numpy as np
+
+        action = np.zeros(7)
+        action[-1] = self.current_action_chunk.get_action(-1)[-1] if self.current_action_chunk is not None else 0.0
+
+        return Action(
+            step=obs.step,
+            action=action,
+            action_chunk_index=None,
+            index_in_chunk=None,
         )
 
-    def _background_infer(self):
-        while True:
-            with self._condition:
-                self._condition.wait()
+    def _should_infer(self) -> bool:
+        return len(self._action_queue) == 0 and self._sent_request is False
 
-                obs = self._obs
-                infer_step = self._cur_step
+    def infer(self, obs: Observation) -> Action:
+        with self._lock:
+            action = self._action_queue.popleft() if self._action_queue else self._create_null_action(obs)
 
-            # might get pre-empted here, but that's probably okay
-            action_chunk = self._infer(obs, infer_step)
+            if self._should_infer():
+                self._infer(obs)
 
-            with self._condition:
-                self._action_chunks.append(action_chunk)
-                self._action_index = -1
+        return action
 
-    def _create_null_action(self) -> List[float]:
-        last_action = self.current_action_chunk.actions[-1].copy()
-        last_action[:-1] = 0.0
-        return last_action
-
-    @override
-    def infer(self, obs: Dict) -> Dict:  # noqa: UP006
-        with self._condition:
-            self._obs = obs
-            self._cur_step = obs["step"]
-            self._action_index += 1
-
-            # Assume no latency for step 0, so we wait until we have an action chunk
-            if len(self._action_chunks) == 0:
-                assert self._cur_step == 0, "First inference should be for step 0"
-                action_chunk = self._infer(obs, self._cur_step)
-                self._action_chunks.append(action_chunk)
-
-            if self._action_index == self.current_action_chunk.chunk_length:
-                self._condition.notify()
-
-            if self._action_index >= self.current_action_chunk.chunk_length:
-                action = self._create_null_action()
-                action_index = -1
-            else:
-                action = self.current_action_chunk.get_action(self._action_index)
-                action_index = self._action_index
-
-            results = {
-                "actions": action,
-                "action_chunk_index": len(self._action_chunks) - 1,
-                "action_chunk_current_step": action_index,
-            }
-
-        return results
-
-    @override
     def reset(self) -> None:
-        with self._condition:
-            self._policy.reset()
+        with self._lock:
+            self._action_queue.clear()
             self._action_chunks = []
-            self._cur_step = -1
-            self._action_index = -1
+            self._sent_request = False

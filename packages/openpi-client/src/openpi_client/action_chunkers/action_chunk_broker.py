@@ -1,6 +1,6 @@
 from typing import List
 from typing import Optional
-from examples.libero.schemas import ActionChunk
+from openpi_client.schemas import ActionChunk
 from abc import ABC
 
 
