@@ -24,6 +24,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         s_min: int = 5,
         d_init: int = 3,
         delay_buffer_size: int = 10,
+        return_debug_data: bool = False,
     ):
         self._ws_client = ws_client
 
@@ -48,6 +49,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
     def _infer(self, obs: Observation) -> None:
         deadline = time.time() + len(self._action_queue) * self._step_duration
         estimated_delay = max(self._delays)
+        # FIXME: hardcoded, should move this outside of this class
         prev_action = self.current_action_chunk.actions if self.current_action_chunk is not None else np.zeros((10, 7))
 
         self._ws_client.send(
@@ -85,9 +87,8 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
                 self._sent_request = False
 
     def _create_null_action(self, obs: Observation) -> Action:
-        # robot state and actions are in the same representation (x, y, z, qw, qx, qy, gripper)
         # FIXME: hardcoded, should move this outside of this class
-        action = obs.state[:7].copy()
+        action = np.zeros(7)
         action[-1] = self.current_action_chunk.get_action(-1)[-1] if self.current_action_chunk is not None else 0.0
 
         return Action(
