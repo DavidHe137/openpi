@@ -181,3 +181,4 @@ logs/
 log/
 benchmarks/
 *.lprof
+jax_cache/
