@@ -21,6 +21,7 @@ import zmq.asyncio
 
 from openpi.serving.request_queue import RequestQueue
 from openpi.serving.schemas import ArrivedRequest
+from openpi.serving.variable_execution import calculate_execution_horizon
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,11 @@ class WebsocketPolicyServer:
 
         self._worker = mp.Process(
             target=self._run_worker,
-            args=(self._request_endpoint, self._response_endpoint, self._max_batch_size),
+            args=(
+                self._request_endpoint,
+                self._response_endpoint,
+                self._max_batch_size,
+            ),
         )
 
         logging.getLogger("websockets.server").setLevel(logging.INFO)
@@ -185,7 +190,7 @@ class WebsocketPolicyServer:
             self._request_routing[arrived_request.request_id] = conn.conn_id
 
             logger.info(
-                f"Request {arrived_request.request_id} from {arrived_request.infer_request.robot_id} for step {arrived_request.infer_request.start_step} to worker"
+                f"Request from {arrived_request.infer_request.robot_id} for step {arrived_request.infer_request.start_step}"
             )
             await self._request_socket.send_pyobj(arrived_request)
 
@@ -194,7 +199,7 @@ class WebsocketPolicyServer:
         while True:
             response: InferResponse = await conn.response_queue.get()
             logger.info(
-                f"Response {response.request_id} from {response.robot_id} for step {response.start_step} to client"
+                f"Response for {response.robot_id} for step {response.start_step} with execution horizon {response.execution_horizon}"
             )
             await conn.websocket.send(msgpack_numpy.packb(asdict(response)))  # type: ignore
 
@@ -230,6 +235,9 @@ class WebsocketPolicyServer:
 
         request_queue = RequestQueue()
 
+        # NOTE: hacky data structure for now
+        last_response: dict[str, InferResponse] = {}
+
         try:
             while not shutdown_requested:
                 # Block for at least one message
@@ -263,15 +271,25 @@ class WebsocketPolicyServer:
 
                 # Send responses
                 for req, action in zip(batch, actions, strict=True):
+                    actions = action["actions"]
+                    execution_horizon = len(actions)
+                    if req.infer_request.robot_id in last_response:
+                        execution_horizon = calculate_execution_horizon(
+                            last_response[req.infer_request.robot_id],
+                            req.infer_request.start_step,
+                            actions,
+                        )
+
                     response = InferResponse(
                         robot_id=req.infer_request.robot_id,
                         request_id=req.request_id,
                         start_step=req.infer_request.start_step,
                         request_timestamp=req.infer_request.request_timestamp,
-                        execution_horizon=len(action["actions"]),
-                        actions=action["actions"],
+                        execution_horizon=execution_horizon,
+                        actions=actions,
                     )
                     response_socket.send_pyobj(response)
+                    last_response[req.infer_request.robot_id] = response
 
         finally:
             logger.info("Worker shutting down")

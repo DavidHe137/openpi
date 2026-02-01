@@ -50,7 +50,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         deadline = time.time() + len(self._action_queue) * self._step_duration
         estimated_delay = max(self._delays)
         # FIXME: hardcoded, should move this outside of this class
-        prev_action = self.current_action_chunk.actions if self.current_action_chunk is not None else np.zeros((10, 7))
+        prev_action = self.current_action_chunk.actions if self.current_action_chunk is not None else np.zeros((50, 7))
 
         self._ws_client.send(
             obs,

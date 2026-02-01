@@ -565,7 +565,10 @@ class Policy(BasePolicy):
                 logger.info(f"Warming up {request.infer_type} for batch_size={batch_size}")
                 # Warm up with full batch_size (we always pad to this size)
                 batch = [request] * batch_size
-                self.infer_batch(batch)
+                actions = self.infer_batch(batch)
+
+        # FIXME: fix after fixing typing on infer_batch
+        logger.info(f"Output size: {actions[0]['actions'].shape}")
 
 
 class PolicyRecorder(_base_policy.BasePolicy):
