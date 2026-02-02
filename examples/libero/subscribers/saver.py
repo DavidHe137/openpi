@@ -16,11 +16,13 @@ from openpi_client.schemas import (
     Observation,
     Action,
 )
+from libero.libero import benchmark
 from examples.libero.env import LiberoSimEnvironment
 
 logger = logging.getLogger(__name__)
 
 
+# TODO: don't like this function, shouldn't need it ideally
 def _flatten_dict(
     d: Dict[str, Any], parent_key: str = "", sep: str = "/"
 ) -> Dict[str, Any]:
@@ -36,10 +38,12 @@ def _flatten_dict(
 
 @dataclass(frozen=True)
 class Result(JSONDataclass):
-    success: bool
     robot_idx: int
+    success: bool
+    steps_taken: int  # TODO: implement this
     task_suite_name: str
     task_id: int
+    task: benchmark.Task
     episode_idx: int
 
 
@@ -54,12 +58,14 @@ class Saver(_subscriber.Subscriber):
         action_chunk_broker: ActionChunkBroker,
         task_suite_name: str,
         task_id: int,
+        task: benchmark.Task,
         robot_idx: int,
     ) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         self._out_dir = out_dir
         self._task_suite_name = task_suite_name
         self._task_id = task_id
+        self._task = task
         self._robot_idx = robot_idx
         self._environment = environment
         self._action_chunk_broker = action_chunk_broker
@@ -117,8 +123,10 @@ class Saver(_subscriber.Subscriber):
         result = Result(
             success=self._environment.current_success,
             robot_idx=self._robot_idx,
+            steps_taken=len(self._timestamps),
             task_suite_name=self._task_suite_name,
             task_id=self._task_id,
+            task=self._task,
             episode_idx=self._environment.episode_idx,
         )
         result.to_json(out_folder / "metadata.json")
@@ -142,6 +150,7 @@ class Saver(_subscriber.Subscriber):
             fps=self._control_hz,  # NOTE: saving in control hz fps for now
         )
 
+    # TODO: I think this can be saved in a single npz file, but will need to be coordinated with edits to replay_debug_data.py
     def _save_debug_data(self, out_folder: pathlib.Path) -> None:
         action_chunks = self._action_chunk_broker.action_chunks
         debug_data_dir = out_folder / "debug_data"

@@ -1,5 +1,7 @@
 import abc
 
+from openpi_client.schemas import Observation, Action
+
 
 class Subscriber(abc.ABC):
     """Subscribes to events in the runtime.
@@ -12,7 +14,7 @@ class Subscriber(abc.ABC):
         """Called when an episode starts."""
 
     @abc.abstractmethod
-    def on_step(self, observation: dict, action: dict) -> None:
+    def on_step(self, observation: Observation, action: Action) -> None:
         """Append a step to the episode."""
 
     @abc.abstractmethod

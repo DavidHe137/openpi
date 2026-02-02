@@ -1,12 +1,12 @@
-import pandas as pd
 import logging
 import pathlib
 import multiprocessing
 import shutil
-from typing import Union, List, Literal, Optional
+from typing import Union, List, Literal, Optional, Dict, Type
 import datetime
 
 import numpy as np
+from jaxtyping import Float
 from libero.libero import benchmark
 from openpi_client import websocket_client_policy as _websocket_client_policy
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
@@ -17,15 +17,14 @@ from openpi_client.action_chunkers import (
     RTCBrokerConfig,
 )
 import tyro
-from dataclasses import dataclass, asdict, field
-from rich.console import Console
-from rich.table import Table
+from dataclasses import dataclass, field
 
 from examples.libero import utils
 from examples.libero import logging_config
 from examples.libero.env import LiberoSimEnvironment
 from examples.libero.progress_manager import get_progress_manager
-from examples.libero.subscribers.saver import Saver, Result
+from examples.libero.subscribers.saver import Saver
+from examples.libero.metrics import calculate_metrics
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -39,7 +38,7 @@ class Job:
 
     task: benchmark.Task
     task_id: int
-    initial_states: np.ndarray  # batch, state_dim
+    initial_states: Float[np.ndarray, "n_initial_states state_dim"]
 
 
 @dataclass
@@ -165,12 +164,14 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
     }
 
     subscribers: List[_subscriber.Subscriber] = [
+        # TODO: need to fix the way we pass task description to the saver
         Saver(
             out_dir=pathlib.Path(args.output_dir),
             environment=env,
             action_chunk_broker=broker,
             task_suite_name=job.task_suite_name,
             task_id=job.task_id,
+            task=job.task,
             robot_idx=robot_idx,
         ),
     ]
@@ -237,8 +238,10 @@ def run_robots(args: Args, jobs: List[Job]) -> None:
 
 
 def create_jobs(args: Args) -> List[Job]:
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite = benchmark_dict[args.task_suite_name]()
+    benchmark_dict: Dict[str, Type[benchmark.Benchmark]] = (
+        benchmark.get_benchmark_dict()
+    )
+    task_suite: benchmark.Benchmark = benchmark_dict[args.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
 
     logging.info(
@@ -252,8 +255,10 @@ def create_jobs(args: Args) -> List[Job]:
 
     jobs: List[Job] = []
     for task_id in range(num_tasks_in_suite):
-        task = task_suite.get_task(task_id)
-        all_initial_states = task_suite.get_task_init_states(task_id)
+        task: benchmark.Task = task_suite.get_task(task_id)
+        all_initial_states: Float[np.ndarray, "n_initial_states state_dim"] = (
+            task_suite.get_task_init_states(task_id)
+        )
 
         if len(all_initial_states) < args.num_trials_per_robot:
             logging.error(
@@ -278,41 +283,6 @@ def create_jobs(args: Args) -> List[Job]:
     logging.info("Created %d jobs", len(jobs))
 
     return jobs
-
-
-def aggregate_results(output_path: pathlib.Path) -> None:
-    metadata_files = list(output_path.glob("**/metadata.json"))
-
-    results: List[Result] = []
-    for metadata_file in metadata_files:
-        result = Result.from_json(metadata_file)
-        results.append(result)
-
-    results_df = pd.DataFrame([asdict(result) for result in results])
-    results_df.to_csv(output_path / "results.csv", index=False)
-    summary = results_df.groupby(["task_suite_name", "task_id"]).agg(
-        {
-            "success": "mean",
-        }
-    )
-    summary.reset_index().to_csv(output_path / "summary.csv", index=False)
-
-    # Display results using rich
-    console = Console()
-    table = Table(title="Task Success Summary")
-    table.add_column("Task Suite", style="cyan")
-    table.add_column("Task ID", style="magenta")
-    table.add_column("Success Rate", style="green")
-
-    for _, row in summary.reset_index().iterrows():
-        table.add_row(
-            str(row["task_suite_name"]), str(row["task_id"]), f"{row['success']:.2%}"
-        )
-
-    console.print(table)
-    console.print(
-        f"\n[bold green]Total success rate: {summary['success'].mean():.2%}[/bold green]"
-    )
 
 
 def main(args: Args) -> None:
@@ -346,8 +316,9 @@ def main(args: Args) -> None:
         host=args.host,
         port=args.port,
     )  # to wait for the server to be ready
+    # TODO: modify WebsocketClientPolicy and get necessary metadata
     run_robots(args, jobs)
-    aggregate_results(pathlib.Path(args.output_dir))
+    calculate_metrics(pathlib.Path(args.output_dir))
 
 
 if __name__ == "__main__":
