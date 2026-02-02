@@ -24,7 +24,7 @@ from examples.libero import logging_config
 from examples.libero.env import LiberoSimEnvironment
 from examples.libero.progress_manager import get_progress_manager
 from examples.libero.subscribers.saver import Saver
-from examples.libero.metrics import calculate_metrics
+from examples.libero.metrics import calculate_metrics, generate_distribution_plots
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -35,7 +35,6 @@ class Job:
     """A job is a task with a batch of episodes."""
 
     task_suite_name: str
-
     task: benchmark.Task
     task_id: int
     initial_states: Float[np.ndarray, "n_initial_states state_dim"]
@@ -164,7 +163,6 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
     }
 
     subscribers: List[_subscriber.Subscriber] = [
-        # TODO: need to fix the way we pass task description to the saver
         Saver(
             out_dir=pathlib.Path(args.output_dir),
             environment=env,
@@ -319,6 +317,7 @@ def main(args: Args) -> None:
     # TODO: modify WebsocketClientPolicy and get necessary metadata
     run_robots(args, jobs)
     calculate_metrics(pathlib.Path(args.output_dir))
+    generate_distribution_plots(pathlib.Path(args.output_dir))
 
 
 if __name__ == "__main__":

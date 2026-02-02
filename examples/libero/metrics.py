@@ -1,11 +1,12 @@
 from typing import List, Dict
 import pandas as pd
-from dataclasses import asdict
+import numpy as np
+import matplotlib.pyplot as plt
+from dataclasses import asdict, dataclass
 from rich.console import Console
 from rich.table import Table
 from examples.libero.subscribers.saver import Result
-from openpi_client.schemas import pathlib
-from dataclasses import dataclass
+from openpi_client.schemas import pathlib, ActionChunk
 
 
 @dataclass
@@ -66,8 +67,153 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     )
 
 
-# TODO: more aggregated metrics, grouped by task suite and task id on single pdf with subplots. also have a single plot for all tasks combined.
-# distribution of action chunk latencies with mean, median, 90th percentile, 95th percentile, 99th percentile
-# distribution of action chunk execution horizons with mean, median, 90th percentile, 95th percentile, 99th percentile
+def load_action_chunks(output_path: pathlib.Path) -> pd.DataFrame:
+    """Load all action chunk data and associate with task metadata."""
+    action_chunk_files = list(output_path.glob("**/action_chunks.parquet"))
 
-# NOTE: need to do more thinking on this. how to plot schedule of events (inferences, action chunks, etc.) over time?
+    rows = []
+    for action_chunk_file in action_chunk_files:
+        # Parse task info from directory structure: robot_idx/episode_idx_suite_taskid_status
+        episode_dir = action_chunk_file.parent
+        parts = episode_dir.name.split("_")
+        task_suite_name = parts[1] if len(parts) > 1 else "unknown"
+        task_id = int(parts[2]) if len(parts) > 2 else -1
+
+        chunks = ActionChunk.from_parquet(action_chunk_file)
+        for chunk in chunks:
+            rows.append(
+                {
+                    "task_suite_name": task_suite_name,
+                    "task_id": task_id,
+                    "latency": chunk.latency,
+                    "execution_horizon": chunk.execution_horizon,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def compute_percentiles(data: np.ndarray) -> Dict[str, float]:
+    """Compute summary statistics for a distribution."""
+    return {
+        "mean": np.mean(data).item(),
+        "median": np.median(data).item(),
+        "p90": np.percentile(data, 90).item(),
+        "p95": np.percentile(data, 95).item(),
+        "p99": np.percentile(data, 99).item(),
+    }
+
+
+def plot_distribution(
+    ax: plt.Axes,
+    data: np.ndarray,
+    title: str,
+    xlabel: str,
+    color: str = "steelblue",
+) -> None:
+    """Plot a histogram with percentile annotations."""
+    stats = compute_percentiles(data)
+
+    ax.hist(data, bins=30, color=color, alpha=0.7, edgecolor="black")
+    ax.axvline(
+        stats["mean"],
+        color="red",
+        linestyle="-",
+        linewidth=2,
+        label=f"Mean: {stats['mean']:.3f}",
+    )
+    ax.axvline(
+        stats["median"],
+        color="green",
+        linestyle="--",
+        linewidth=2,
+        label=f"Median: {stats['median']:.3f}",
+    )
+    ax.axvline(
+        stats["p90"],
+        color="orange",
+        linestyle=":",
+        linewidth=2,
+        label=f"P90: {stats['p90']:.3f}",
+    )
+    ax.axvline(
+        stats["p95"],
+        color="purple",
+        linestyle="-.",
+        linewidth=2,
+        label=f"P95: {stats['p95']:.3f}",
+    )
+    ax.axvline(
+        stats["p99"],
+        color="brown",
+        linestyle="-",
+        linewidth=1,
+        label=f"P99: {stats['p99']:.3f}",
+    )
+
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Count")
+    ax.legend(fontsize=8)
+
+
+def generate_distribution_plots(output_path: pathlib.Path) -> None:
+    """Generate PNG plots for latency and execution horizon distributions."""
+    df = load_action_chunks(output_path)
+
+    if df.empty:
+        print("No action chunk data found.")
+        return
+
+    plots_dir = output_path / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Combined distributions for all tasks
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.suptitle("All Tasks Combined", fontsize=14, fontweight="bold")
+
+    plot_distribution(
+        axes[0],
+        df["latency"].values,
+        "Action Chunk Latency Distribution",
+        "Latency (seconds)",
+    )
+    plot_distribution(
+        axes[1],
+        df["execution_horizon"].values,
+        "Execution Horizon Distribution",
+        "Execution Horizon (steps)",
+        color="coral",
+    )
+
+    plt.tight_layout()
+    fig.savefig(plots_dir / "all_tasks_distributions.png", dpi=150)
+    plt.close(fig)
+
+    # Per task suite and task id
+    grouped = df.groupby(["task_suite_name", "task_id"])
+    for (suite_name, task_id), group in grouped:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig.suptitle(f"{suite_name} - Task {task_id}", fontsize=14, fontweight="bold")
+
+        plot_distribution(
+            axes[0],
+            group["latency"].values,
+            "Action Chunk Latency Distribution",
+            "Latency (seconds)",
+        )
+        plot_distribution(
+            axes[1],
+            group["execution_horizon"].values,
+            "Execution Horizon Distribution",
+            "Execution Horizon (steps)",
+            color="coral",
+        )
+
+        plt.tight_layout()
+        fig.savefig(
+            plots_dir / f"{suite_name}_task{task_id}_distributions.png", dpi=150
+        )
+        plt.close(fig)
+
+    print(f"Distribution plots saved to {plots_dir}")

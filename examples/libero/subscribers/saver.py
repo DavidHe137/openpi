@@ -22,7 +22,7 @@ from examples.libero.env import LiberoSimEnvironment
 logger = logging.getLogger(__name__)
 
 
-# TODO: don't like this function, shouldn't need it ideally
+# NOTE: don't like this function, shouldn't need it ideally
 def _flatten_dict(
     d: Dict[str, Any], parent_key: str = "", sep: str = "/"
 ) -> Dict[str, Any]:
@@ -40,17 +40,16 @@ def _flatten_dict(
 class Result(JSONDataclass):
     robot_idx: int
     success: bool
-    steps_taken: int  # TODO: implement this
+    steps_taken: int
     task_suite_name: str
     task_id: int
-    task: benchmark.Task
+    task_language: str
     episode_idx: int
 
 
 class Saver(_subscriber.Subscriber):
     """Saves episode data."""
 
-    # TODO: probably pass metadata with dataclass
     def __init__(
         self,
         out_dir: pathlib.Path,
@@ -126,7 +125,7 @@ class Saver(_subscriber.Subscriber):
             steps_taken=len(self._timestamps),
             task_suite_name=self._task_suite_name,
             task_id=self._task_id,
-            task=self._task,
+            task_language=self._task.language,
             episode_idx=self._environment.episode_idx,
         )
         result.to_json(out_folder / "metadata.json")
@@ -136,11 +135,10 @@ class Saver(_subscriber.Subscriber):
         Timestamp.to_csv(self._timestamps, out_folder / "timestamps.csv")
 
     def _save_action_chunks(self, out_folder: pathlib.Path) -> None:
-        logger.info(f"Saving action chunks to {out_folder / 'action_chunks.csv'}")
-        ActionChunk.to_csv(
-            self._action_chunk_broker.action_chunks,
-            out_folder / "action_chunks.csv",
-        )
+        logger.info(f"Saving action chunks to {out_folder}")
+        action_chunks = self._action_chunk_broker.action_chunks
+        ActionChunk.to_csv(action_chunks, out_folder / "action_chunks.csv")
+        ActionChunk.to_parquet(action_chunks, out_folder / "action_chunks.parquet")
 
     def _save_video(self, out_folder: pathlib.Path) -> None:
         logger.info(f"Saving video to {out_folder / 'out.mp4'}")
@@ -150,7 +148,7 @@ class Saver(_subscriber.Subscriber):
             fps=self._control_hz,  # NOTE: saving in control hz fps for now
         )
 
-    # TODO: I think this can be saved in a single npz file, but will need to be coordinated with edits to replay_debug_data.py
+    # NOTE: I think this can be saved in a single npz file, but will need to be coordinated with edits to replay_debug_data.py
     def _save_debug_data(self, out_folder: pathlib.Path) -> None:
         action_chunks = self._action_chunk_broker.action_chunks
         debug_data_dir = out_folder / "debug_data"

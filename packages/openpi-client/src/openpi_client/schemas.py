@@ -85,16 +85,19 @@ class ParquetDataclass:
         if not instances:
             return
 
+        # Filter out dict fields as they don't serialize well to Parquet
+        parquet_fields = [f for f in fields(cls) if f.type is not dict]
+
         # Convert instances to dictionary format
-        data_dict = {field.name: [] for field in fields(cls)}
+        data_dict = {field.name: [] for field in parquet_fields}
 
         for instance in instances:
-            for f in fields(cls):
+            for f in parquet_fields:
                 value = getattr(instance, f.name)
                 data_dict[f.name].append(value)
 
         # Convert lists of numpy arrays to a format Parquet can handle
-        for f in fields(cls):
+        for f in parquet_fields:
             values = data_dict[f.name]
             if values and isinstance(values[0], np.ndarray):
                 # Convert to list of lists for nested array storage
@@ -113,6 +116,14 @@ class ParquetDataclass:
         for _, row in df.iterrows():
             kwargs = {}
             for f in fields(cls):
+                # Use default value if field is not in the DataFrame (e.g., dict fields)
+                if f.name not in row:
+                    if f.default is not None:
+                        kwargs[f.name] = f.default
+                    elif f.default_factory is not None:
+                        kwargs[f.name] = f.default_factory()
+                    continue
+
                 value = row[f.name]
 
                 # Convert back to numpy arrays if needed
