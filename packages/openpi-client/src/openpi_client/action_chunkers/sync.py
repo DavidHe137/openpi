@@ -1,11 +1,8 @@
-from collections import deque
-from typing import List
-
-import threading
 import time
-from openpi_client.schemas import ActionChunk, Action, Observation
+from openpi_client.schemas import Action, Observation
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
 from openpi_client import websocket_client_policy as _websocket_client_policy
+from typing_extensions import override
 
 
 # FIXME: Saver uses action_chunks, but the envy is not clear and it's easy to remove it from this class
@@ -22,25 +19,32 @@ class SyncBroker(ActionChunkBroker):
         self,
         ws_client: _websocket_client_policy.BidirectionalWebsocket,
         control_hz: int,
+        realtime: bool = True,
         return_debug_data: bool = False,  # TODO: add debug data
     ):
+        """
+        Args:
+            ws_client: the websocket client to use for inference
+            control_hz: the control frequency of the environment
+            realtime: whether to run in realtime mode, setting this False essentially means inference latency is 0
+            return_debug_data: whether to return debug data from the inference
+        """
+        super().__init__(control_hz=control_hz, realtime=realtime)
+
         self._ws_client = ws_client
-
-        self._action_queue: deque[Action] = deque()
-        self._action_chunks: List[ActionChunk] = []
-        self._step_duration = 1 / control_hz
-
-        self._lock = threading.Lock()
-        self._background_thread = threading.Thread(target=self._receive_actions, daemon=True)
-        self._background_thread.start()
         self._sent_request = False
 
+        self.reset()
+        self._background_thread.start()
+
+    @override
     def _infer(self, obs: Observation) -> None:
         deadline = time.time() + len(self._action_queue) * self._step_duration
         self._ws_client.send(obs, deadline=deadline)
         self._sent_request = True
 
-    def _receive_actions(self):
+    @override
+    def _receive_actions(self) -> None:
         while True:
             action_chunk = self._ws_client.receive()
 
@@ -61,32 +65,11 @@ class SyncBroker(ActionChunkBroker):
                 )
                 self._sent_request = False
 
-    def _create_null_action(self, obs: Observation) -> Action:
-        # FIXME: hardcoded, should move this outside of this class
-        import numpy as np
-
-        action = np.zeros(7)
-        action[-1] = self.current_action_chunk.get_action(-1)[-1] if self.current_action_chunk is not None else 0.0
-
-        return Action(
-            step=obs.step,
-            action=action,
-            action_chunk_index=None,
-            index_in_chunk=None,
-        )
-
+    @override
     def _should_infer(self) -> bool:
         return len(self._action_queue) == 0 and self._sent_request is False
 
-    def infer(self, obs: Observation) -> Action:
-        with self._lock:
-            action = self._action_queue.popleft() if self._action_queue else self._create_null_action(obs)
-
-            if self._should_infer():
-                self._infer(obs)
-
-        return action
-
+    @override
     def reset(self) -> None:
         with self._lock:
             self._action_queue.clear()
