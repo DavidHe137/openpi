@@ -195,7 +195,7 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
             robot_idx=robot_idx,
         ),
     ]
-    if args.progress_type is not None:
+    if args.progress_type is not None and _progress_queue is not None:
         subscribers.append(
             ProgressSubscriber(
                 queue=_progress_queue,
@@ -234,14 +234,15 @@ def _robot_worker(task_args) -> None:
 def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> None:
     counter = multiprocessing.Value("i", 0)  # for assigning robot indices
 
-    with get_progress_manager(
-        args.progress_type, max_steps=args.max_steps
-    ) as progress_manager:
-        if args.debug:
-            init_worker(args, counter, progress_manager.queue)
-            for job in jobs:
-                _robot_worker((args, job))
-        else:
+    if args.debug:
+        # Debug mode: no progress manager, single process for pdb compatibility
+        init_worker(args, counter, None)
+        for job in jobs:
+            _robot_worker((args, job, server_metadata))
+    else:
+        with get_progress_manager(
+            args.progress_type, max_steps=args.max_steps
+        ) as progress_manager:
             # Pass queue to worker initializer
             with multiprocessing.Pool(
                 processes=args.num_robots,
