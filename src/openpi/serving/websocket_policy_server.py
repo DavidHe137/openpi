@@ -392,8 +392,10 @@ class WebsocketPolicyServer:
                 response_socket.send_pyobj(batch_metric)
 
                 # Send responses
-                for req, action in zip(batch, actions, strict=True):
-                    actions = action["actions"]
+                for req, action_dict in zip(batch, actions, strict=True):
+                    actions = action_dict["actions"]
+                    noise = action_dict.get("noise")
+
                     execution_horizon = len(actions)
                     if req.infer_request.robot_id in last_response:
                         execution_horizon = calculate_execution_horizon(
@@ -409,6 +411,7 @@ class WebsocketPolicyServer:
                         request_timestamp=req.infer_request.request_timestamp,
                         execution_horizon=execution_horizon,
                         actions=actions,
+                        noise=noise,
                     )
                     response_socket.send_pyobj(response)
                     last_response[req.infer_request.robot_id] = response

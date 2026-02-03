@@ -82,66 +82,55 @@ def load_metadata(debug_data_dir: pathlib.Path) -> dict:
 
 
 def load_debug_chunks(debug_data_dir: pathlib.Path) -> List[dict]:
-    """Load all debug data chunks in order."""
-    chunk_dir = debug_data_dir / "debug_data"
-    if not chunk_dir.exists():
-        raise FileNotFoundError(f"Debug data directory not found: {chunk_dir}")
+    """Load all debug data chunks from the .npz file."""
+    debug_file = debug_data_dir / "debug_data.npz"
+    if not debug_file.exists():
+        raise FileNotFoundError(f"Debug data file not found: {debug_file}")
 
-    chunk_files = sorted(chunk_dir.glob("chunk_*.npy"))
-    if not chunk_files:
-        raise FileNotFoundError(f"No chunk files found in {chunk_dir}")
+    # Load npz file
+    data = np.load(debug_file, allow_pickle=True)
 
-    chunks = []
-    for chunk_file in chunk_files:
-        data = np.load(chunk_file, allow_pickle=True).item()
-        chunks.append(data)
+    # Parse chunks by prefix
+    chunks = {}
+    for key in data.keys():
+        parts = key.split("/", 1)
+        if len(parts) == 2:
+            chunk_prefix, field_path = parts
+            if chunk_prefix not in chunks:
+                chunks[chunk_prefix] = {}
 
-    return chunks
-
-
-def unflatten_debug_data(flat_data: dict) -> dict:
-    """Convert flattened debug data back to nested structure.
-
-    Special handling for 'raw_obs' which contains keys with '/' in them
-    (like 'observation/image'). These should NOT be split further.
-    """
-    result = {}
-    for key, value in flat_data.items():
-        # Special handling for raw_obs - only split on first '/'
-        if key.startswith("raw_obs/"):
-            if "raw_obs" not in result:
-                result["raw_obs"] = {}
-            # The rest of the key (after 'raw_obs/') should be kept as-is
-            inner_key = key[len("raw_obs/") :]
-            result["raw_obs"][inner_key] = value
-        else:
-            # Normal nested structure handling
-            parts = key.split("/")
-            current = result
-            for part in parts[:-1]:
+            # Reconstruct nested structure
+            current = chunks[chunk_prefix]
+            field_parts = field_path.split("/")
+            for part in field_parts[:-1]:
                 if part not in current:
                     current[part] = {}
                 current = current[part]
-            current[parts[-1]] = value
-    return result
+            current[field_parts[-1]] = data[key]
+
+    # Convert to list sorted by chunk index
+    chunk_list = []
+    for chunk_prefix in sorted(chunks.keys()):
+        chunk_list.append(chunks[chunk_prefix])
+
+    return chunk_list
 
 
 def create_observation_from_debug(debug_data: dict, prompt: str, step: int) -> dict:
-    """Create observation dict from debug data for policy inference.
+    """Create observation dict from debug data for policy inference."""
+    if "observation" not in debug_data:
+        raise ValueError("No observation found in debug data")
 
-    Prefers 'raw_obs' (the exact observation before any transforms) if available,
-    otherwise falls back to 'obs_before_preprocess' with reverse transform.
-    """
-    # Prefer raw_obs if available (exact observation before any transforms)
-    if "raw_obs" in debug_data:
-        raw_obs = debug_data["raw_obs"]
-        # raw_obs is the exact dict that was passed to policy.infer()
-        # Just update the step counter
-        obs = dict(raw_obs)
-        obs["step"] = step
-        return obs
+    obs = debug_data["observation"]
 
-    raise ValueError("No raw_obs found in debug data")
+    # Build observation in the format expected by policy
+    return {
+        "observation/state": obs["state"],
+        "observation/image": obs["image"],
+        "observation/wrist_image": obs.get("wrist_image"),
+        "prompt": obs.get("prompt", prompt),
+        "step": step,
+    }
 
 
 def get_noise_from_debug(debug_data: dict) -> np.ndarray:
@@ -149,57 +138,30 @@ def get_noise_from_debug(debug_data: dict) -> np.ndarray:
     noise = debug_data.get("noise")
     if noise is None:
         raise ValueError("No noise found in debug data")
-    # Remove batch dimension if present
-    if noise.ndim == 3 and noise.shape[0] == 1:
-        noise = noise[0]
     return noise
 
 
 def get_saved_actions_from_debug(debug_data: dict, action_dim: int = 7) -> np.ndarray:
-    """Extract saved final actions from debug data.
-
-    Prefers 'final_actions' (post-processed, unnormalized actions ready for robot)
-    over 'output_actions' (raw model output before unnormalization).
+    """Extract saved actions from debug data.
 
     Args:
-        debug_data: Debug data dictionary containing 'final_actions' or 'output_actions'
+        debug_data: Debug data dictionary containing 'actions'
         action_dim: The actual robot action dimension (default: 7 for LIBERO)
 
     Returns:
         Actions with shape (action_horizon, action_dim)
     """
-    # Prefer final_actions (post-processed) over output_actions (raw model output)
-    actions = debug_data.get("final_actions")
+    actions = debug_data.get("actions")
     if actions is None:
-        # Fallback to output_actions for older debug data
-        actions = debug_data.get("output_actions")
-        if actions is None:
-            raise ValueError("No final_actions or output_actions found in debug data")
-        # output_actions needs dimension slicing since it's padded
-        # Remove batch dimension if present
-        if actions.ndim == 3 and actions.shape[0] == 1:
-            actions = actions[0]
-        # Extract only the actual action dimensions (first action_dim values)
+        raise ValueError("No actions found in debug data")
+
+    # Actions should already be correct shape (action_horizon, action_dim)
+    # Validate dimension matches expected
+    if actions.shape[-1] != action_dim:
+        # Might be padded, slice to actual dimension
         actions = actions[:, :action_dim]
-    else:
-        # final_actions is already the correct shape, just remove batch dim if present
-        if actions.ndim == 3 and actions.shape[0] == 1:
-            actions = actions[0]
+
     return actions
-
-
-def get_saved_output_actions_from_debug(debug_data: dict) -> np.ndarray:
-    """Extract raw model output_actions from debug data.
-
-    This is the (typically normalized) model output before output transforms and slicing.
-    Expected shape: (action_horizon, model_action_dim) (e.g. (50, 32) for Pi0).
-    """
-    actions = debug_data.get("output_actions")
-    if actions is None:
-        raise ValueError("No output_actions found in debug data")
-    if actions.ndim == 3 and actions.shape[0] == 1:
-        actions = actions[0]
-    return np.asarray(actions)
 
 
 def _compute_array_diff(a: np.ndarray, b: np.ndarray) -> dict:
@@ -417,10 +379,7 @@ def replay_episode(
     # Pre-extract all saved actions from chunks for comparison
     all_saved_actions = []
     for chunk in chunks:
-        chunk_data = unflatten_debug_data(chunk)
-        saved_chunk_actions = get_saved_actions_from_debug(
-            chunk_data, config.action_dim
-        )
+        saved_chunk_actions = get_saved_actions_from_debug(chunk, config.action_dim)
         all_saved_actions.append(saved_chunk_actions)
 
     # Replay loop
@@ -477,21 +436,13 @@ def replay_episode(
                         break
                 else:
                     # Load next chunk
-                    chunk_data = unflatten_debug_data(chunks[chunk_idx])
+                    chunk_data = chunks[chunk_idx]
 
                     # Always get saved actions for comparison
                     current_saved_actions = all_saved_actions[chunk_idx]
-                    saved_output_actions = None
-                    if config.return_debug_data:
-                        try:
-                            saved_output_actions = get_saved_output_actions_from_debug(
-                                chunk_data
-                            )
-                        except Exception:
-                            saved_output_actions = None
 
                     if config.use_saved_actions:
-                        # Use saved output_actions directly (extract only action_dim dimensions)
+                        # Use saved actions directly
                         current_actions = current_saved_actions.copy()
                     else:
                         # Re-infer from policy with saved noise
@@ -514,135 +465,6 @@ def replay_episode(
                         )
                         # Policy response already has correct action_dim from post-processing
                         current_actions = response["actions"]
-
-                        # If requested, compare Triton/JAX debug payloads at the chunk boundary.
-                        if (
-                            config.return_debug_data
-                            and chunk_debug_report_path is not None
-                        ):
-                            triton_debug = (
-                                response.get("debug_data", {})
-                                if isinstance(response, dict)
-                                else {}
-                            )
-                            triton_output_actions = triton_debug.get(
-                                "output_actions", None
-                            )
-                            triton_final_actions = triton_debug.get(
-                                "final_actions", None
-                            )
-                            triton_noise = triton_debug.get("noise", None)
-                            triton_obs_after = triton_debug.get(
-                                "obs_after_preprocess", None
-                            )
-
-                            record = {
-                                "chunk_idx": int(chunk_idx),
-                                "step": int(step),
-                                "has_saved_output_actions": saved_output_actions
-                                is not None,
-                                "has_triton_output_actions": triton_output_actions
-                                is not None,
-                                "has_triton_final_actions": triton_final_actions
-                                is not None,
-                                "has_triton_noise": triton_noise is not None,
-                                "has_triton_obs_after_preprocess": triton_obs_after
-                                is not None,
-                            }
-
-                            # Confirm the server actually used the same noise.
-                            if noise is not None and triton_noise is not None:
-                                record["noise_diff"] = _compute_array_diff(
-                                    np.asarray(noise), np.asarray(triton_noise)
-                                )
-                            else:
-                                record["noise_diff"] = None
-
-                            if (
-                                saved_output_actions is not None
-                                and triton_output_actions is not None
-                            ):
-                                record["output_actions_diff"] = _compute_array_diff(
-                                    saved_output_actions,
-                                    np.asarray(triton_output_actions),
-                                )
-                            else:
-                                record["output_actions_diff"] = None
-
-                            # Compare preprocessing (saved vs Triton), to localize divergence.
-                            saved_state_after = _safe_get(
-                                chunk_data, ["obs_after_preprocess", "state"]
-                            )
-                            triton_state_after = None
-                            if isinstance(triton_obs_after, dict):
-                                triton_state_after = triton_obs_after.get("state", None)
-                            if (
-                                saved_state_after is not None
-                                and triton_state_after is not None
-                            ):
-                                record["obs_after_preprocess_state_diff"] = (
-                                    _compute_array_diff(
-                                        np.asarray(saved_state_after),
-                                        np.asarray(triton_state_after),
-                                    )
-                                )
-                            else:
-                                record["obs_after_preprocess_state_diff"] = None
-
-                            # Images are large; we still compute exact diff stats but do not store arrays.
-                            saved_base_after = _safe_get(
-                                chunk_data,
-                                ["obs_after_preprocess", "images", "base_0_rgb"],
-                            )
-                            saved_left_after = _safe_get(
-                                chunk_data,
-                                ["obs_after_preprocess", "images", "left_wrist_0_rgb"],
-                            )
-                            triton_imgs_after = None
-                            if isinstance(triton_obs_after, dict):
-                                triton_imgs_after = triton_obs_after.get("images", None)
-                            if isinstance(triton_imgs_after, dict):
-                                triton_base_after = triton_imgs_after.get(
-                                    "base_0_rgb", None
-                                )
-                                triton_left_after = triton_imgs_after.get(
-                                    "left_wrist_0_rgb", None
-                                )
-                            else:
-                                triton_base_after = None
-                                triton_left_after = None
-
-                            record["obs_after_preprocess_base_rgb_diff"] = (
-                                _compute_array_diff(
-                                    np.asarray(saved_base_after),
-                                    np.asarray(triton_base_after),
-                                )
-                                if saved_base_after is not None
-                                and triton_base_after is not None
-                                else None
-                            )
-                            record["obs_after_preprocess_left_wrist_rgb_diff"] = (
-                                _compute_array_diff(
-                                    np.asarray(saved_left_after),
-                                    np.asarray(triton_left_after),
-                                )
-                                if saved_left_after is not None
-                                and triton_left_after is not None
-                                else None
-                            )
-
-                            # Compare post-processed actions too.
-                            if triton_final_actions is not None:
-                                record["final_actions_diff"] = _compute_array_diff(
-                                    current_saved_actions,
-                                    np.asarray(triton_final_actions),
-                                )
-                            else:
-                                record["final_actions_diff"] = _compute_array_diff(
-                                    current_saved_actions, np.asarray(current_actions)
-                                )
-
-                            _append_jsonl(chunk_debug_report_path, record)
 
                     chunk_idx += 1
                     action_idx = 0

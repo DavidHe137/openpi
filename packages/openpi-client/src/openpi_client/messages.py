@@ -43,6 +43,7 @@ class InferRequest:
     deadline: float
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
+    noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
 
 
 @dataclass(frozen=True)
@@ -53,3 +54,4 @@ class InferResponse:
     request_timestamp: float  # from request
     actions: Float[np.ndarray, "1 action_horizon action_dim"]  # TODO: check the type on this
     execution_horizon: int
+    noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None

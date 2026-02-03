@@ -152,6 +152,7 @@ class ActionChunk(ParquetDataclass, CSVDataclass):
     execution_horizon: int
     request_timestamp: float
     response_timestamp: float
+    noise: Optional[np.ndarray] = None
     debug_data: dict = field(default_factory=dict)  # optional, from model inference
 
     @classmethod
@@ -163,6 +164,7 @@ class ActionChunk(ParquetDataclass, CSVDataclass):
             execution_horizon=infer_response.execution_horizon,
             request_timestamp=infer_response.request_timestamp,
             response_timestamp=time.time(),
+            noise=infer_response.noise,
         )
 
     @property

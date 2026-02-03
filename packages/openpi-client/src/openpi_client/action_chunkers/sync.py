@@ -39,6 +39,7 @@ class SyncBroker(ActionChunkBroker):
 
     @override
     def _infer(self, obs: Observation) -> None:
+        breakpoint()
         deadline = time.time() + len(self._action_queue) * self._step_duration
         self._ws_client.send(obs, deadline=deadline)
         self._sent_request = True

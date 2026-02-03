@@ -102,9 +102,8 @@ class Policy(BasePolicy):
         d_param: int = 4,
         return_debug_data: bool = False,
     ) -> dict:  # type: ignore[misc]
-        raw_obs = None
-        if return_debug_data:
-            raw_obs = jax.tree.map(lambda x: np.array(x) if hasattr(x, "__array__") else x, obs)
+        # Always capture raw_obs for noise tracking
+        raw_obs = jax.tree.map(lambda x: np.array(x) if hasattr(x, "__array__") else x, obs)
 
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
@@ -146,6 +145,10 @@ class Policy(BasePolicy):
                 state_norm = (state_norm - mean) / (std + 1e-6)
 
             outputs: dict[str, Any] = {"state": state_norm, "actions": actions_np}
+
+            # Extract noise that was actually used
+            noise_used = noise if noise is not None else (debug_data.get("noise") if debug_data else None)
+            outputs["noise"] = noise_used
 
             # Apply the full output transform (including Unnormalize) to match the JAX policy.
             outputs = self._output_transform(outputs)
@@ -212,6 +215,10 @@ class Policy(BasePolicy):
                 "state": observation.state,
                 "actions": actions,
             }
+
+            # Extract noise that was actually used
+            noise_used = noise if noise is not None else (debug_data.get("noise") if debug_data else None)
+            outputs["noise"] = noise_used
 
             # Collect data for JAX models (after JIT execution)
             if not self._is_pytorch_model and hasattr(self._model, "output_actions_save"):
@@ -383,6 +390,17 @@ class Policy(BasePolicy):
 
                 result: dict[str, Any] = {"state": state_norm_i, "actions": action_i}
 
+                # Extract noise for this batch element
+                req_noise = getattr(req, "noise", None)
+                if req_noise is None and noise is not None:
+                    noise_i = noise[i] if noise.ndim == 3 else noise
+                elif req_noise is not None:
+                    noise_i = req_noise
+                else:
+                    # Model generated noise - extract from debug_data
+                    noise_i = debug_data.get("noise")[i] if debug_data and "noise" in debug_data else None
+                result["noise"] = noise_i
+
                 # Apply the full output transform (including Unnormalize)
                 result = self._output_transform(result)
 
@@ -454,6 +472,25 @@ class Policy(BasePolicy):
                     result[key] = value[i]
                 else:
                     result[key] = value
+
+            # Extract noise for this batch element
+            req = requests[i]
+            req_noise = getattr(req, "noise", None)
+            if req_noise is None and noise is not None:
+                # Extract from batched noise
+                noise_i = noise[i] if (hasattr(noise, "ndim") and noise.ndim == 3) else noise
+            elif req_noise is not None:
+                noise_i = req_noise
+            else:
+                # Model generated noise - extract from debug_data
+                noise_i = None
+                if debug_data and "noise" in debug_data:
+                    noise_val = debug_data["noise"]
+                    if isinstance(noise_val, np.ndarray) and len(noise_val.shape) > 0:
+                        noise_i = noise_val[i]
+                    else:
+                        noise_i = noise_val
+            result["noise"] = noise_i
 
             # Add debug data for this batch element if available
             if debug_data is not None:

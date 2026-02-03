@@ -4,7 +4,7 @@ import time
 import imageio
 import numpy as np
 
-from typing import List, Dict, Any
+from typing import List, Dict
 from dataclasses import dataclass
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
@@ -20,20 +20,6 @@ from libero.libero import benchmark
 from examples.libero.env import LiberoSimEnvironment
 
 logger = logging.getLogger(__name__)
-
-
-# NOTE: don't like this function, shouldn't need it ideally
-def _flatten_dict(
-    d: Dict[str, Any], parent_key: str = "", sep: str = "/"
-) -> Dict[str, Any]:
-    items = []
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else k
-        if isinstance(v, dict):
-            items.extend(_flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
 
 
 @dataclass(frozen=True)
@@ -71,15 +57,27 @@ class Saver(_subscriber.Subscriber):
         self._timestamps: List[Timestamp] = []
         self._images: List[np.ndarray] = []
         self._control_hz = environment.control_hz
+        self._observations_buffer: Dict[int, dict] = {}
 
     @override
     def on_episode_start(self) -> None:
         self._timestamps = []
         self._action_chunk_indices = []
         self._images = []
+        self._observations_buffer = {}
 
     @override
     def on_step(self, observation: Observation, action: Action) -> None:
+        # Store observation in buffer for debug data coordination
+        self._observations_buffer[observation.step] = {
+            "state": observation.state,
+            "image": observation.image,
+            "wrist_image": observation.wrist_image,
+        }
+        # Add prompt if it's a LiberoObservation
+        if hasattr(observation, "prompt"):
+            self._observations_buffer[observation.step]["prompt"] = observation.prompt
+
         self._timestamps.append(
             Timestamp(
                 timestamp=time.perf_counter(),
@@ -148,25 +146,52 @@ class Saver(_subscriber.Subscriber):
             fps=self._control_hz,  # NOTE: saving in control hz fps for now
         )
 
-    # NOTE: I think this can be saved in a single npz file, but will need to be coordinated with edits to replay_debug_data.py
     def _save_debug_data(self, out_folder: pathlib.Path) -> None:
+        """Save debug data as a single .npz file with observations, noise, and actions."""
         action_chunks = self._action_chunk_broker.action_chunks
-        debug_data_dir = out_folder / "debug_data"
 
-        has_debug_data = any(chunk.debug_data for chunk in action_chunks)
-        if not has_debug_data:
-            logger.debug("No debug data to save")
+        # Check if we have noise data
+        has_noise = any(chunk.noise is not None for chunk in action_chunks)
+        if not has_noise:
+            logger.debug("No debug data to save (no noise present)")
             return
 
-        debug_data_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Saving debug data to {debug_data_dir}")
+        debug_data_file = out_folder / "debug_data.npz"
+        logger.info(f"Saving debug data to {debug_data_file}")
+
+        # Build data dict for .npz file
+        data_to_save = {}
 
         for i, chunk in enumerate(action_chunks):
-            if not chunk.debug_data:
-                continue
+            prefix = f"chunk_{i:04d}"
 
-            flat_data = _flatten_dict(chunk.debug_data)
+            # Save observation that triggered this inference
+            obs = self._observations_buffer.get(chunk.start_step)
+            if obs is not None:
+                data_to_save[f"{prefix}/observation/state"] = obs["state"]
+                data_to_save[f"{prefix}/observation/image"] = obs["image"]
+                data_to_save[f"{prefix}/observation/wrist_image"] = obs["wrist_image"]
+                if "prompt" in obs:
+                    # Store prompt as object array for npz compatibility
+                    data_to_save[f"{prefix}/observation/prompt"] = np.array(
+                        obs["prompt"], dtype=object
+                    )
+            else:
+                logger.warning(
+                    f"No observation found for chunk {i} at step {chunk.start_step}"
+                )
 
-            chunk_file = debug_data_dir / f"chunk_{i:04d}.npy"
-            np.save(chunk_file, flat_data, allow_pickle=True)
-            logger.debug(f"Saved debug data for chunk {i} to {chunk_file}")
+            # Save noise (should always be present)
+            if chunk.noise is not None:
+                data_to_save[f"{prefix}/noise"] = chunk.noise
+
+            # Save actions (final robot-ready actions)
+            data_to_save[f"{prefix}/actions"] = chunk.actions
+
+            # Save metadata
+            data_to_save[f"{prefix}/start_step"] = chunk.start_step
+            data_to_save[f"{prefix}/execution_horizon"] = chunk.execution_horizon
+
+        # Save as compressed npz
+        np.savez_compressed(debug_data_file, **data_to_save)
+        logger.info(f"Saved {len(action_chunks)} chunks to {debug_data_file}")
