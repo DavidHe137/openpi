@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable
 from dataclasses import asdict
@@ -7,6 +9,7 @@ import http
 import logging
 import multiprocessing as mp
 import signal
+import time
 import traceback
 from typing import Any
 import uuid
@@ -19,6 +22,9 @@ import websockets.frames
 import zmq
 import zmq.asyncio
 
+from openpi.serving.metrics import BatchMetrics
+from openpi.serving.metrics import MetricsCollector
+from openpi.serving.metrics import plot_metrics
 from openpi.serving.request_queue import RequestQueue
 from openpi.serving.schemas import ArrivedRequest
 from openpi.serving.variable_execution import calculate_execution_horizon
@@ -53,12 +59,14 @@ class WebsocketPolicyServer:
         port: int | None = None,
         metadata: dict | None = None,
         max_batch_size: int = 1,
+        log_dir: str | None = None,
     ) -> None:
         self._policy_factory = policy_factory
         self._host = host
         self._port = port
         self._metadata = metadata or {}
         self._max_batch_size = max_batch_size
+        self._log_dir = log_dir
 
         # IPC endpoints
         socket_id = uuid.uuid4().hex[:8]
@@ -79,6 +87,11 @@ class WebsocketPolicyServer:
         )
 
         logging.getLogger("websockets.server").setLevel(logging.INFO)
+        self.responses = dict[int, asyncio.futures.Future]()
+        self._worker_identity: bytes | None = None  # Worker identity (learned from first message)
+        self.last_request_id = 0
+
+        self._metrics = MetricsCollector()
 
     def serve_forever(self) -> None:
         asyncio.run(self._run())
@@ -117,18 +130,53 @@ class WebsocketPolicyServer:
                 process_request=_health_check,
             ) as server:
                 await server.serve_forever()
+        except KeyboardInterrupt:
+            logger.info("Server interrupted, shutting down...")
         finally:
+            # Generate plots before cleanup
+            if self._log_dir:
+                logger.info("Generating metrics plots...")
+                plot_metrics(self._metrics, self._log_dir)
+
+            # Cleanup
             response_task.cancel()
             self._request_socket.close()
             self._response_socket.close()
             zmq_ctx.term()
+            self._worker.terminate()
+            self._worker.join(timeout=5)
 
     async def _route_responses(self):
         """Routes responses from worker to appropriate websocket connections."""
         while True:
             try:
-                response: InferResponse = await self._response_socket.recv_pyobj()
+                message = await self._response_socket.recv_pyobj()
 
+                # Handle both InferResponse and BatchMetrics
+                if isinstance(message, BatchMetrics):
+                    # Handle batch metrics
+                    batch_metric = message
+                    self._metrics.add_batch_metrics(batch_metric)
+
+                    # Update processing start time for all requests in batch
+                    self._metrics.add_batch_start(
+                        batch_metric.request_ids,
+                        batch_metric.processing_start_time,
+                    )
+
+                    # Log observability metrics
+                    stats = self._metrics.get_recent_latency_stats()
+                    logger.info(
+                        f"Batch {batch_metric.batch_id} completed: "
+                        f"batch_time={batch_metric.batch_processing_time * 1000:.1f}ms, "
+                        f"avg_lat_1={stats['avg_1'] * 1000:.1f}ms, "
+                        f"avg_lat_5={stats['avg_5'] * 1000:.1f}ms, "
+                        f"avg_lat_10={stats['avg_10'] * 1000:.1f}ms"
+                    )
+                    continue
+
+                # Handle InferResponse
+                response: InferResponse = message
                 conn_id = self._request_routing.pop(response.request_id, None)
                 if conn_id is None:
                     logger.debug(f"No routing for request {response.request_id}")
@@ -138,6 +186,10 @@ class WebsocketPolicyServer:
                 if conn is None:
                     logger.debug(f"Connection {conn_id} closed, dropping response")
                     continue
+
+                # Track finished time
+                finished_time = time.perf_counter()
+                self._metrics.add_request_finished(response.request_id, finished_time)
 
                 conn.pending_requests.discard(response.request_id)
                 await conn.response_queue.put(response)  # type: ignore
@@ -184,10 +236,18 @@ class WebsocketPolicyServer:
         while True:
             message = msgpack_numpy.unpackb(await conn.websocket.recv())
             infer_request = InferRequest(**message)
+
+            # Track arrival time
+            arrival_time = time.perf_counter()
             arrived_request = ArrivedRequest.receive(infer_request)
+            self._metrics.add_request_arrival(arrived_request.request_id, arrival_time)
 
             conn.pending_requests.add(arrived_request.request_id)
             self._request_routing[arrived_request.request_id] = conn.conn_id
+
+            # Track queued time (when sent to worker)
+            queued_time = time.perf_counter()
+            self._metrics.add_request_queued(arrived_request.request_id, queued_time)
 
             logger.info(
                 f"Request from {arrived_request.infer_request.robot_id} for step {arrived_request.infer_request.start_step}"
@@ -238,6 +298,9 @@ class WebsocketPolicyServer:
         # NOTE: hacky data structure for now
         last_response: dict[str, InferResponse] = {}
 
+        # Batch counter for metrics
+        batch_counter = 0
+
         try:
             while not shutdown_requested:
                 # Block for at least one message
@@ -261,6 +324,9 @@ class WebsocketPolicyServer:
                 if not batch:
                     continue
 
+                # Track batch timing
+                batch_start_time = time.perf_counter()
+
                 # Run inference
                 logger.info(f"Inferring batch of size {len(batch)}")
                 try:
@@ -268,6 +334,19 @@ class WebsocketPolicyServer:
                 except Exception as e:
                     logger.error(f"Inference failed: {e}", exc_info=True)
                     continue
+
+                batch_end_time = time.perf_counter()
+
+                # Create and send batch metrics
+                batch_metric = BatchMetrics(
+                    batch_id=batch_counter,
+                    processing_start_time=batch_start_time,
+                    processing_end_time=batch_end_time,
+                    num_real_requests=len(batch),
+                    total_batch_size=len(batch),
+                    request_ids=[req.request_id for req in batch],
+                )
+                response_socket.send_pyobj(batch_metric)
 
                 # Send responses
                 for req, action in zip(batch, actions, strict=True):
@@ -290,6 +369,8 @@ class WebsocketPolicyServer:
                     )
                     response_socket.send_pyobj(response)
                     last_response[req.infer_request.robot_id] = response
+
+                batch_counter += 1
 
         finally:
             logger.info("Worker shutting down")

@@ -4,6 +4,7 @@ import multiprocessing
 import shutil
 from typing import Union, List, Literal, Optional, Dict, Type
 import datetime
+import time
 
 import numpy as np
 from jaxtyping import Float
@@ -16,7 +17,7 @@ from openpi_client.action_chunkers import (
     SyncBrokerConfig,
     RTCBrokerConfig,
 )
-from openpi_client.schemas import RuntimeMetadata
+from openpi_client.schemas import RuntimeMetadata, ServerMetadata
 import tyro
 from dataclasses import dataclass, field
 
@@ -118,6 +119,26 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
     return float(args.latency_ms[robot_idx])
 
 
+def delay_start(
+    control_hz: int,
+    action_chunk_broker_config: ActionChunkBrokerArgs,
+    server_metadata: ServerMetadata,
+):
+    """Return the period (in seconds) that a robot waits between requests."""
+    period = 0.0
+    if action_chunk_broker_config.broker_type == ActionChunkBrokerType.SYNC:
+        period = server_metadata.action_horizon / control_hz
+    elif action_chunk_broker_config.broker_type == ActionChunkBrokerType.RTC:
+        period = action_chunk_broker_config.s_min / control_hz
+    else:
+        raise ValueError(
+            f"Unknown action chunk broker type: {action_chunk_broker_config.broker_type}"
+        )
+
+    delay = np.random.uniform(0, period)
+    time.sleep(delay)
+
+
 def init_worker(args: Args, counter, progress_queue) -> None:
     global robot_idx, ws_client, broker, agent, _progress_queue
     with counter.get_lock():
@@ -198,13 +219,19 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
 
 def _robot_worker(task_args) -> None:
     """Worker process that handles jobs for a specific robot index."""
-    args, job = task_args
+    args, job, server_metadata = task_args
     runtime = create_runtime(args, job)
+    delay_start(
+        control_hz=args.control_hz,
+        action_chunk_broker_config=args.action_chunk_broker,
+        server_metadata=server_metadata,
+    )
+
     runtime.run()
     runtime.close()
 
 
-def run_robots(args: Args, jobs: List[Job]) -> None:
+def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> None:
     counter = multiprocessing.Value("i", 0)  # for assigning robot indices
 
     with get_progress_manager(
@@ -225,7 +252,8 @@ def run_robots(args: Args, jobs: List[Job]) -> None:
                     # use imap_unordered so that it exits immediately on any exception
                     _ = list(
                         pool.imap_unordered(
-                            _robot_worker, [(args, job) for job in jobs]
+                            _robot_worker,
+                            [(args, job, server_metadata) for job in jobs],
                         )
                     )
                 except Exception as e:
@@ -349,7 +377,7 @@ def main(args: Args) -> None:
     logging.info(f"Saved server metadata to {output_path / 'server_metadata.json'}")
 
     # Run robots
-    run_robots(args, jobs)
+    run_robots(args, jobs, server_metadata)
     calculate_metrics(pathlib.Path(args.output_dir))
     generate_all_plots(pathlib.Path(args.output_dir))
 

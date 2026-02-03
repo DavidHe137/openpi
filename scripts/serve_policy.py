@@ -3,7 +3,7 @@ import datetime
 import logging
 import pathlib
 import socket
-from typing import Any
+import sys
 
 from openpi_client.schemas import ServerMetadata
 import tyro
@@ -12,7 +12,13 @@ from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.policies.policy import EnvMode
 from openpi.serving import websocket_policy_server
+from openpi.shared import logging_config
 from openpi.training import config as _config
+
+# Import shared utilities
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from utils import DEFAULT_CHECKPOINT
+from utils import create_default_policy
 
 
 @dataclasses.dataclass
@@ -56,56 +62,7 @@ class Args:
     num_steps: int = 10
 
     # Log directory to save the logs to.
-    log_dir: str | None = None
-
-
-# Default checkpoints that should be used for each environment.
-DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
-    EnvMode.ALOHA: Checkpoint(
-        config="pi05_aloha",
-        dir="gs://openpi-assets/checkpoints/pi05_base",
-    ),
-    EnvMode.ALOHA_SIM: Checkpoint(
-        config="pi0_aloha_sim",
-        dir="gs://openpi-assets/checkpoints/pi0_aloha_sim",
-    ),
-    EnvMode.DROID: Checkpoint(
-        config="pi05_droid",
-        dir="gs://openpi-assets/checkpoints/pi05_droid",
-    ),
-    EnvMode.LIBERO: Checkpoint(
-        config="pi05_libero",
-        dir="gs://openpi-assets/checkpoints/pi05_libero",
-    ),
-    EnvMode.LIBERO_PI0: Checkpoint(
-        config="pi0_libero",
-        dir="gs://openpi-assets/checkpoints/pi0_libero",
-    ),
-    EnvMode.LIBERO_PYTORCH: Checkpoint(
-        config="pi0_libero",
-        dir="/coc/flash8/rbansal66/openpi_rollout/openpi/.cache/openpi/openpi-assets/checkpoints/pi0_libero_pytorch_openpi",
-    ),
-    EnvMode.LIBERO_REALTIME: Checkpoint(
-        config="pi0_libero",
-        dir="/coc/flash8/rbansal66/openpi_rollout/openpi/.cache/openpi/openpi-assets/checkpoints/pi0_libero_pytorch_dexmal_mokapots",
-    ),
-}
-
-
-def create_default_policy(
-    env: EnvMode, *, batch_size: int = 1, default_prompt: str | None = None, sample_kwargs: dict[str, Any] | None = None
-) -> _policy.Policy:
-    """Create a default policy for the given environment."""
-    if checkpoint := DEFAULT_CHECKPOINT.get(env):
-        return _policy_config.create_trained_policy(
-            _config.get_config(checkpoint.config),
-            checkpoint.dir,
-            default_prompt=default_prompt,
-            sample_kwargs=sample_kwargs,
-            use_triton_optimized=(env == EnvMode.LIBERO_REALTIME),
-            batch_size=batch_size,
-        )
-    raise ValueError(f"Unsupported environment mode: {env}")
+    log_dir: str = "logs/server"
 
 
 def create_policy(args: Args) -> _policy.Policy:
@@ -131,15 +88,12 @@ def create_policy(args: Args) -> _policy.Policy:
 
 
 def main(args: Args) -> None:
-    if args.log_dir is not None:
-        log_path = (
-            pathlib.Path(args.log_dir)
-            / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
-        )
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        logging.basicConfig(level=logging.INFO, datefmt="[%X]", force=True, filename=log_path)
-    else:
-        logging.basicConfig(level=logging.INFO, datefmt="[%X]", force=True)
+    log_path = (
+        pathlib.Path(args.log_dir)
+        / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging_config.setup_logging(log_path=log_path)
 
     # Create policy factory to avoid CUDA context fork issues
     def policy_factory():
@@ -159,8 +113,8 @@ def main(args: Args) -> None:
             checkpoint_dir = args.policy.dir
         case Default():
             if checkpoint := DEFAULT_CHECKPOINT.get(args.env):
-                train_config = _config.get_config(checkpoint.config)
-                checkpoint_dir = checkpoint.dir
+                train_config = _config.get_config(checkpoint["config"])
+                checkpoint_dir = checkpoint["dir"]
             else:
                 raise ValueError(f"Unsupported environment mode: {args.env}")
 
@@ -186,6 +140,7 @@ def main(args: Args) -> None:
         port=args.port,
         metadata=dataclasses.asdict(server_metadata),
         max_batch_size=args.max_batch_size,
+        log_dir=args.log_dir,
     )
     server.serve_forever()
 

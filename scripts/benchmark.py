@@ -27,6 +27,8 @@ from datetime import datetime
 import enum
 import json
 import os
+import pathlib
+import sys
 import time
 from typing import Any
 import warnings
@@ -38,6 +40,10 @@ from tqdm.asyncio import tqdm
 from openpi.policies.aloha_policy import make_aloha_example
 from openpi.policies.droid_policy import make_droid_example
 from openpi.policies.libero_policy import make_libero_example
+
+# Import shared utilities
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from utils import get_gpu_info
 
 
 class EnvMode(enum.Enum):
@@ -255,8 +261,17 @@ async def benchmark(
     # Calculate metrics
     metrics = calculate_metrics(outputs, benchmark_duration, num_requests, selected_percentiles)
 
+    # Get GPU info
+    gpu_info = get_gpu_info()
+
     # Print results
     print("{s:{c}^{n}}".format(s=" Benchmark Results ", n=50, c="="))
+    if gpu_info.get("gpu_available"):
+        print("{:<40} {:<10}".format("GPU:", gpu_info["gpu_name"]))
+        print("{:<40} {:<10}".format("Driver version:", gpu_info["driver_version"]))
+        print("{:<40} {:<10}".format("GPU memory:", gpu_info["memory_total"]))
+    else:
+        print("{:<40} {:<10}".format("GPU:", "Not available"))
     print("{:<40} {:<10}".format("Total requests:", metrics.total_requests))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
     print("{:<40} {:<10}".format("Failed requests:", metrics.total_requests - metrics.completed))
@@ -294,7 +309,7 @@ async def benchmark(
         "latencies": [o.latency for o in outputs if o.success],
         "arrival_times": arrival_times,
         "errors": [o.error for o in outputs if not o.success],
-        "policy_timing": [o.outputs["policy_timing"] for o in outputs if o.success],
+        "gpu_info": gpu_info,
     }
 
     return result

@@ -287,7 +287,7 @@ class BaseModel(nnx.Module, abc.ABC):
     @abc.abstractmethod
     def sample_actions(
         self, rng: at.KeyArrayLike, observation: Observation, **kwargs
-    ) -> tuple[Actions, dict, dict | None]: ...
+    ) -> tuple[Actions, dict | None]: ...
 
     @abc.abstractmethod
     def make_example_actions(self) -> Actions:
