@@ -292,13 +292,11 @@ def plot_metrics(metrics: MetricsCollector, output_dir: str) -> None:
     plt.tight_layout()
 
     # Save plots
-    png_path = output_path / "metrics.png"
     pdf_path = output_path / "metrics.pdf"
-    plt.savefig(png_path, dpi=300, bbox_inches="tight")
     plt.savefig(pdf_path, bbox_inches="tight")
     plt.close()
 
-    logger.info(f"Metrics plots saved to {png_path} and {pdf_path}")
+    logger.info(f"Metrics plots saved to {pdf_path}")
 
     # Also save raw metrics as CSV for further analysis
     csv_path = output_path / "metrics.csv"
