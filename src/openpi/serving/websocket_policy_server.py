@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import contextlib
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import field
@@ -94,7 +95,8 @@ class WebsocketPolicyServer:
         self._metrics = MetricsCollector()
 
     def serve_forever(self) -> None:
-        asyncio.run(self._run())
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(self._run())
 
     async def _run(self):
         zmq_ctx = zmq.asyncio.Context()
@@ -130,21 +132,57 @@ class WebsocketPolicyServer:
                 process_request=_health_check,
             ) as server:
                 await server.serve_forever()
-        except KeyboardInterrupt:
-            logger.info("Server interrupted, shutting down...")
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            logger.info("Server interrupted, shutting down gracefully...")
         finally:
-            # Generate plots before cleanup
-            if self._log_dir:
-                logger.info("Generating metrics plots...")
-                plot_metrics(self._metrics, self._log_dir)
+            # Close all active websocket connections
+            logger.info("Closing active connections...")
+            close_tasks = []
+            for conn in list(self._connections.values()):
+                try:
+                    close_tasks.append(
+                        conn.websocket.close(
+                            code=websockets.frames.CloseCode.GOING_AWAY,
+                            reason="Server shutting down",
+                        )
+                    )
+                except Exception as e:
+                    logger.debug(f"Error closing connection: {e}")
 
-            # Cleanup
+            if close_tasks:
+                await asyncio.gather(*close_tasks, return_exceptions=True)
+
+            # Cancel response router and wait for it to finish
+            logger.info("Stopping response router...")
             response_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await response_task
+
+            # Close ZMQ sockets
+            logger.info("Closing ZMQ sockets...")
             self._request_socket.close()
             self._response_socket.close()
             zmq_ctx.term()
-            self._worker.terminate()
-            self._worker.join(timeout=5)
+
+            # Gracefully stop worker
+            logger.info("Stopping worker process...")
+            if self._worker.is_alive():
+                self._worker.terminate()
+                self._worker.join(timeout=5)
+                if self._worker.is_alive():
+                    logger.warning("Worker did not terminate gracefully, killing...")
+                    self._worker.kill()
+                    self._worker.join()
+
+            # Generate plots after everything is stopped
+            if self._log_dir:
+                logger.info("Generating metrics plots...")
+                try:
+                    plot_metrics(self._metrics, self._log_dir)
+                except Exception as e:
+                    logger.error(f"Error generating plots: {e}", exc_info=True)
+
+            logger.info("Shutdown complete")
 
     async def _route_responses(self):
         """Routes responses from worker to appropriate websocket connections."""
@@ -303,9 +341,14 @@ class WebsocketPolicyServer:
 
         try:
             while not shutdown_requested:
-                # Block for at least one message
-                request: ArrivedRequest = request_socket.recv_pyobj()
-                request_queue.add(request)
+                # Block for at least one message (with timeout to check shutdown)
+                try:
+                    request: ArrivedRequest = request_socket.recv_pyobj(flags=zmq.NOBLOCK)
+                    request_queue.add(request)
+                except zmq.Again:
+                    # No message available, sleep briefly and check shutdown
+                    time.sleep(0.01)
+                    continue
 
                 # Drain remaining messages without blocking
                 while True:
@@ -373,10 +416,16 @@ class WebsocketPolicyServer:
                 batch_counter += 1
 
         finally:
-            logger.info("Worker shutting down")
+            logger.info("Worker shutting down gracefully")
+
+            # Set linger to allow pending messages to be sent (max 1 second)
+            request_socket.setsockopt(zmq.LINGER, 1000)
+            response_socket.setsockopt(zmq.LINGER, 1000)
+
             request_socket.close()
             response_socket.close()
             zmq_ctx.term()
+            logger.info("Worker shutdown complete")
 
 
 def _health_check(connection: _server.ServerConnection, request: Any) -> Any | None:
