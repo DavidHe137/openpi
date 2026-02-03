@@ -6,4 +6,5 @@
 	url = https://github.com/Lifelong-Robot-Learning/LIBERO.git
 [submodule "third_party/robosuite"]
 	path = third_party/robosuite
-	url = https://github.com/ARISE-Initiative/robosuite/tree/v1.4.1
+	url = https://github.com/ARISE-Initiative/robosuite.git
+	branch = v1.4.1
