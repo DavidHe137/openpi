@@ -86,7 +86,7 @@ class Policy(BasePolicy):
             self._rng = rng or jax.random.key(0)
             self._model.sample_actions = nnx_utils.module_jit(
                 self._model.sample_actions,
-                static_argnames=["return_debug_data", "use_rtc"],
+                static_argnames=["use_rtc"],
             )
         self._sample_actions = model.sample_actions
 
@@ -100,10 +100,17 @@ class Policy(BasePolicy):
         noise: np.ndarray | None = None,
         s_param: int = 5,
         d_param: int = 4,
-        return_debug_data: bool = False,
     ) -> dict:  # type: ignore[misc]
-        # Always capture raw_obs for noise tracking
-        raw_obs = jax.tree.map(lambda x: np.array(x) if hasattr(x, "__array__") else x, obs)
+        # Use provided noise, or sample from model if not provided
+        if noise is not None:
+            noise_to_use = noise
+        # Sample noise from model
+        elif self._is_pytorch_model:
+            # PyTorch models don't use RNG, they use torch.randn internally
+            noise_to_use = self._model.sample_noise(self._pytorch_device, batch_size=1)
+        else:
+            self._rng, noise_rng = jax.random.split(self._rng)
+            noise_to_use = self._model.sample_noise(noise_rng, batch_size=1)[0]  # Remove batch dim
 
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
@@ -120,12 +127,11 @@ class Policy(BasePolicy):
             }
 
             sample_kwargs = dict(self._sample_kwargs)
-            sample_kwargs["return_debug_data"] = return_debug_data
-            if noise is not None:
-                sample_kwargs["noise"] = np.asarray(noise)
+            # Always pass noise to model (either provided or sampled)
+            sample_kwargs["noise"] = np.asarray(noise_to_use)
 
             sample_rng_or_pytorch_device = self._pytorch_device
-            actions, debug_data = self._sample_actions(sample_rng_or_pytorch_device, triton_obs, **sample_kwargs)
+            actions = self._sample_actions(sample_rng_or_pytorch_device, triton_obs, **sample_kwargs)
 
             actions_np = np.asarray(actions)
             if actions_np.ndim == 3 and actions_np.shape[0] == 1:
@@ -134,6 +140,7 @@ class Policy(BasePolicy):
             # Build outputs in the same *normalized* space as the JAX model path:
             # - `actions`: normalized (H, 32) from Triton model
             # - `state`: normalized (32,) computed from raw state and checkpoint norm stats
+            # FIXME later: this should go inside the triton model
             ns = getattr(self._model, "norm_stats", None)
             raw_state = np.asarray(inputs["observation/state"], dtype=np.float32)
             state_norm = np.pad(raw_state, (0, max(0, 32 - raw_state.shape[-1])), constant_values=0.0)
@@ -146,33 +153,11 @@ class Policy(BasePolicy):
 
             outputs: dict[str, Any] = {"state": state_norm, "actions": actions_np}
 
-            # Extract noise that was actually used
-            noise_used = noise if noise is not None else (debug_data.get("noise") if debug_data else None)
-            outputs["noise"] = noise_used
-
             # Apply the full output transform (including Unnormalize) to match the JAX policy.
             outputs = self._output_transform(outputs)
-            if return_debug_data:
-                # Build a minimal debug payload that lets us compare Triton vs saved JAX runs.
-                # Note: for Triton, the model may not populate a rich debug dict; we always include
-                # the raw model output (`output_actions`) plus the final post-processed actions.
-                def to_numpy(x):
-                    if hasattr(x, "numpy"):
-                        return x.numpy()
-                    if hasattr(x, "__array__"):
-                        return np.asarray(x)
-                    return x
 
-                debug_data_numpy: dict[str, Any] = {}
-                if debug_data is not None:
-                    debug_data_numpy = jax.tree.map(to_numpy, debug_data)
-                debug_data_numpy["output_actions"] = np.asarray(actions_np)
-                if noise is not None:
-                    debug_data_numpy["noise"] = np.asarray(noise)
-                debug_data_numpy["final_actions"] = outputs["actions"]
-                if raw_obs is not None:
-                    debug_data_numpy["raw_obs"] = raw_obs
-                outputs["debug_data"] = debug_data_numpy
+            # Return noise as numpy array
+            outputs["noise"] = np.asarray(noise_to_use)
         else:
             inputs = self._input_transform(inputs)
             if not self._is_pytorch_model:
@@ -189,20 +174,21 @@ class Policy(BasePolicy):
 
             # Prepare kwargs for sample_actions
             sample_kwargs = dict(self._sample_kwargs)
-            sample_kwargs["return_debug_data"] = return_debug_data
-            if noise is not None:
-                noise = (
-                    torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
-                )
-
-                if noise.ndim == 2:  # If noise is (action_horizon, action_dim), add batch dimension
-                    noise = noise[None, ...]  # Make it (1, action_horizon, action_dim)
-                sample_kwargs["noise"] = noise
+            # Convert noise_to_use to appropriate format and add batch dimension
+            if self._is_pytorch_model:
+                if isinstance(noise_to_use, np.ndarray):
+                    noise_batched = torch.from_numpy(noise_to_use).to(self._pytorch_device)[None, ...]
+                else:
+                    noise_batched = noise_to_use[None, ...] if noise_to_use.ndim == 2 else noise_to_use
+            else:
+                noise_batched = jnp.asarray(noise_to_use)
+                if noise_batched.ndim == 2:
+                    noise_batched = noise_batched[None, ...]
+            sample_kwargs["noise"] = noise_batched
 
             observation = _model.Observation.from_dict(inputs)
-            debug_data: dict | None = None
 
-            actions, debug_data = self._sample_actions(
+            actions = self._sample_actions(
                 sample_rng_or_pytorch_device,
                 observation,
                 prev_action=prev_action,
@@ -216,10 +202,6 @@ class Policy(BasePolicy):
                 "actions": actions,
             }
 
-            # Extract noise that was actually used
-            noise_used = noise if noise is not None else (debug_data.get("noise") if debug_data else None)
-            outputs["noise"] = noise_used
-
             # Collect data for JAX models (after JIT execution)
             if not self._is_pytorch_model and hasattr(self._model, "output_actions_save"):
                 self._model.output_actions_save.append(actions)
@@ -231,23 +213,11 @@ class Policy(BasePolicy):
 
             outputs = self._output_transform(outputs)
 
-            # Add debug data if requested
-            if debug_data is not None:
-                # Convert JAX arrays to numpy for serialization
-                def to_numpy(x):
-                    if hasattr(x, "numpy"):
-                        return x.numpy()
-                    if hasattr(x, "__array__"):
-                        return np.asarray(x)
-                    return x
-
-                debug_data_numpy = jax.tree.map(to_numpy, debug_data)
-                # save the final post-processed actions (after unnormalization)
-                debug_data_numpy["final_actions"] = outputs["actions"]
-                # save the raw observation (before any transforms) for det replay
-                if raw_obs is not None:
-                    debug_data_numpy["raw_obs"] = raw_obs
-                outputs["debug_data"] = debug_data_numpy
+            # Return noise as numpy array (unbatched)
+            if self._is_pytorch_model and hasattr(noise_to_use, "detach"):
+                outputs["noise"] = np.asarray(noise_to_use.detach().cpu())
+            else:
+                outputs["noise"] = np.asarray(noise_to_use)
 
         return outputs
 
@@ -308,14 +278,12 @@ class Policy(BasePolicy):
         requests: list[InferRequest],
         *,
         noise: np.ndarray | None = None,
-        return_debug_data: bool = False,
     ) -> list[InferResponse]:  # FIXME: return type is wrong
         """Run inference on a batch of request.
 
         Args:
             obs_batch: List of InferRequest objects of the same infer_type.
             noise: Optional noise tensor for batch (shape: batch_size, action_horizon, action_dim)
-            return_debug_data: Whether to return debug data (obs before/after preprocessing, noise, output)
 
         Returns:
             List of InferResponse objects, one for each input request.
@@ -323,19 +291,16 @@ class Policy(BasePolicy):
         if not requests:
             return []
 
-        # Check if any request wants debug data (use per-request flag if available)
-        any_debug_data = return_debug_data or any(getattr(req, "return_debug_data", False) for req in requests)
-
-        # Capture raw observations before any transforms (for deterministic replay)
-        raw_obs_list = None
-        if any_debug_data:
-            raw_obs_list = [
-                jax.tree.map(
-                    lambda x: np.array(x) if hasattr(x, "__array__") else x,
-                    req.observation,
-                )
-                for req in requests
-            ]
+        # Use provided noise, or sample from model if not provided
+        batch_size = len(requests)
+        if noise is not None:
+            noise_to_use = noise
+        # Sample batched noise from model
+        elif self._is_pytorch_model:
+            noise_to_use = self._model.sample_noise(self._pytorch_device, batch_size=batch_size)
+        else:
+            self._rng, noise_rng = jax.random.split(self._rng)
+            noise_to_use = self._model.sample_noise(noise_rng, batch_size=batch_size)
 
         # TODO: separate logic for jax and pytorch?
         if not self._is_pytorch_model:
@@ -362,16 +327,12 @@ class Policy(BasePolicy):
 
             # Prepare kwargs for sample_actions
             sample_kwargs = dict(self._sample_kwargs)
-            sample_kwargs["return_debug_data"] = any_debug_data
 
-            # Handle batched noise if provided
-            if noise is not None:
-                sample_kwargs["noise"] = np.asarray(noise)
+            # Always pass noise to model (either provided or sampled)
+            sample_kwargs["noise"] = np.asarray(noise_to_use)
 
             # TODO Rohan: return state_norm since Triton kernels bypass input_transform for internal method. Figure out why input_transform doesn't work
-            actions, state_norm, debug_data = self._sample_actions(
-                sample_rng_or_pytorch_device, observation, **sample_kwargs
-            )
+            actions, state_norm = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
 
             # Convert actions to numpy
             actions_np = np.asarray(actions)
@@ -380,8 +341,6 @@ class Policy(BasePolicy):
             # Process each batch element
             results: list[InferResponse] = []
             for i in range(len(requests)):
-                req = requests[i]
-
                 # Extract actions for this batch element
                 action_i = actions_np[i]
 
@@ -390,67 +349,24 @@ class Policy(BasePolicy):
 
                 result: dict[str, Any] = {"state": state_norm_i, "actions": action_i}
 
-                # Extract noise for this batch element
-                req_noise = getattr(req, "noise", None)
-                if req_noise is None and noise is not None:
-                    noise_i = noise[i] if noise.ndim == 3 else noise
-                elif req_noise is not None:
-                    noise_i = req_noise
-                else:
-                    # Model generated noise - extract from debug_data
-                    noise_i = debug_data.get("noise")[i] if debug_data and "noise" in debug_data else None
-                result["noise"] = noise_i
-
                 # Apply the full output transform (including Unnormalize)
                 result = self._output_transform(result)
 
-                # Add debug data if requested
-                if any_debug_data or getattr(req, "return_debug_data", False):
-                    debug_np: dict[str, Any] = {}
-                    if debug_data is not None:
-                        # Extract debug data for this batch element
-                        for debug_key, debug_value in debug_data.items():
-                            if isinstance(debug_value, dict):
-                                debug_np[debug_key] = {}
-                                for subkey, subvalue in debug_value.items():
-                                    if isinstance(subvalue, np.ndarray) and len(subvalue.shape) > 0:
-                                        debug_np[debug_key][subkey] = (
-                                            subvalue[i] if subvalue.shape[0] == len(requests) else subvalue
-                                        )
-                                    else:
-                                        debug_np[debug_key][subkey] = subvalue
-                            elif isinstance(debug_value, np.ndarray) and len(debug_value.shape) > 0:
-                                debug_np[debug_key] = (
-                                    debug_value[i] if debug_value.shape[0] == len(requests) else debug_value
-                                )
-                            else:
-                                debug_np[debug_key] = debug_value
-
-                    debug_np["output_actions"] = action_i
-
-                    # Handle per-request noise
-                    req_noise = getattr(req, "noise", None)
-                    if req_noise is None and noise is not None:
-                        req_noise = noise[i] if noise.ndim == 3 else noise
-                    if req_noise is not None:
-                        debug_np["noise"] = np.asarray(req_noise)
-
-                    debug_np["final_actions"] = result["actions"]
-                    if raw_obs_list is not None:
-                        debug_np["raw_obs"] = raw_obs_list[i]
-                    result["debug_data"] = debug_np
+                # Extract noise for this batch element
+                noise_np = np.asarray(noise_to_use)
+                noise_i = noise_np[i] if noise_np.ndim == 3 else noise_np
+                result["noise"] = noise_i
 
                 results.append(result)
 
             return results
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
-        sample_kwargs["return_debug_data"] = any_debug_data
-        if noise is not None:
-            noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
-            sample_kwargs["noise"] = noise
 
-        actions, debug_data = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+        # Always pass noise (either provided or sampled)
+        sample_kwargs["noise"] = noise_to_use
+
+        actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         outputs = {
             "state": observation.state,
             "actions": actions,
@@ -474,60 +390,12 @@ class Policy(BasePolicy):
                     result[key] = value
 
             # Extract noise for this batch element
-            req = requests[i]
-            req_noise = getattr(req, "noise", None)
-            if req_noise is None and noise is not None:
-                # Extract from batched noise
-                noise_i = noise[i] if (hasattr(noise, "ndim") and noise.ndim == 3) else noise
-            elif req_noise is not None:
-                noise_i = req_noise
+            if self._is_pytorch_model and hasattr(noise_to_use, "detach"):
+                noise_batch = np.asarray(noise_to_use.detach().cpu())
             else:
-                # Model generated noise - extract from debug_data
-                noise_i = None
-                if debug_data and "noise" in debug_data:
-                    noise_val = debug_data["noise"]
-                    if isinstance(noise_val, np.ndarray) and len(noise_val.shape) > 0:
-                        noise_i = noise_val[i]
-                    else:
-                        noise_i = noise_val
+                noise_batch = np.asarray(noise_to_use)
+            noise_i = noise_batch[i] if noise_batch.ndim == 3 else noise_batch
             result["noise"] = noise_i
-
-            # Add debug data for this batch element if available
-            if debug_data is not None:
-
-                def to_numpy(x):
-                    if hasattr(x, "numpy"):
-                        return x.numpy()
-                    if hasattr(x, "__array__"):
-                        return np.asarray(x)
-                    return x
-
-                # First convert all JAX arrays to numpy recursively
-                debug_data_numpy = jax.tree.map(to_numpy, debug_data)
-
-                # Extract debug data for this batch element
-                result_debug = {}
-                for debug_key, debug_value in debug_data_numpy.items():
-                    if isinstance(debug_value, dict):
-                        result_debug[debug_key] = {}
-                        for subkey, subvalue in debug_value.items():
-                            if isinstance(subvalue, np.ndarray) and len(subvalue.shape) > 0:
-                                result_debug[debug_key][subkey] = subvalue[i]
-                            else:
-                                result_debug[debug_key][subkey] = subvalue
-                    elif isinstance(debug_value, np.ndarray) and len(debug_value.shape) > 0:
-                        result_debug[debug_key] = debug_value[i]
-                    else:
-                        result_debug[debug_key] = debug_value
-
-                # Add final_actions (post-output-transform) for this batch element
-                result_debug["final_actions"] = result["actions"]
-
-                # Add raw_obs (before any transforms) for this batch element
-                if raw_obs_list is not None:
-                    result_debug["raw_obs"] = raw_obs_list[i]
-
-                result["debug_data"] = result_debug
 
             results.append(result)
 

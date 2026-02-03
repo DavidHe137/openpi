@@ -32,7 +32,6 @@ class TrainTimeRTCParams:
     pass
 
 
-# TODO: put debug_data back in a later PR
 # message types shared between client and server
 @dataclass(frozen=True)
 class InferRequest:

@@ -90,7 +90,6 @@ class Args:
     progress_type: Literal["verbose", "concise", "logging", None] = "verbose"
     log_dir: Optional[str] = None
     debug: bool = False  # Run in single process with immediate progress output
-    save_debug_data: bool = False  # Save debug data (obs before/after preprocess, noise, output) to npy files
 
     def create_broker_config(
         self, ws_client: _websocket_client_policy.BidirectionalWebsocket
@@ -102,13 +101,11 @@ class Args:
                 control_hz=self.control_hz,
                 s_min=self.action_chunk_broker.s_min,
                 d_init=self.action_chunk_broker.d_init,
-                return_debug_data=self.save_debug_data,
             )
         else:  # SYNC
             return SyncBrokerConfig(
                 ws_client=ws_client,
                 control_hz=self.control_hz,
-                return_debug_data=self.save_debug_data,
             )
 
 

@@ -20,14 +20,12 @@ class SyncBroker(ActionChunkBroker):
         ws_client: _websocket_client_policy.BidirectionalWebsocket,
         control_hz: int,
         realtime: bool = True,
-        return_debug_data: bool = False,  # TODO: add debug data
     ):
         """
         Args:
             ws_client: the websocket client to use for inference
             control_hz: the control frequency of the environment
             realtime: whether to run in realtime mode, setting this False essentially means inference latency is 0
-            return_debug_data: whether to return debug data from the inference
         """
         super().__init__(control_hz=control_hz, realtime=realtime)
 
@@ -39,7 +37,6 @@ class SyncBroker(ActionChunkBroker):
 
     @override
     def _infer(self, obs: Observation) -> None:
-        breakpoint()
         deadline = time.time() + len(self._action_queue) * self._step_duration
         self._ws_client.send(obs, deadline=deadline)
         self._sent_request = True

@@ -240,7 +240,6 @@ class Pi0FAST(_model.BaseModel):
         *,
         max_decoding_steps: int | at.Int[at.Array, ""] = 256,
         temperature: float = 0.0,
-        return_debug_data: bool = False,
     ) -> tuple[_model.Actions, dict | None]:
         # TODO: this is a hack to get the image keys.
         observation = _model.preprocess_observation(

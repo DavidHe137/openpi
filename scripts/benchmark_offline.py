@@ -154,12 +154,7 @@ def create_batch_requests(batch_size: int) -> list[InferRequest]:
         List of InferRequest objects
     """
     return [
-        InferRequest(
-            observation=make_libero_example(),
-            infer_type=InferType.SYNC,
-            params=None,
-            return_debug_data=False,
-        )
+        InferRequest(observation=make_libero_example(), infer_type=InferType.SYNC, params=None)
         for _ in range(batch_size)
     ]
 

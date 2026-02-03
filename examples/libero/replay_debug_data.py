@@ -37,6 +37,7 @@ import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 from libero.libero import benchmark
+from openpi_client.schemas import Action, LiberoObservation
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -63,9 +64,6 @@ class ReplayConfig:
     action_dim: int = 7  # Actual robot action dimension (6 DoF + gripper for LIBERO)
     output_video: Optional[str] = None
     use_saved_actions: bool = False  # If True, use saved output_actions directly
-    return_debug_data: bool = (
-        False  # If True, request debug payloads from policy (if supported)
-    )
     debug_report_path: Optional[str] = (
         None  # Where to write per-chunk debug comparison report (jsonl)
     )
@@ -124,13 +122,13 @@ def create_observation_from_debug(debug_data: dict, prompt: str, step: int) -> d
     obs = debug_data["observation"]
 
     # Build observation in the format expected by policy
-    return {
-        "observation/state": obs["state"],
-        "observation/image": obs["image"],
-        "observation/wrist_image": obs.get("wrist_image"),
-        "prompt": obs.get("prompt", prompt),
-        "step": step,
-    }
+    return LiberoObservation(
+        state=obs["state"],
+        image=obs["image"],
+        wrist_image=obs.get("wrist_image"),
+        prompt=str(obs.get("prompt", prompt)),
+        step=step,
+    )
 
 
 def get_noise_from_debug(debug_data: dict) -> np.ndarray:
@@ -392,13 +390,8 @@ def replay_episode(
     current_saved_actions = None  # Saved actions for current chunk
     step = 0
     chunk_debug_report_path: pathlib.Path | None = None
-    if config.return_debug_data:
-        if config.debug_report_path is None:
-            chunk_debug_report_path = (
-                config.debug_data_dir / "triton_debug_compare.jsonl"
-            )
-        else:
-            chunk_debug_report_path = pathlib.Path(config.debug_report_path)
+    if config.debug_report_path:
+        chunk_debug_report_path = pathlib.Path(config.debug_report_path)
         # Reset report file for a clean run.
         if chunk_debug_report_path.exists():
             chunk_debug_report_path.unlink()
@@ -415,7 +408,7 @@ def replay_episode(
         while not env.is_episode_complete() and step < config.max_steps:
             # Get observation for frame capture
             obs = env.get_observation()
-            frames.append(obs["observation/image"])
+            frames.append(obs.image)
 
             # Determine which action to use
             if ran_out_of_chunks:
@@ -459,9 +452,8 @@ def replay_episode(
 
                         # Call policy with the saved noise
                         response = policy.infer(
-                            debug_obs,
+                            obs=debug_obs,
                             noise=noise,
-                            return_debug_data=config.return_debug_data,
                         )
                         # Policy response already has correct action_dim from post-processing
                         current_actions = response["actions"]
@@ -499,13 +491,20 @@ def replay_episode(
             last_action = action
 
             # Apply action
-            env.apply_action({"actions": action})
+            env.apply_action(
+                Action(
+                    step=step,
+                    action=action,
+                    action_chunk_index=chunk_idx,
+                    index_in_chunk=action_idx,
+                )
+            )
             step += 1
 
     # Capture final frame
     if not env.is_episode_complete():
         obs = env.get_observation()
-        frames.append(obs["observation/image"])
+        frames.append(obs.image)
 
     success = env.current_success
 
@@ -581,11 +580,6 @@ def main():
         help="Output video path (default: <debug_data_dir>/replay.mp4)",
     )
     parser.add_argument(
-        "--return_debug_data",
-        action="store_true",
-        help="If set, request debug payloads from the policy server and write a per-chunk comparison report.",
-    )
-    parser.add_argument(
         "--debug_report_path",
         type=str,
         default=None,
@@ -604,7 +598,6 @@ def main():
         max_steps=args.max_steps,
         output_video=args.output_video,
         use_saved_actions=args.use_saved_actions,
-        return_debug_data=args.return_debug_data,
         debug_report_path=args.debug_report_path,
     )
 
