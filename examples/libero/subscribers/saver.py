@@ -9,12 +9,20 @@ from dataclasses import dataclass
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
-from examples.libero.schemas import Timestamp, JSONDataclass, ActionChunk
+from openpi_client.schemas import (
+    Timestamp,
+    JSONDataclass,
+    ActionChunk,
+    Observation,
+    Action,
+)
+from libero.libero import benchmark
 from examples.libero.env import LiberoSimEnvironment
 
 logger = logging.getLogger(__name__)
 
 
+# NOTE: don't like this function, shouldn't need it ideally
 def _flatten_dict(
     d: Dict[str, Any], parent_key: str = "", sep: str = "/"
 ) -> Dict[str, Any]:
@@ -28,19 +36,20 @@ def _flatten_dict(
     return dict(items)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Result(JSONDataclass):
-    success: bool
     robot_idx: int
+    success: bool
+    steps_taken: int
     task_suite_name: str
     task_id: int
+    task_language: str
     episode_idx: int
 
 
 class Saver(_subscriber.Subscriber):
     """Saves episode data."""
 
-    # TODO: probably pass metadata with dataclass
     def __init__(
         self,
         out_dir: pathlib.Path,
@@ -48,12 +57,14 @@ class Saver(_subscriber.Subscriber):
         action_chunk_broker: ActionChunkBroker,
         task_suite_name: str,
         task_id: int,
+        task: benchmark.Task,
         robot_idx: int,
     ) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         self._out_dir = out_dir
         self._task_suite_name = task_suite_name
         self._task_id = task_id
+        self._task = task
         self._robot_idx = robot_idx
         self._environment = environment
         self._action_chunk_broker = action_chunk_broker
@@ -68,16 +79,16 @@ class Saver(_subscriber.Subscriber):
         self._images = []
 
     @override
-    def on_step(self, observation: dict, action: dict) -> None:
+    def on_step(self, observation: Observation, action: Action) -> None:
         self._timestamps.append(
             Timestamp(
                 timestamp=time.perf_counter(),
-                action_chunk_index=action["action_chunk_index"],
-                action_index=action["action_chunk_current_step"],
-                env_step=observation["step"],
+                action_chunk_index=action.action_chunk_index,
+                action_index=action.index_in_chunk,
+                env_step=observation.step,
             )
         )
-        self._images.append(observation["observation/image"])
+        self._images.append(observation.image)
 
     @override
     def on_episode_end(self) -> None:
@@ -111,8 +122,10 @@ class Saver(_subscriber.Subscriber):
         result = Result(
             success=self._environment.current_success,
             robot_idx=self._robot_idx,
+            steps_taken=len(self._timestamps),
             task_suite_name=self._task_suite_name,
             task_id=self._task_id,
+            task_language=self._task.language,
             episode_idx=self._environment.episode_idx,
         )
         result.to_json(out_folder / "metadata.json")
@@ -122,11 +135,10 @@ class Saver(_subscriber.Subscriber):
         Timestamp.to_csv(self._timestamps, out_folder / "timestamps.csv")
 
     def _save_action_chunks(self, out_folder: pathlib.Path) -> None:
-        logger.info(f"Saving action chunks to {out_folder / 'action_chunks.csv'}")
-        ActionChunk.to_csv(
-            self._action_chunk_broker.action_chunks,
-            out_folder / "action_chunks.csv",
-        )
+        logger.info(f"Saving action chunks to {out_folder}")
+        action_chunks = self._action_chunk_broker.action_chunks
+        ActionChunk.to_csv(action_chunks, out_folder / "action_chunks.csv")
+        ActionChunk.to_parquet(action_chunks, out_folder / "action_chunks.parquet")
 
     def _save_video(self, out_folder: pathlib.Path) -> None:
         logger.info(f"Saving video to {out_folder / 'out.mp4'}")
@@ -136,6 +148,7 @@ class Saver(_subscriber.Subscriber):
             fps=self._control_hz,  # NOTE: saving in control hz fps for now
         )
 
+    # NOTE: I think this can be saved in a single npz file, but will need to be coordinated with edits to replay_debug_data.py
     def _save_debug_data(self, out_folder: pathlib.Path) -> None:
         action_chunks = self._action_chunk_broker.action_chunks
         debug_data_dir = out_folder / "debug_data"

@@ -7,7 +7,7 @@ import tyro
 from moviepy.editor import VideoFileClip, CompositeVideoClip, ColorClip, ImageClip
 from dataclasses import dataclass
 from examples.libero import logging_config
-from examples.libero.schemas import Timestamp
+from openpi_client.schemas import Timestamp
 from examples.libero.subscribers.saver import Result
 
 from typing import Tuple

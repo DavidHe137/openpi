@@ -12,6 +12,8 @@ import numpy as np
 from openpi_client import base_policy as _base_policy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
+from openpi_client.messages import InferType
+from openpi_client.messages import RTCParams
 import torch
 from typing_extensions import override
 
@@ -24,6 +26,8 @@ from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
+
+logger = logging.getLogger(__name__)
 
 
 class EnvMode(enum.Enum):
@@ -81,7 +85,8 @@ class Policy(BasePolicy):
         else:
             self._rng = rng or jax.random.key(0)
             self._model.sample_actions = nnx_utils.module_jit(
-                self._model.sample_actions, static_argnames=["return_debug_data", "use_rtc"]
+                self._model.sample_actions,
+                static_argnames=["return_debug_data", "use_rtc"],
             )
         self._sample_actions = model.sample_actions
 
@@ -243,6 +248,7 @@ class Policy(BasePolicy):
         # Stack observations into batch format
         batched_obs = {}
 
+        # FIXME: no idea how the typing here works
         if self._is_triton_optimized:
             return {
                 "state": np.stack([obs["observation/state"] for obs in observations], axis=0),
@@ -296,7 +302,7 @@ class Policy(BasePolicy):
         *,
         noise: np.ndarray | None = None,
         return_debug_data: bool = False,
-    ) -> list[InferResponse]:
+    ) -> list[InferResponse]:  # FIXME: return type is wrong
         """Run inference on a batch of request.
 
         Args:
@@ -332,7 +338,17 @@ class Policy(BasePolicy):
             # Convert inputs to PyTorch tensors and move to correct device
             sample_rng_or_pytorch_device = self._pytorch_device
 
-        observation = self.create_batch_obs([req.observation for req in requests])
+        # FIXME: temporary hack
+        def rename_keys(obs: dict) -> dict:
+            return {
+                "observation/state": obs["state"],
+                "observation/image": obs["image"],
+                "observation/wrist_image": obs["wrist_image"],
+                "prompt": obs["prompt"],
+            }
+
+        # TODO: fix typing here, I think observation is sent over as a dict
+        observation = self.create_batch_obs([rename_keys(req.observation) for req in requests])
 
         if self._is_triton_optimized:
             # Batched Triton inference path - TODO Rohan: can be squashed into Jax batch path once below TODO is resolved
@@ -503,6 +519,41 @@ class Policy(BasePolicy):
 
     def make_example_actions(self) -> np.ndarray:
         return self._model.make_example_actions()
+
+    def warmup(self, max_batch_size: int) -> None:
+        """Warm up policy by running inference to trigger JIT compilation."""
+        observation = self.make_example()
+
+        requests = [
+            InferRequest(
+                robot_id="test_robot",
+                start_step=0,
+                request_timestamp=0,
+                deadline=0,
+                observation=observation,
+                infer_type=InferType.SYNC,
+                params=None,
+            ),
+            InferRequest(
+                robot_id="test_robot",
+                start_step=0,
+                request_timestamp=0,
+                deadline=0,
+                observation=observation,
+                infer_type=InferType.INFERENCE_TIME_RTC,
+                params=RTCParams(prev_action=self.make_example_actions(), s_param=5, d_param=3),
+            ),
+        ]
+
+        for request in requests:
+            for batch_size in range(1, max_batch_size + 1):
+                logger.info(f"Warming up {request.infer_type} for batch_size={batch_size}")
+                # Warm up with full batch_size (we always pad to this size)
+                batch = [request] * batch_size
+                actions = self.infer_batch(batch)
+
+        # FIXME: fix after fixing typing on infer_batch
+        logger.info(f"Output size: {actions[0]['actions'].shape}")
 
 
 class PolicyRecorder(_base_policy.BasePolicy):

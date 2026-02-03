@@ -121,7 +121,11 @@ def eval_libero(args: Args) -> None:
     else:
         raise ValueError(f"Unknown action horizon: {args.action_horizon}")
 
-    ws_client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
+    ws_client = _websocket_client_policy.WebsocketClientPolicy(
+        robot_id="robot_0",
+        host=args.host,
+        port=args.port,
+    )
     client = action_chunk_broker.ActionChunkBroker(
         policy=ws_client,
         action_horizon=args.action_horizon,

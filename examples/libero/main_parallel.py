@@ -69,7 +69,9 @@ def init_worker(task: Task, args: Args, status_dict, results_dict) -> None:
         task, LIBERO_ENV_RESOLUTION, args.seed
     )
     _worker_client = _websocket_client_policy.WebsocketClientPolicy(
-        args.host, args.port
+        robot_id="robot_parallel",  # FIXME: should have a unique robot ID for each worker, but I think we will delete this script anyways
+        host=args.host,
+        port=args.port,
     )
     _worker_status_dict = status_dict
     _worker_results_dict = results_dict

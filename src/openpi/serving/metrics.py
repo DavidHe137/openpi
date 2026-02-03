@@ -189,7 +189,7 @@ def plot_metrics(metrics: MetricsCollector, output_dir: str) -> None:
         logger.warning("No metrics data to plot")
         return
 
-    # Create figure with 4 subplots (2x2)
+    # Create figure with 4 subplots
     fig, axes = plt.subplots(4, 1, figsize=(16, 12))
     fig.suptitle("Websocket Policy Server Metrics", fontsize=16, fontweight="bold")
     xlim = (metrics.first_arrival_time - 1, metrics.last_arrival_time + 1)
@@ -204,34 +204,72 @@ def plot_metrics(metrics: MetricsCollector, output_dir: str) -> None:
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
 
-    # Plot 1: Total Throughput (with padding) over Time
+    # Plot 1: Batch Size Over Time (number of requests being processed)
     ax = axes[1]
-    # FIXME: can definitely clean up these metrics
-    seconds_range = range(int(metrics.first_arrival_time), int(metrics.last_arrival_time) + 1)
-    ax.plot(
-        seconds_range,
-        data["total_throughputs"],
-        "r-",
-        linewidth=2,
-        label="Total (with padding)",
-    )
+    # Create a timeline showing batch size at each moment
+    # Build a step function: start time -> num_requests, end time -> 0
+    time_points = []
+    batch_sizes = []
+
+    # Add all batch start/end events
+    for batch in metrics.batch_metrics:
+        time_points.append(batch.processing_start_time)
+        batch_sizes.append(batch.num_real_requests)
+        time_points.append(batch.processing_end_time)
+        batch_sizes.append(0)
+
+    # Sort by time
+    if time_points:
+        sorted_data = sorted(zip(time_points, batch_sizes, strict=True))
+        time_points, batch_sizes = zip(*sorted_data, strict=True)
+
+        # Add initial point at 0 if needed
+        if time_points[0] > metrics.first_arrival_time:
+            time_points = [metrics.first_arrival_time, *list(time_points)]
+            batch_sizes = [0, *list(batch_sizes)]
+
+        ax.step(time_points, batch_sizes, where="post", linewidth=2, color="b", label="Batch size")
+        ax.fill_between(time_points, batch_sizes, step="post", alpha=0.3, color="b")
+
     ax.set_xlim(xlim)
-    ax.plot(seconds_range, data["real_throughputs"], "b--", linewidth=1.5, alpha=0.7, label="Real")
     ax.set_xlabel("Time (seconds)", fontweight="bold")
-    ax.set_ylabel("Throughput (requests/sec)", fontweight="bold")
-    ax.set_title("Total vs Real Throughput Over Time", fontweight="bold")
+    ax.set_ylabel("Number of Requests", fontweight="bold")
+    ax.set_title("Batch Size Over Time", fontweight="bold")
     ax.grid(visible=True, alpha=0.3)
     ax.legend()
 
-    # Plot 2: Batch Utilization over Time
+    # Plot 2: Idle Time Percentage per Second
     ax = axes[2]
-    ax.plot(data["timestamps"], [u * 100 for u in data["batch_utilizations"]], "g-", linewidth=2)
-    ax.set_xlabel("Time (seconds)", fontweight="bold")
-    ax.set_ylabel("Batch Utilization (%)", fontweight="bold")
-    ax.set_title("Batch Utilization Over Time", fontweight="bold")
+    min_second = int(metrics.first_arrival_time)
+    max_second = int(metrics.last_arrival_time)
+    seconds_range = list(range(min_second, max_second + 1))
+    idle_percentages = []
+
+    for second in seconds_range:
+        second_start = float(second)
+        second_end = float(second + 1)
+
+        # Calculate total time spent processing batches during this second
+        batch_time = 0.0
+        for batch in metrics.batch_metrics:
+            # Find overlap between batch interval and this second
+            overlap_start = max(second_start, batch.processing_start_time)
+            overlap_end = min(second_end, batch.processing_end_time)
+            if overlap_start < overlap_end:
+                batch_time += overlap_end - overlap_start
+
+        # Idle time = total time - batch time
+        idle_time = 1.0 - batch_time
+        idle_percentage = idle_time * 100.0
+        idle_percentages.append(max(0.0, min(100.0, idle_percentage)))  # Clamp to [0, 100]
+
+    ax.bar(seconds_range, idle_percentages, width=1.0, color="orange", alpha=0.7, edgecolor="darkorange")
     ax.set_xlim(xlim)
     ax.set_ylim(0, 105)
-    ax.grid(visible=True, alpha=0.3)
+    ax.set_xlabel("Time (seconds)", fontweight="bold")
+    ax.set_ylabel("Idle Time (%)", fontweight="bold")
+    ax.set_title("Worker Idle Time per Second", fontweight="bold")
+    ax.grid(visible=True, alpha=0.3, axis="y")
 
     # Plot 3: Latency Statistics over Time (scatter + rolling window overlay)
     ax = axes[3]
@@ -292,13 +330,11 @@ def plot_metrics(metrics: MetricsCollector, output_dir: str) -> None:
     plt.tight_layout()
 
     # Save plots
-    png_path = output_path / "metrics.png"
     pdf_path = output_path / "metrics.pdf"
-    plt.savefig(png_path, dpi=300, bbox_inches="tight")
     plt.savefig(pdf_path, bbox_inches="tight")
     plt.close()
 
-    logger.info(f"Metrics plots saved to {png_path} and {pdf_path}")
+    logger.info(f"Metrics plots saved to {pdf_path}")
 
     # Also save raw metrics as CSV for further analysis
     csv_path = output_path / "metrics.csv"

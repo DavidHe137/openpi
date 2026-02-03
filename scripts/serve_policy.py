@@ -1,8 +1,11 @@
 import dataclasses
 import datetime
+import logging
 import pathlib
+import socket
 import sys
 
+from openpi_client.schemas import ServerMetadata
 import tyro
 
 from openpi.policies import policy as _policy
@@ -107,24 +110,36 @@ def main(args: Args) -> None:
     match args.policy:
         case Checkpoint():
             train_config = _config.get_config(args.policy.config)
+            checkpoint_dir = args.policy.dir
         case Default():
             if checkpoint := DEFAULT_CHECKPOINT.get(args.env):
                 train_config = _config.get_config(checkpoint["config"])
+                checkpoint_dir = checkpoint["dir"]
             else:
                 raise ValueError(f"Unsupported environment mode: {args.env}")
 
-    policy_metadata = train_config.policy_metadata or {}
-    policy_metadata["num_steps"] = args.num_steps
-    policy_metadata["action_horizon"] = train_config.model.action_horizon
-    policy_metadata["env"] = args.env.value
-    policy_metadata["batch_size"] = args.max_batch_size
+    # Build server metadata
+    server_metadata = ServerMetadata(
+        config_name=train_config.name,
+        checkpoint_dir=checkpoint_dir,
+        action_horizon=train_config.model.action_horizon,
+        action_dim=train_config.model.action_dim,
+        num_steps=args.num_steps,
+        max_batch_size=args.max_batch_size,
+        env=args.env.value,
+        policy_metadata=train_config.policy_metadata or {},
+    )
+
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
     server = websocket_policy_server.WebsocketPolicyServer(
         policy_factory=policy_factory,
         host="0.0.0.0",
         port=args.port,
-        metadata=policy_metadata,
-        batch_size=args.max_batch_size,
+        metadata=dataclasses.asdict(server_metadata),
+        max_batch_size=args.max_batch_size,
         log_dir=args.log_dir,
     )
     server.serve_forever()

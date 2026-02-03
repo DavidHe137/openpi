@@ -1,32 +1,32 @@
-import pandas as pd
 import logging
 import pathlib
 import multiprocessing
 import shutil
-from typing import Union, List, Literal, Optional
+from typing import Union, List, Literal, Optional, Dict, Type
 import datetime
 import time
 
 import numpy as np
+from jaxtyping import Float
 from libero.libero import benchmark
 from openpi_client import websocket_client_policy as _websocket_client_policy
-from openpi_client.runtime import runtime as _runtime
+from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import (
     ActionChunkBrokerType,
     SyncBrokerConfig,
     RTCBrokerConfig,
 )
+from openpi_client.schemas import RuntimeMetadata, ServerMetadata
 import tyro
-from dataclasses import dataclass, asdict, field
-from rich.console import Console
-from rich.table import Table
+from dataclasses import dataclass, field
 
 from examples.libero import utils
 from examples.libero import logging_config
 from examples.libero.env import LiberoSimEnvironment
 from examples.libero.progress_manager import get_progress_manager
-from examples.libero.subscribers.saver import Saver, Result
+from examples.libero.subscribers.saver import Saver
+from examples.libero.metrics import calculate_metrics, generate_all_plots
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -37,10 +37,9 @@ class Job:
     """A job is a task with a batch of episodes."""
 
     task_suite_name: str
-
     task: benchmark.Task
     task_id: int
-    initial_states: np.ndarray  # batch, state_dim
+    initial_states: Float[np.ndarray, "n_initial_states state_dim"]
 
 
 @dataclass
@@ -61,9 +60,6 @@ class Args:
     host: str = "0.0.0.0"
     port: int = 8080
     resize_size: int = 224
-    action_horizon: int = (
-        50  # Action horizon for ActionChunkBroker (matches Libero model config)
-    )
     action_chunk_broker: ActionChunkBrokerArgs = field(
         default_factory=ActionChunkBrokerArgs
     )
@@ -77,7 +73,7 @@ class Args:
     task_suite_name: str = "libero_10"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
     num_trials_per_robot: int = 10  # Number of rollouts per robot per task
-    max_steps: int = 300  # Maximum number of control steps per episode
+    max_steps: int = 500  # Maximum number of control steps per episode
 
     #################################################################################################################
     # Multi-robot / threading parameters
@@ -96,20 +92,22 @@ class Args:
     debug: bool = False  # Run in single process with immediate progress output
     save_debug_data: bool = False  # Save debug data (obs before/after preprocess, noise, output) to npy files
 
-    def create_broker_config(self, policy) -> Union[SyncBrokerConfig, RTCBrokerConfig]:
+    def create_broker_config(
+        self, ws_client: _websocket_client_policy.BidirectionalWebsocket
+    ) -> Union[SyncBrokerConfig, RTCBrokerConfig]:
         """Helper to create the appropriate broker config from args."""
         if self.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC:
             return RTCBrokerConfig(
-                policy=policy,
-                action_horizon=self.action_horizon,
+                ws_client=ws_client,
+                control_hz=self.control_hz,
                 s_min=self.action_chunk_broker.s_min,
                 d_init=self.action_chunk_broker.d_init,
                 return_debug_data=self.save_debug_data,
             )
         else:  # SYNC
             return SyncBrokerConfig(
-                policy=policy,
-                action_horizon=self.action_horizon,
+                ws_client=ws_client,
+                control_hz=self.control_hz,
                 return_debug_data=self.save_debug_data,
             )
 
@@ -122,14 +120,14 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
 
 
 def delay_start(
-    action_horizon: int,
     control_hz: int,
     action_chunk_broker_config: ActionChunkBrokerArgs,
+    server_metadata: ServerMetadata,
 ):
     """Return the period (in seconds) that a robot waits between requests."""
     period = 0.0
     if action_chunk_broker_config.broker_type == ActionChunkBrokerType.SYNC:
-        period = action_horizon / control_hz
+        period = server_metadata.action_horizon / control_hz
     elif action_chunk_broker_config.broker_type == ActionChunkBrokerType.RTC:
         period = action_chunk_broker_config.s_min / control_hz
     else:
@@ -150,15 +148,16 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     # Store queue globally for access in create_runtime
     _progress_queue = progress_queue
 
-    ws_client = _websocket_client_policy.WebsocketClientPolicy(
-        args.host,
-        args.port,
+    ws_client = _websocket_client_policy.BidirectionalWebsocket(
+        robot_id=f"robot_{robot_idx}",
+        host=args.host,
+        port=args.port,
     )
 
     # Create broker config and instantiate
     config = args.create_broker_config(ws_client)
     broker = args.action_chunk_broker.broker_type.create(config)
-    agent = _policy_agent.PolicyAgent(policy=broker)
+    agent = _policy_agent.PolicyAgent(broker=broker)
 
 
 def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
@@ -185,13 +184,14 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
         "num_episodes": len(job.initial_states),
     }
 
-    subscribers = [
+    subscribers: List[_subscriber.Subscriber] = [
         Saver(
             out_dir=pathlib.Path(args.output_dir),
             environment=env,
             action_chunk_broker=broker,
             task_suite_name=job.task_suite_name,
             task_id=job.task_id,
+            task=job.task,
             robot_idx=robot_idx,
         ),
     ]
@@ -219,19 +219,19 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
 
 def _robot_worker(task_args) -> None:
     """Worker process that handles jobs for a specific robot index."""
-    args, job = task_args
+    args, job, server_metadata = task_args
     runtime = create_runtime(args, job)
     delay_start(
-        action_horizon=args.action_horizon,
         control_hz=args.control_hz,
         action_chunk_broker_config=args.action_chunk_broker,
+        server_metadata=server_metadata,
     )
 
     runtime.run()
     runtime.close()
 
 
-def run_robots(args: Args, jobs: List[Job]) -> None:
+def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> None:
     counter = multiprocessing.Value("i", 0)  # for assigning robot indices
 
     with get_progress_manager(
@@ -252,7 +252,8 @@ def run_robots(args: Args, jobs: List[Job]) -> None:
                     # use imap_unordered so that it exits immediately on any exception
                     _ = list(
                         pool.imap_unordered(
-                            _robot_worker, [(args, job) for job in jobs]
+                            _robot_worker,
+                            [(args, job, server_metadata) for job in jobs],
                         )
                     )
                 except Exception as e:
@@ -264,26 +265,27 @@ def run_robots(args: Args, jobs: List[Job]) -> None:
 
 
 def create_jobs(args: Args) -> List[Job]:
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite = benchmark_dict[args.task_suite_name]()
+    benchmark_dict: Dict[str, Type[benchmark.Benchmark]] = (
+        benchmark.get_benchmark_dict()
+    )
+    task_suite: benchmark.Benchmark = benchmark_dict[args.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
 
     logging.info(
-        "Setting up multi-robot LIBERO runtime over suite '%s' with %d tasks, num_robots=%d, trials_per_robot=%d, action_horizon=%d, control_hz=%d",
+        "Setting up multi-robot LIBERO runtime over suite '%s' with %d tasks, num_robots=%d, trials_per_robot=%d, control_hz=%d",
         args.task_suite_name,
         num_tasks_in_suite,
         args.num_robots,
         args.num_trials_per_robot,
-        args.action_horizon,
         args.control_hz,
     )
 
     jobs: List[Job] = []
     for task_id in range(num_tasks_in_suite):
-        task = task_suite.get_task(task_id)
-        if task_id != 8:
-            continue
-        all_initial_states = task_suite.get_task_init_states(task_id)
+        task: benchmark.Task = task_suite.get_task(task_id)
+        all_initial_states: Float[np.ndarray, "n_initial_states state_dim"] = (
+            task_suite.get_task_init_states(task_id)
+        )
 
         if len(all_initial_states) < args.num_trials_per_robot:
             logging.error(
@@ -308,41 +310,6 @@ def create_jobs(args: Args) -> List[Job]:
     logging.info("Created %d jobs", len(jobs))
 
     return jobs
-
-
-def aggregate_results(output_path: pathlib.Path) -> None:
-    metadata_files = list(output_path.glob("**/metadata.json"))
-
-    results: List[Result] = []
-    for metadata_file in metadata_files:
-        result = Result.from_json(metadata_file)
-        results.append(result)
-
-    results_df = pd.DataFrame([asdict(result) for result in results])
-    results_df.to_csv(output_path / "results.csv", index=False)
-    summary = results_df.groupby(["task_suite_name", "task_id"]).agg(
-        {
-            "success": "mean",
-        }
-    )
-    summary.reset_index().to_csv(output_path / "summary.csv", index=False)
-
-    # Display results using rich
-    console = Console()
-    table = Table(title="Task Success Summary")
-    table.add_column("Task Suite", style="cyan")
-    table.add_column("Task ID", style="magenta")
-    table.add_column("Success Rate", style="green")
-
-    for _, row in summary.reset_index().iterrows():
-        table.add_row(
-            str(row["task_suite_name"]), str(row["task_id"]), f"{row['success']:.2%}"
-        )
-
-    console.print(table)
-    console.print(
-        f"\n[bold green]Total success rate: {summary['success'].mean():.2%}[/bold green]"
-    )
 
 
 def main(args: Args) -> None:
@@ -371,12 +338,48 @@ def main(args: Args) -> None:
     np.random.seed(args.seed)
 
     jobs = create_jobs(args)
-    _ = _websocket_client_policy.WebsocketClientPolicy(
-        args.host,
-        args.port,
-    )  # to wait for the server to be ready
-    run_robots(args, jobs)
-    aggregate_results(pathlib.Path(args.output_dir))
+
+    # Connect to get server metadata
+    temp_client = _websocket_client_policy.WebsocketClientPolicy(
+        robot_id="robot",
+        host=args.host,
+        port=args.port,
+    )
+    server_metadata = temp_client.server_metadata
+
+    # Create runtime metadata
+    runtime_metadata = RuntimeMetadata(
+        task_suite_name=args.task_suite_name,
+        num_steps_wait=args.num_steps_wait,
+        num_trials_per_robot=args.num_trials_per_robot,
+        max_steps=args.max_steps,
+        num_robots=args.num_robots,
+        control_hz=args.control_hz,
+        broker_type=args.action_chunk_broker.broker_type.value,
+        s_min=args.action_chunk_broker.s_min
+        if args.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC
+        else None,
+        d_init=args.action_chunk_broker.d_init
+        if args.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC
+        else None,
+        seed=args.seed,
+        resize_size=args.resize_size,
+        latency_ms=args.latency_ms,
+    )
+
+    output_path = pathlib.Path(args.output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    runtime_metadata.to_json(output_path / "runtime_metadata.json")
+    logging.info(f"Saved runtime metadata to {output_path / 'runtime_metadata.json'}")
+
+    server_metadata.to_json(output_path / "server_metadata.json")
+    logging.info(f"Saved server metadata to {output_path / 'server_metadata.json'}")
+
+    # Run robots
+    run_robots(args, jobs, server_metadata)
+    calculate_metrics(pathlib.Path(args.output_dir))
+    generate_all_plots(pathlib.Path(args.output_dir))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 import numpy as np
 from typing import Optional, Union
+from jaxtyping import Float
 
 
 # TODO: merge with broker types
@@ -31,16 +32,24 @@ class TrainTimeRTCParams:
     pass
 
 
-@dataclass
+# TODO: put debug_data back in a later PR
+# message types shared between client and server
+@dataclass(frozen=True)
 class InferRequest:
+    robot_id: str
     observation: dict
+    start_step: int  # TODO: can maybe fold into observation after typing
+    request_timestamp: float
+    deadline: float
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
-    return_debug_data: bool = False
-    noise: Optional[np.ndarray] = None  # optional, noise for deterministic replay
 
 
-@dataclass
+@dataclass(frozen=True)
 class InferResponse:
-    actions: np.ndarray
-    debug_data: Optional[dict] = field(default=None)
+    robot_id: str
+    request_id: int  # for routing response to correct connection
+    start_step: int  # from request
+    request_timestamp: float  # from request
+    actions: Float[np.ndarray, "1 action_horizon action_dim"]  # TODO: check the type on this
+    execution_horizon: int

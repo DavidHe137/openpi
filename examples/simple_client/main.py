@@ -123,6 +123,7 @@ def main(args: Args) -> None:
     }[args.env]
 
     policy = _websocket_client_policy.WebsocketClientPolicy(
+        robot_id="simple_client",
         host=args.host,
         port=args.port,
         api_key=args.api_key,

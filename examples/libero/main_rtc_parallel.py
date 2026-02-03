@@ -100,7 +100,11 @@ def init_worker(task: Task, args: Args, status_dict, results_dict) -> None:
         raise ValueError(f"Unknown action horizon: {args.action_horizon}")
 
     # Initialize ActionChunkBroker with RTC support
-    ws_client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
+    ws_client = _websocket_client_policy.WebsocketClientPolicy(
+        robot_id="robot_rtc_parallel",  # FIXME: should have a unique robot ID for each worker, but I think we will delete this script anyways
+        host=args.host,
+        port=args.port,
+    )
     _worker_client = action_chunk_broker.ActionChunkBroker(
         policy=ws_client,
         action_horizon=args.action_horizon,

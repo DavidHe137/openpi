@@ -804,6 +804,7 @@ def main():
             f"[bold]Connecting to policy server at {config.host}:{config.port}...[/bold]"
         )
         policy = _websocket_client_policy.WebsocketClientPolicy(
+            robot_id="debug_data_replay",
             host=config.host,
             port=config.port,
         )

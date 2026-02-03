@@ -35,6 +35,7 @@ def main(args: Args) -> None:
         agent=_policy_agent.PolicyAgent(
             policy=action_chunk_broker.ActionChunkBroker(
                 policy=_websocket_client_policy.WebsocketClientPolicy(
+                    robot_id=args.robot_id,
                     host=args.host,
                     port=args.port,
                 ),

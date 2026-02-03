@@ -2,6 +2,7 @@ import dataclasses
 
 import einops
 import numpy as np
+from openpi_client.schemas import LiberoObservation
 
 from openpi import transforms
 from openpi.models import model as _model
@@ -9,12 +10,18 @@ from openpi.models import model as _model
 
 def make_libero_example() -> dict:
     """Creates a random input example for the Libero policy."""
-    return {
-        "observation/state": np.random.rand(8),
-        "observation/image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-        "observation/wrist_image": np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
-        "prompt": "put both moka pots on the stove",
-    }
+    # FIXME: temporary hack until we figure out proper typing for observation
+    from dataclasses import asdict
+
+    return asdict(
+        LiberoObservation(
+            state=np.random.rand(8),
+            image=np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+            wrist_image=np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
+            prompt="put both moka pots on the stove",
+            step=0,
+        )
+    )
 
 
 def _parse_image(image) -> np.ndarray:

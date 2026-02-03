@@ -81,7 +81,7 @@ def main(args: Args):
     print("Created the droid env!")
 
     # Connect to the policy server
-    policy_client = websocket_client_policy.WebsocketClientPolicy(args.remote_host, args.remote_port)
+    policy_client = websocket_client_policy.WebsocketClientPolicy("droid", host=args.remote_host, port=args.remote_port)
 
     df = pd.DataFrame(columns=["success", "duration", "video_filename"])
 
