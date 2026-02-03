@@ -5,6 +5,7 @@ import multiprocessing
 import shutil
 from typing import Union, List, Literal, Optional
 import datetime
+import time
 
 import numpy as np
 from libero.libero import benchmark
@@ -61,7 +62,7 @@ class Args:
     port: int = 8080
     resize_size: int = 224
     action_horizon: int = (
-        10  # Action horizon for ActionChunkBroker (matches Libero model config)
+        50  # Action horizon for ActionChunkBroker (matches Libero model config)
     )
     action_chunk_broker: ActionChunkBrokerArgs = field(
         default_factory=ActionChunkBrokerArgs
@@ -118,6 +119,26 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
     if not args.latency_ms:
         return 0.0
     return float(args.latency_ms[robot_idx])
+
+
+def delay_start(
+    action_horizon: int,
+    control_hz: int,
+    action_chunk_broker_config: ActionChunkBrokerArgs,
+):
+    """Return the period (in seconds) that a robot waits between requests."""
+    period = 0.0
+    if action_chunk_broker_config.broker_type == ActionChunkBrokerType.SYNC:
+        period = action_horizon / control_hz
+    elif action_chunk_broker_config.broker_type == ActionChunkBrokerType.RTC:
+        period = action_chunk_broker_config.s_min / control_hz
+    else:
+        raise ValueError(
+            f"Unknown action chunk broker type: {action_chunk_broker_config.broker_type}"
+        )
+
+    delay = np.random.uniform(0, period)
+    time.sleep(delay)
 
 
 def init_worker(args: Args, counter, progress_queue) -> None:
@@ -200,6 +221,12 @@ def _robot_worker(task_args) -> None:
     """Worker process that handles jobs for a specific robot index."""
     args, job = task_args
     runtime = create_runtime(args, job)
+    delay_start(
+        action_horizon=args.action_horizon,
+        control_hz=args.control_hz,
+        action_chunk_broker_config=args.action_chunk_broker,
+    )
+
     runtime.run()
     runtime.close()
 

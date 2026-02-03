@@ -2,7 +2,6 @@ from collections.abc import Sequence
 import enum
 import logging
 import pathlib
-import time
 from typing import Any, TypeAlias
 
 import flax
@@ -81,7 +80,9 @@ class Policy(BasePolicy):
             self._model.eval()
         else:
             self._rng = rng or jax.random.key(0)
-            self._model.sample_actions = nnx_utils.module_jit(self._model.sample_actions)
+            self._model.sample_actions = nnx_utils.module_jit(
+                self._model.sample_actions, static_argnames=["return_debug_data", "use_rtc"]
+            )
         self._sample_actions = model.sample_actions
 
     @override
@@ -120,7 +121,7 @@ class Policy(BasePolicy):
                 sample_kwargs["noise"] = np.asarray(noise)
 
             sample_rng_or_pytorch_device = self._pytorch_device
-            actions, times, debug_data = self._sample_actions(sample_rng_or_pytorch_device, triton_obs, **sample_kwargs)
+            actions, debug_data = self._sample_actions(sample_rng_or_pytorch_device, triton_obs, **sample_kwargs)
 
             actions_np = np.asarray(actions)
             if actions_np.ndim == 3 and actions_np.shape[0] == 1:
@@ -143,7 +144,6 @@ class Policy(BasePolicy):
 
             # Apply the full output transform (including Unnormalize) to match the JAX policy.
             outputs = self._output_transform(outputs)
-            outputs["policy_timing"] = times
             if return_debug_data:
                 # Build a minimal debug payload that lets us compare Triton vs saved JAX runs.
                 # Note: for Triton, the model may not populate a rich debug dict; we always include
@@ -192,11 +192,9 @@ class Policy(BasePolicy):
                 sample_kwargs["noise"] = noise
 
             observation = _model.Observation.from_dict(inputs)
-            start_time = time.monotonic()
-            times: dict[str, float] = {}
             debug_data: dict | None = None
 
-            actions, times, debug_data = self._sample_actions(
+            actions, debug_data = self._sample_actions(
                 sample_rng_or_pytorch_device,
                 observation,
                 prev_action=prev_action,
@@ -210,9 +208,6 @@ class Policy(BasePolicy):
                 "actions": actions,
             }
 
-            # Ensure we always record a total inference time.
-            times.setdefault("infer_total", time.monotonic() - start_time)
-
             # Collect data for JAX models (after JIT execution)
             if not self._is_pytorch_model and hasattr(self._model, "output_actions_save"):
                 self._model.output_actions_save.append(actions)
@@ -223,7 +218,6 @@ class Policy(BasePolicy):
                 outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
 
             outputs = self._output_transform(outputs)
-            outputs["policy_timing"] = times
 
             # Add debug data if requested
             if debug_data is not None:
@@ -297,7 +291,11 @@ class Policy(BasePolicy):
         return _model.Observation.from_dict(inputs)
 
     def infer_batch(
-        self, requests: list[InferRequest], *, noise: np.ndarray | None = None, return_debug_data: bool = False
+        self,
+        requests: list[InferRequest],
+        *,
+        noise: np.ndarray | None = None,
+        return_debug_data: bool = False,
     ) -> list[InferResponse]:
         """Run inference on a batch of request.
 
@@ -319,7 +317,10 @@ class Policy(BasePolicy):
         raw_obs_list = None
         if any_debug_data:
             raw_obs_list = [
-                jax.tree.map(lambda x: np.array(x) if hasattr(x, "__array__") else x, req.observation)
+                jax.tree.map(
+                    lambda x: np.array(x) if hasattr(x, "__array__") else x,
+                    req.observation,
+                )
                 for req in requests
             ]
 
@@ -344,16 +345,15 @@ class Policy(BasePolicy):
             if noise is not None:
                 sample_kwargs["noise"] = np.asarray(noise)
 
-            start_time = time.monotonic()
             # TODO Rohan: return state_norm since Triton kernels bypass input_transform for internal method. Figure out why input_transform doesn't work
-            actions, state_norm, times, debug_data = self._sample_actions(
+            actions, state_norm, debug_data = self._sample_actions(
                 sample_rng_or_pytorch_device, observation, **sample_kwargs
             )
-            times["infer_total"] = time.monotonic() - start_time
 
             # Convert actions to numpy
             actions_np = np.asarray(actions)
 
+            # FIXME: I don't think the code below returns proper InferResponses?
             # Process each batch element
             results: list[InferResponse] = []
             for i in range(len(requests)):
@@ -369,7 +369,6 @@ class Policy(BasePolicy):
 
                 # Apply the full output transform (including Unnormalize)
                 result = self._output_transform(result)
-                result["policy_timing"] = times
 
                 # Add debug data if requested
                 if any_debug_data or getattr(req, "return_debug_data", False):
@@ -417,9 +416,7 @@ class Policy(BasePolicy):
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
             sample_kwargs["noise"] = noise
 
-        start_time = time.monotonic()
-        actions, times, debug_data = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
-        times["infer_total"] = time.monotonic() - start_time
+        actions, debug_data = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         outputs = {
             "state": observation.state,
             "actions": actions,
@@ -431,16 +428,13 @@ class Policy(BasePolicy):
             outputs = jax.tree.map(lambda x: np.asarray(x), outputs)
 
         outputs = self._output_transform(outputs)
-        outputs["policy_timing"] = times
 
         # Split batch results back into individual results
         results = []
         for i in range(len(requests)):
             result = {}
             for key, value in outputs.items():
-                if key == "policy_timing":
-                    result[key] = value  # Timing is shared
-                elif isinstance(value, np.ndarray) and len(value.shape) > 0:
+                if isinstance(value, np.ndarray) and len(value.shape) > 0:
                     result[key] = value[i]
                 else:
                     result[key] = value
@@ -497,7 +491,12 @@ class Policy(BasePolicy):
             return make_aloha_example()
         if env == EnvMode.DROID:
             return make_droid_example()
-        if env in [EnvMode.LIBERO, EnvMode.LIBERO_REALTIME, EnvMode.LIBERO_PYTORCH, EnvMode.LIBERO_PI0]:
+        if env in [
+            EnvMode.LIBERO,
+            EnvMode.LIBERO_REALTIME,
+            EnvMode.LIBERO_PYTORCH,
+            EnvMode.LIBERO_PI0,
+        ]:
             return make_libero_example()
 
         raise ValueError(f"Unknown environment: {env}")

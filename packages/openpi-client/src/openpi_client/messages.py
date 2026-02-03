@@ -43,5 +43,4 @@ class InferRequest:
 @dataclass
 class InferResponse:
     actions: np.ndarray
-    times: dict
     debug_data: Optional[dict] = field(default=None)

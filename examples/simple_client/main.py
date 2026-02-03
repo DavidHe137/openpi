@@ -141,8 +141,6 @@ def main(args: Args) -> None:
         timing_recorder.record("client_infer_ms", 1000 * (time.time() - inference_start))
         for key, value in action.get("server_timing", {}).items():
             timing_recorder.record(f"server_{key}", value)
-        for key, value in action.get("policy_timing", {}).items():
-            timing_recorder.record(f"policy_{key}", value)
 
     timing_recorder.print_all_stats()
 

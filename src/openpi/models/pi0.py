@@ -1,4 +1,5 @@
 import logging
+import os
 
 import einops
 import flax.nnx as nnx
@@ -14,6 +15,19 @@ import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 
 logger = logging.getLogger("openpi")
+
+
+def _check_jax_compilation_cache():
+    """Check if JAX compilation cache is enabled and warn if not."""
+    cache_dir = os.environ.get("JAX_COMPILATION_CACHE_DIR")
+    if cache_dir is None:
+        logger.warning(
+            "JAX_COMPILATION_CACHE_DIR is not set. "
+            "JAX will recompile on every run. "
+            "Set JAX_COMPILATION_CACHE_DIR=/path/to/cache to enable persistent compilation caching."
+        )
+    else:
+        logger.info(f"JAX compilation cache enabled at: {cache_dir}")
 
 
 def make_attn_mask(input_mask, mask_ar):
@@ -66,6 +80,7 @@ def posemb_sincos(
 class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
+        _check_jax_compilation_cache()
         self.pi05 = config.pi05
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -415,8 +430,7 @@ class Pi0(_model.BaseModel):
         d: at.Int[at.Array, " b"] | None = None,
         return_debug_data: bool = False,
         **kwargs,
-    ) -> tuple[_model.Actions, dict[str, float], dict | None]:
-        times = {}
+    ) -> tuple[_model.Actions, dict | None]:
         debug_data = {} if return_debug_data else None
 
         if return_debug_data:
@@ -470,7 +484,7 @@ class Pi0(_model.BaseModel):
         if return_debug_data:
             debug_data["output_actions"] = jnp.array(x_0)
 
-        return x_0, times, debug_data
+        return x_0, debug_data
 
     def make_example_actions(self) -> _model.Actions:
         return jnp.zeros((self.action_horizon, self.action_dim))

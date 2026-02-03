@@ -60,7 +60,6 @@ class Pi0TritonPytorch(nn.Module):
         )
 
     def make_example_actions(self) -> _model.Actions:
-        print("Making example actions: ", self.action_horizon, self.action_dim)
         return torch.zeros((self.action_horizon, self.action_dim))
 
     def _parse_image(self, image) -> np.ndarray:
@@ -243,8 +242,7 @@ class Pi0TritonPytorch(nn.Module):
         noise=None,
         num_steps=10,
         return_debug_data: bool = False,  # noqa: FBT001, FBT002
-    ) -> tuple[Tensor, dict, dict | None]:
-        times = {}
+    ) -> tuple[Tensor, np.ndarray, dict | None]:
         debug_data = {} if return_debug_data else None
 
         # Get actual batch size from observation
@@ -307,4 +305,5 @@ class Pi0TritonPytorch(nn.Module):
             if noise is not None:
                 debug_data["noise"] = np.asarray(noise[0])
 
-        return actions, transformed_inputs["state"], times, debug_data
+        # FIXME: overrides superclass return type
+        return actions, transformed_inputs["state"], debug_data
