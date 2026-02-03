@@ -63,6 +63,7 @@ uv pip sync examples/libero/requirements.txt third_party/libero/requirements.txt
 echo "Installing openpi-client and libero in editable mode..."
 uv pip install -e packages/openpi-client
 uv pip install -e third_party/libero
+python examples/libero/.venv/lib/python3.8/site-packages/robosuite/scripts/setup_macros.py
 
 deactivate
 echo -e "${GREEN}✓ LIBERO environment ready${NC}"
