@@ -13,9 +13,11 @@ import websockets.asyncio.client
 from openpi_client import base_policy as _base_policy
 from openpi_client import msgpack_numpy
 from openpi_client import messages
-from openpi_client.schemas import ActionChunk, Observation
+from openpi_client.schemas import ActionChunk, Observation, ServerMetadata
 
 
+# TODO: I think all the ways these clients connect is very similar, they just expose different interfaces
+# Let's try to refactor this to make it more reusable
 class WebsocketClientPolicy(_base_policy.BasePolicy):
     """Implements the Policy interface by communicating with a server over websocket.
 
@@ -39,10 +41,10 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
         self._ws, self._server_metadata = self._wait_for_server()
 
     @property
-    def server_metadata(self) -> Dict:
+    def server_metadata(self) -> ServerMetadata:
         return self._server_metadata
 
-    def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, Dict]:
+    def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, ServerMetadata]:
         logging.info(f"Waiting for server at {self._uri}...")
         while True:
             try:
@@ -53,7 +55,8 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
                     max_size=None,
                     additional_headers=headers,
                 )
-                metadata = msgpack_numpy.unpackb(conn.recv())
+                metadata_dict = msgpack_numpy.unpackb(conn.recv())
+                metadata = ServerMetadata(**metadata_dict)
                 return conn, metadata
             except ConnectionRefusedError:
                 logging.info("Still waiting for server...")
@@ -120,10 +123,10 @@ class BidirectionalWebsocket:
         self._ws, self._server_metadata = self._wait_for_server()
 
     @property
-    def server_metadata(self) -> Dict:
+    def server_metadata(self) -> ServerMetadata:
         return self._server_metadata
 
-    def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, Dict]:
+    def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, ServerMetadata]:
         logging.info(f"Waiting for server at {self._uri}...")
         while True:
             try:
@@ -134,7 +137,8 @@ class BidirectionalWebsocket:
                     max_size=None,
                     additional_headers=headers,
                 )
-                metadata = msgpack_numpy.unpackb(conn.recv())
+                metadata_dict = msgpack_numpy.unpackb(conn.recv())
+                metadata = ServerMetadata(**metadata_dict)
                 return conn, metadata
             except ConnectionRefusedError:
                 logging.info("Still waiting for server...")
@@ -216,7 +220,7 @@ class AsyncWebsocketClientPolicy:
         self._pool_lock = asyncio.Lock()
         self._num_connections = num_connections
 
-    async def connect(self) -> Dict:
+    async def connect(self) -> ServerMetadata:
         """Connect to the server and retrieve metadata."""
         results = await asyncio.gather(*[self._create_connection() for _ in range(self._num_connections)])
         self._connection_pool = [conn for conn, _ in results]
@@ -225,7 +229,7 @@ class AsyncWebsocketClientPolicy:
 
     async def _create_connection(
         self,
-    ) -> Tuple[websockets.asyncio.client.ClientConnection, Dict[str, Any]]:
+    ) -> Tuple[websockets.asyncio.client.ClientConnection, ServerMetadata]:
         """Create a new websocket connection and retrieve metadata."""
         logging.info(f"Waiting for server at {self._uri}...")
         start = time.time()
@@ -239,7 +243,8 @@ class AsyncWebsocketClientPolicy:
                     additional_headers=headers,
                 )
                 metadata_bytes = await conn.recv()
-                metadata = msgpack_numpy.unpackb(metadata_bytes)
+                metadata_dict = msgpack_numpy.unpackb(metadata_bytes)
+                metadata = ServerMetadata(**metadata_dict)
                 return conn, metadata
 
             except ConnectionRefusedError:

@@ -16,6 +16,7 @@ from openpi_client.action_chunkers import (
     SyncBrokerConfig,
     RTCBrokerConfig,
 )
+from openpi_client.schemas import RuntimeMetadata
 import tyro
 from dataclasses import dataclass, field
 
@@ -309,12 +310,45 @@ def main(args: Args) -> None:
     np.random.seed(args.seed)
 
     jobs = create_jobs(args)
-    _ = _websocket_client_policy.WebsocketClientPolicy(
+
+    # Connect to get server metadata
+    temp_client = _websocket_client_policy.WebsocketClientPolicy(
         robot_id="robot",
         host=args.host,
         port=args.port,
-    )  # to wait for the server to be ready
-    # TODO: modify WebsocketClientPolicy and get necessary metadata
+    )
+    server_metadata = temp_client.server_metadata
+
+    # Create runtime metadata
+    runtime_metadata = RuntimeMetadata(
+        task_suite_name=args.task_suite_name,
+        num_steps_wait=args.num_steps_wait,
+        num_trials_per_robot=args.num_trials_per_robot,
+        max_steps=args.max_steps,
+        num_robots=args.num_robots,
+        control_hz=args.control_hz,
+        broker_type=args.action_chunk_broker.broker_type.value,
+        s_min=args.action_chunk_broker.s_min
+        if args.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC
+        else None,
+        d_init=args.action_chunk_broker.d_init
+        if args.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC
+        else None,
+        seed=args.seed,
+        resize_size=args.resize_size,
+        latency_ms=args.latency_ms,
+    )
+
+    output_path = pathlib.Path(args.output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    runtime_metadata.to_json(output_path / "runtime_metadata.json")
+    logging.info(f"Saved runtime metadata to {output_path / 'runtime_metadata.json'}")
+
+    server_metadata.to_json(output_path / "server_metadata.json")
+    logging.info(f"Saved server metadata to {output_path / 'server_metadata.json'}")
+
+    # Run robots
     run_robots(args, jobs)
     calculate_metrics(pathlib.Path(args.output_dir))
     generate_distribution_plots(pathlib.Path(args.output_dir))

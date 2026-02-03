@@ -205,3 +205,52 @@ class Observation:
 @dataclass
 class LiberoObservation(Observation):
     prompt: str
+
+
+@dataclass(frozen=True)
+class ServerMetadata(JSONDataclass):
+    """Metadata about the policy server and model configuration.
+
+    Sent from server to clients at connection time.
+    """
+
+    # Training config info
+    config_name: str  # e.g., "pi0_aloha_sim", "pi05_libero"
+    checkpoint_dir: str
+
+    # Model configuration
+    action_horizon: int
+    action_dim: int
+    num_steps: int  # sampling steps
+
+    # Server configuration
+    max_batch_size: int
+    env: str  # environment mode (ALOHA, LIBERO, etc.)
+
+    # Optional policy-specific metadata
+    policy_metadata: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RuntimeMetadata(JSONDataclass):
+    """Metadata about the runtime/experiment configuration."""
+
+    # Environment config
+    task_suite_name: str
+    num_steps_wait: int
+    num_trials_per_robot: int
+    max_steps: int
+    seed: int
+    resize_size: int
+
+    # Multi-robot config
+    num_robots: int
+    control_hz: int
+
+    # Action chunking config
+    broker_type: str
+    s_min: Optional[int] = None
+    d_init: Optional[int] = None
+
+    # Other
+    latency_ms: List[float] = field(default_factory=list)
