@@ -4,3 +4,7 @@
 [submodule "third_party/libero"]
 	path = third_party/libero
 	url = https://github.com/Lifelong-Robot-Learning/LIBERO.git
+[submodule "third_party/robosuite"]
+	path = third_party/robosuite
+	url = https://github.com/ARISE-Initiative/robosuite.git
+	branch = v1.4.1

@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 
 import torch
 from torch import Tensor
@@ -9,6 +10,21 @@ import torch.nn.functional as F  # noqa: N812
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
+
+logger = logging.getLogger("openpi")
+
+
+def _check_torch_compilation_cache():
+    """Check if PyTorch compilation cache is enabled and warn if not."""
+    cache_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    if cache_dir is None:
+        logger.warning(
+            "TORCHINDUCTOR_CACHE_DIR is not set. "
+            "PyTorch will recompile on every run. "
+            "Set TORCHINDUCTOR_CACHE_DIR=/path/to/cache to enable persistent compilation caching."
+        )
+    else:
+        logger.info(f"PyTorch compilation cache enabled at: {cache_dir}")
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -84,6 +100,7 @@ def make_att_2d_masks(pad_masks, att_masks):
 class PI0Pytorch(nn.Module):
     def __init__(self, config):
         super().__init__()
+        _check_torch_compilation_cache()
         self.config = config
         self.pi05 = config.pi05
 
@@ -373,8 +390,23 @@ class PI0Pytorch(nn.Module):
         return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
-    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
+    def sample_actions(
+        self,
+        device,
+        observation,
+        noise=None,
+        num_steps=10,
+        return_debug_data: bool = False,  # noqa: FBT001, FBT002
+    ) -> tuple[Tensor, dict | None]:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
+        debug_data = {} if return_debug_data else None
+
+        if return_debug_data:
+            debug_data["obs_before_preprocess"] = {
+                "images": {k: v.cpu().numpy() for k, v in observation.images.items()},
+                "state": observation.state.cpu().numpy(),
+            }
+
         bsize = observation.state.shape[0]
         if noise is None:
             actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
@@ -382,7 +414,15 @@ class PI0Pytorch(nn.Module):
 
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
 
+        if return_debug_data:
+            debug_data["obs_after_preprocess"] = {
+                "images": {f"image_{i}": img.cpu().numpy() for i, img in enumerate(images)},
+                "state": state.cpu().numpy(),
+            }
+            debug_data["noise"] = noise.cpu().numpy()
+
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
@@ -416,7 +456,11 @@ class PI0Pytorch(nn.Module):
             # Euler step - use new tensor assignment instead of in-place operation
             x_t = x_t + dt * v_t
             time += dt
-        return x_t
+
+        if return_debug_data:
+            debug_data["output_actions"] = x_t.cpu().numpy()
+
+        return x_t, debug_data
 
     def denoise_step(
         self,
@@ -459,3 +503,6 @@ class PI0Pytorch(nn.Module):
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
+
+    def make_example_actions(self) -> Tensor:
+        return torch.zeros((self.config.action_horizon, self.config.action_dim))

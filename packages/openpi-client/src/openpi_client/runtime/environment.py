@@ -1,5 +1,7 @@
 import abc
 
+from openpi_client.schemas import Observation, Action
+
 
 class Environment(abc.ABC):
     """An Environment represents the robot and the environment it inhabits.
@@ -24,9 +26,13 @@ class Environment(abc.ABC):
         """
 
     @abc.abstractmethod
-    def get_observation(self) -> dict:
+    def get_observation(self) -> Observation:
         """Query the environment for the current state."""
 
     @abc.abstractmethod
-    def apply_action(self, action: dict) -> None:
+    def apply_action(self, action: Action) -> None:
         """Take an action in the environment."""
+
+    @abc.abstractmethod
+    def close(self) -> None:
+        """Close the environment."""

@@ -10,5 +10,9 @@
     "python.testing.pytestEnabled": true,
     "python.analysis.extraPaths": [
         "${workspaceFolder}/third_party/libero"
+    ],
+    "gitlens.advanced.blame.customArguments": [
+        "--ignore-revs-file",
+        "${workspaceFolder}/.git-blame-ignore-revs"
     ]
 }

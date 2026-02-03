@@ -1,24 +1,24 @@
 import dataclasses
-import enum
+import datetime
 import logging
+import pathlib
 import socket
-from typing import Any
+import sys
 
+from openpi_client.schemas import ServerMetadata
 import tyro
 
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
+from openpi.policies.policy import EnvMode
 from openpi.serving import websocket_policy_server
+from openpi.shared import logging_config
 from openpi.training import config as _config
 
-
-class EnvMode(enum.Enum):
-    """Supported environments."""
-
-    ALOHA = "aloha"
-    ALOHA_SIM = "aloha_sim"
-    DROID = "droid"
-    LIBERO = "libero"
+# Import shared utilities
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from utils import DEFAULT_CHECKPOINT
+from utils import create_default_policy
 
 
 @dataclasses.dataclass
@@ -48,50 +48,21 @@ class Args:
     default_prompt: str | None = None
 
     # Port to serve the policy on.
-    port: int = 8000
+    port: int = 8080
     # Record the policy's behavior for debugging.
     record: bool = False
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
 
+    # Batch size to use for inference.
+    max_batch_size: int = 1
+
     # Number of steps to use for sampling.
     num_steps: int = 10
 
-
-# Default checkpoints that should be used for each environment.
-DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
-    EnvMode.ALOHA: Checkpoint(
-        config="pi05_aloha",
-        dir="gs://openpi-assets/checkpoints/pi05_base",
-    ),
-    EnvMode.ALOHA_SIM: Checkpoint(
-        config="pi0_aloha_sim",
-        dir="gs://openpi-assets/checkpoints/pi0_aloha_sim",
-    ),
-    EnvMode.DROID: Checkpoint(
-        config="pi05_droid",
-        dir="gs://openpi-assets/checkpoints/pi05_droid",
-    ),
-    EnvMode.LIBERO: Checkpoint(
-        config="pi05_libero",
-        dir="gs://openpi-assets/checkpoints/pi05_libero",
-    ),
-}
-
-
-def create_default_policy(
-    env: EnvMode, *, default_prompt: str | None = None, sample_kwargs: dict[str, Any] | None = None
-) -> _policy.Policy:
-    """Create a default policy for the given environment."""
-    if checkpoint := DEFAULT_CHECKPOINT.get(env):
-        return _policy_config.create_trained_policy(
-            _config.get_config(checkpoint.config),
-            checkpoint.dir,
-            default_prompt=default_prompt,
-            sample_kwargs=sample_kwargs,
-        )
-    raise ValueError(f"Unsupported environment mode: {env}")
+    # Log directory to save the logs to.
+    log_dir: str = "logs/server"
 
 
 def create_policy(args: Args) -> _policy.Policy:
@@ -103,36 +74,76 @@ def create_policy(args: Args) -> _policy.Policy:
                 args.policy.dir,
                 default_prompt=args.default_prompt,
                 sample_kwargs={"num_steps": args.num_steps},
+                use_triton_optimized=(args.env == EnvMode.LIBERO_REALTIME),
+                batch_size=args.max_batch_size,
             )
         case Default():
+            print(type(args.policy))
             return create_default_policy(
-                args.env, default_prompt=args.default_prompt, sample_kwargs={"num_steps": args.num_steps}
+                args.env,
+                batch_size=args.max_batch_size,
+                default_prompt=args.default_prompt,
+                sample_kwargs={"num_steps": args.num_steps},
             )
 
 
 def main(args: Args) -> None:
-    policy = create_policy(args)
-    policy_metadata = policy.metadata
-    policy_metadata["num_steps"] = args.num_steps
-    policy_metadata["action_horizon"] = policy._model.action_horizon
+    log_path = (
+        pathlib.Path(args.log_dir)
+        / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging_config.setup_logging(log_path=log_path)
 
-    # Record the policy's behavior.
-    if args.record:
-        policy = _policy.PolicyRecorder(policy, "policy_records")
+    # Create policy factory to avoid CUDA context fork issues
+    def policy_factory():
+        policy = create_policy(args)
+        # Ensure policy metadata includes env for make_example()
+        if "env" not in policy._metadata:  # noqa: SLF001
+            policy._metadata["env"] = args.env.value  # noqa: SLF001
+        # Record the policy's behavior.
+        if args.record:
+            policy = _policy.PolicyRecorder(policy, "policy_records")
+        return policy
+
+    # Build metadata without loading the model to avoid CUDA initialization
+    match args.policy:
+        case Checkpoint():
+            train_config = _config.get_config(args.policy.config)
+            checkpoint_dir = args.policy.dir
+        case Default():
+            if checkpoint := DEFAULT_CHECKPOINT.get(args.env):
+                train_config = _config.get_config(checkpoint["config"])
+                checkpoint_dir = checkpoint["dir"]
+            else:
+                raise ValueError(f"Unsupported environment mode: {args.env}")
+
+    # Build server metadata
+    server_metadata = ServerMetadata(
+        config_name=train_config.name,
+        checkpoint_dir=checkpoint_dir,
+        action_horizon=train_config.model.action_horizon,
+        action_dim=train_config.model.action_dim,
+        num_steps=args.num_steps,
+        max_batch_size=args.max_batch_size,
+        env=args.env.value,
+        policy_metadata=train_config.policy_metadata or {},
+    )
 
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
     server = websocket_policy_server.WebsocketPolicyServer(
-        policy=policy,
+        policy_factory=policy_factory,
         host="0.0.0.0",
         port=args.port,
-        metadata=policy_metadata,
+        metadata=dataclasses.asdict(server_metadata),
+        max_batch_size=args.max_batch_size,
+        log_dir=args.log_dir,
     )
     server.serve_forever()
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, force=True)
     main(tyro.cli(Args))

@@ -1,4 +1,5 @@
 import logging
+import os
 
 import einops
 import flax.nnx as nnx
@@ -14,6 +15,19 @@ import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
 
 logger = logging.getLogger("openpi")
+
+
+def _check_jax_compilation_cache():
+    """Check if JAX compilation cache is enabled and warn if not."""
+    cache_dir = os.environ.get("JAX_COMPILATION_CACHE_DIR")
+    if cache_dir is None:
+        logger.warning(
+            "JAX_COMPILATION_CACHE_DIR is not set. "
+            "JAX will recompile on every run. "
+            "Set JAX_COMPILATION_CACHE_DIR=/path/to/cache to enable persistent compilation caching."
+        )
+    else:
+        logger.info(f"JAX compilation cache enabled at: {cache_dir}")
 
 
 def make_attn_mask(input_mask, mask_ar):
@@ -66,6 +80,7 @@ def posemb_sincos(
 class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
+        _check_jax_compilation_cache()
         self.pi05 = config.pi05
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
@@ -101,6 +116,8 @@ class Pi0(_model.BaseModel):
 
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
+
+        self.output_actions_save = []
 
     @at.typecheck
     def embed_prefix(
@@ -213,33 +230,29 @@ class Pi0(_model.BaseModel):
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
 
-    @override
-    def sample_actions(
+    def prefill(
         self,
-        rng: at.KeyArrayLike,
-        observation: _model.Observation,
-        *,
-        num_steps: int | at.Int[at.Array, ""] = 10,
-        noise: at.Float[at.Array, "b ah ad"] | None = None,
-    ) -> _model.Actions:
-        observation = _model.preprocess_observation(None, observation, train=False)
-        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
-        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
-        dt = -1.0 / num_steps
-        batch_size = observation.state.shape[0]
-        if noise is None:
-            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        prefix_tokens: at.Float[at.Array, "b s emb"],
+        prefix_attn_mask: at.Bool[at.Array, "b s"],
+        positions: at.Int[at.Array, "b s"],
+    ) -> tuple[at.Float[at.Array, "l b _t _k _h"], at.Float[at.Array, "l b _t _v _h"]]:
+        return self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
 
-        # first fill KV cache with a forward pass of the prefix
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-        positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+    def flow_matching(
+        self,
+        observation: _model.Observation,
+        noise: at.Float[at.Array, "b ah ad"],
+        kv_cache: tuple[at.Float[at.Array, "l b _t _k _h"], at.Float[at.Array, "l b _t _v _h"]],
+        dt: float,
+        prefix_tokens: at.Float[at.Array, "b s emb"],
+        prefix_mask: at.Bool[at.Array, "b s"],
+    ) -> _model.Actions:
+        batch_size = observation.state.shape[0]
 
         def step(carry):
             x_t, time = carry
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size)
+                observation, x_t, jnp.broadcast_to(time, (batch_size,))
             )
             # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
             # other
@@ -277,3 +290,201 @@ class Pi0(_model.BaseModel):
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    def guided_flow_matching(
+        self,
+        observation: _model.Observation,
+        noise: at.Float[at.Array, "b ah ad"],
+        kv_cache: tuple[at.Float[at.Array, "l b _t _k _h"], at.Float[at.Array, "l b _t _v _h"]],
+        dt: float,
+        prefix_tokens: at.Float[at.Array, "b s emb"],
+        prefix_mask: at.Bool[at.Array, "b s"],
+        prev_action: _model.Actions,
+        s: at.Int[at.Array, " b"],
+        d: at.Int[at.Array, " b"],
+        beta: float = 8.0,
+    ) -> _model.Actions:
+        batch_size = observation.state.shape[0]
+        # get prev_action from s-th step to the end, and then pad s steps with zeros
+        prev_action_slice = prev_action[:, s:, :]  # get prev_action from s-th step to the end
+        # jax.debug.print("prev_action_slice shape: {prev_action_slice_shape}", prev_action_slice_shape=prev_action_slice.shape)
+        # create s steps with zeros
+        zero_actions = jnp.zeros((batch_size, s, self.action_dim))
+        # concatenate prev_action_slice and zero_actions
+        prev_action_slice = jnp.concatenate([prev_action_slice, zero_actions], axis=1)
+
+        def make_w(d: int, s: int) -> jnp.ndarray:
+            """
+            generate the weight vector W ∈ R^H
+            parameters
+            ----
+            H : int  # sequence length
+            d : int  # "deterministic region" threshold
+            s : int  # "truncated" window length
+            return
+            ----
+            W : jnp.ndarray, shape (H,)
+            """
+            h = self.action_horizon
+            i = jnp.arange(h)  # 0,1,2,...,H-1
+
+            # three-segment condition
+            cond_1 = i < d
+            cond_2 = (i >= d) & (i < h - s)
+            # cond_3 = i >= H - s  # actually can be else
+
+            # segment (1): all 1
+            w1 = jnp.ones_like(i, dtype=float)
+
+            # segment (2): exponential decay
+            c_i = (h - s - i) / (h - s - d + 1)
+            w2 = jnp.exp(c_i) - 1
+            w2 = c_i * w2 / (jnp.e - 1)  # (e^{c_i} - 1) / (e - 1)
+
+            # segment (3): all 0
+            w3 = jnp.zeros_like(i, dtype=float)
+
+            # concatenate three segments
+            w = jnp.where(cond_1, w1, jnp.where(cond_2, w2, w3))
+
+            d = jnp.diag(w)
+
+            return jnp.stack([d] * 1, axis=0)
+
+        # create W
+        # TODO: optimize
+        diag_w = jnp.stack([make_w(d_i, s_i) for d_i, s_i in zip(d, s, strict=True)], axis=0)
+
+        def func_a_1_prime(x_t, time):
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
+            # other
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
+            # prefix tokens
+            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
+            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
+            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            assert full_attn_mask.shape == (
+                batch_size,
+                suffix_tokens.shape[1],
+                prefix_tokens.shape[1] + suffix_tokens.shape[1],
+            )
+            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond],
+            )
+            assert prefix_out is None
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+            return x_t - time * v_t, v_t
+
+        def step(carry):
+            x_t, time = carry
+            (a_1_prime, v_t), f_vjp = jax.vjp(func_a_1_prime, x_t, time)
+
+            e = prev_action_slice - a_1_prime
+            e = jnp.matmul(diag_w, e)
+            # Compute vector-Jacobian product
+            grad_a_1_prime_x_t = f_vjp((e, jnp.zeros_like(v_t)))
+            # jax.debug.print("grad_a_1_prime_x_t 0 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[0].shape)
+            # jax.debug.print("grad_a_1_prime_x_t 1 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[1].shape)
+            r_t = time * time / (time * time + (1 - time) * (1 - time))
+
+            a_2_prime = x_t + dt * (
+                v_t - jax.lax.min(beta, time / ((1 - time) * r_t * r_t + 1e-6)) * grad_a_1_prime_x_t[0]
+            )
+
+            return a_2_prime, time + dt
+
+        def cond(carry):
+            x_t, time = carry
+            # robust to floating-point error
+            return time >= -dt / 2
+
+        x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+
+        return x_0
+
+    # TODO: maybe separate methods for RTC and non-RTC?
+    @override
+    def sample_actions(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        use_rtc: bool = False,
+        prev_action: _model.Actions | None = None,
+        s: at.Int[at.Array, " b"] | None = None,
+        d: at.Int[at.Array, " b"] | None = None,
+        return_debug_data: bool = False,
+        **kwargs,
+    ) -> tuple[_model.Actions, dict | None]:
+        debug_data = {} if return_debug_data else None
+
+        if return_debug_data:
+            debug_data["obs_before_preprocess"] = {
+                "images": {k: jnp.array(v) for k, v in observation.images.items()},
+                "state": jnp.array(observation.state),
+            }
+
+        observation = _model.preprocess_observation(None, observation, train=False)
+
+        # Store observation after preprocessing if debug mode
+        if return_debug_data:
+            debug_data["obs_after_preprocess"] = {
+                "images": {k: jnp.array(v) for k, v in observation.images.items()},
+                "state": jnp.array(observation.state),
+            }
+
+        # first fill KV cache with a forward pass of the prefix
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
+        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
+        dt = -1.0 / num_steps
+        batch_size = observation.state.shape[0]
+        if noise is None:
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+        assert noise is not None
+
+        if return_debug_data:
+            debug_data["noise"] = jnp.array(noise)
+
+        _, kv_cache = self.prefill(prefix_tokens, prefix_attn_mask, positions)
+
+        if use_rtc:
+            x_0 = self.guided_flow_matching(
+                observation, noise, kv_cache, dt, prefix_tokens, prefix_mask, prev_action, s, d
+            )
+        else:
+            x_0 = self.flow_matching(
+                observation,
+                noise,
+                kv_cache,
+                dt,
+                prefix_tokens,
+                prefix_mask,
+            )
+
+        # Store output actions if debug mode
+        if return_debug_data:
+            debug_data["output_actions"] = jnp.array(x_0)
+
+        return x_0, debug_data
+
+    def make_example_actions(self) -> _model.Actions:
+        return jnp.zeros((self.action_horizon, self.action_dim))

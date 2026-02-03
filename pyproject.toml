@@ -42,6 +42,8 @@ dependencies = [
     "tensorboard>=2.15.2",
     "tensorboard-plugin-profile>=2.20.7",
     "seaborn>=0.13.2",
+    "pandas>=2.2.3",
+    "nvtx>=0.2.14",
 ]
 
 
@@ -78,7 +80,7 @@ members = ["packages/*"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = ["docker", "third_party", "src/openpi/models_pytorch/transformers_replace/*"]
+extend-exclude = ["docker", "third_party", "src/openpi/models_pytorch/transformers_replace/*", "*.ipynb"]
 
 [tool.ruff.lint]
 # https://docs.astral.sh/ruff/rules/

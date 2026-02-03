@@ -1,20 +1,23 @@
-import numpy as np
-import matplotlib.pyplot as plt
-# import seaborn as sns
+import os
+import sys
+
 import h5py
-
+import numpy as np
 from scipy import sparse
+from transformers import AutoProcessor
 
-def sparsify_matrix(A, threshold=1e-6):
+
+def sparsify_matrix(matrix, threshold=1e-6):
     # Zero out small elements
-    A[np.abs(A) < threshold] = 0
+    matrix[np.abs(matrix) < threshold] = 0
     # Convert to sparse format
-    A_sparse = sparse.csr_matrix(A)
-    return A_sparse
+    return sparse.csr_matrix(matrix)
+
 
 def denormalize_action_mean_std(action_norm, mean, std):
     # action: [t, horizon]
-    return action_norm*std + mean
+    return action_norm * std + mean
+
 
 def normalize_action_percentile(actions):
     # following  FAST paper to normalize the action with 1%-99% percentile
@@ -24,21 +27,23 @@ def normalize_action_percentile(actions):
     max_val = np.percentile(actions, 99, axis=0)
     return (actions - min_val) / (max_val - min_val), min_val, max_val
 
+
 def denormalize_action_percentile(action_norm, min_val, max_val):
     # input: [t, action_dim]
     # output: [t, action_dim]
-    return action_norm*(max_val - min_val) + min_val
+    return action_norm * (max_val - min_val) + min_val
+
 
 ## Read state and action data
 state_data = []
 action_data = []
-with h5py.File('/srv/rl2-lab/flash7/zhenyang/data/robomimic-sim/low_dim_v141.hdf5', 'r') as f:
-    f = f['data']
-    print(f.keys())
-    print(f['demo_0'].keys())
-    for demo in f.keys():
-        state_data.append(f[demo]['states'][:])
-        action_data.append(f[demo]['actions'][:])
+with h5py.File("/coc/flash7/zhenyang/data/robomimic-sim/low_dim_v141.hdf5", "r") as f:
+    f_dict = f["data"]
+    print(f_dict.keys())
+    print(f_dict["demo_0"].keys())
+    for demo in f_dict:
+        state_data.append(f_dict[demo]["states"][:])
+        action_data.append(f_dict[demo]["actions"][:])
 
 state_data_array = np.concatenate(state_data, axis=0)
 action_data_array = np.concatenate(action_data, axis=0)
@@ -60,38 +65,31 @@ print(action_data_array.shape)
 ###########################
 ### Normalize data with percentile ###
 action_norm, action_min, action_max = normalize_action_percentile(action_data_array)
-print(f"action_norm shape: {action_norm.shape}, action_min shape: {action_min.shape}, action_max shape: {action_max.shape}")
-test_action_norm = action_norm[10:30,:]
-
-import os
-import sys
+print(
+    f"action_norm shape: {action_norm.shape}, action_min shape: {action_min.shape}, action_max shape: {action_max.shape}"
+)
+test_action_norm = action_norm[10:30, :]
 
 # Set all cache directories before any HF imports
-cache_dir = '/srv/rl2-lab/flash7/zhenyang/.cache'
-os.environ['TRANSFORMERS_CACHE'] = cache_dir
-os.environ['HF_HOME'] = cache_dir
-os.environ['HF_DATASETS_CACHE'] = cache_dir
-os.environ['XDG_CACHE_HOME'] = cache_dir
+cache_dir = "/coc/flash7/zhenyang/.cache"
+os.environ["TRANSFORMERS_CACHE"] = cache_dir
+os.environ["HF_HOME"] = cache_dir
+os.environ["HF_DATASETS_CACHE"] = cache_dir
+os.environ["XDG_CACHE_HOME"] = cache_dir
 
 # Clear any existing HF modules from sys.modules
 for module in list(sys.modules.keys()):
-    if module.startswith('transformers') or module.startswith('huggingface'):
+    if module.startswith(("transformers", "huggingface")):
         del sys.modules[module]
 
-import numpy as np
-import matplotlib.pyplot as plt
-from transformers import AutoProcessor
-
 # Load the tokenizer from the Hugging Face hub
-tokenizer = AutoProcessor.from_pretrained("physical-intelligence/fast",
-                                          trust_remote_code=True,
-                                          local_files_only=True)
+tokenizer = AutoProcessor.from_pretrained("physical-intelligence/fast", trust_remote_code=True, local_files_only=True)
 
 # Tokenize & decode action chunks (we use dummy data here)
 # action_data = np.random.rand(1, 20, 14)    # one batch of action chunks
 # action_data = action_data_norm[np.newaxis, :, :]
 action_data = test_action_norm[np.newaxis, :, :]
-tokens = tokenizer(action_data)              # tokens = list[list[int]]
+tokens = tokenizer(action_data)  # tokens = list[list[int]]
 print(f"[test action norm] tokens number: {len(tokens[0])}")
 decoded_actions = tokenizer.decode(tokens)
 decoded_actions = denormalize_action_percentile(decoded_actions, action_min, action_max)
@@ -100,10 +98,12 @@ print(f"[test action norm] decoded actions are: {decoded_actions.shape}")
 ##### Test cut-off tokens #####
 # tokens_short = tokens[0][:len(tokens[0])-3]
 tokens_short = tokens[0][:-2]
-tokens_short = [tokens_short] # list[list[int]]
+tokens_short = [tokens_short]  # list[list[int]]
 decoded_actions_short = tokenizer.decode(tokens_short)
 decoded_actions_short = denormalize_action_percentile(decoded_actions_short, action_min, action_max)
-print(f"[test action norm short] tokens_short number {len(tokens_short)} decoded short action shape {decoded_actions_short.shape}")
+print(
+    f"[test action norm short] tokens_short number {len(tokens_short)} decoded short action shape {decoded_actions_short.shape}"
+)
 
 action_denorm = denormalize_action_percentile(action_data, action_min, action_max)
 x = action_denorm[..., 0][0]
@@ -124,5 +124,9 @@ z_rec_short = decoded_actions_short[..., 2][0]
 # print(f"error between x_rec and x_rec_short: {np.mean(np.abs(x_rec - x_rec_short))}")
 
 horizon = min(action_denorm.shape[0], decoded_actions_short.shape[0])
-print(f"decoded short action error is {np.mean(np.abs(decoded_actions_short[0, :horizon,:] - action_denorm[0, :horizon,:]), axis=0)}")
-print(f"original action error is {np.mean(np.abs(decoded_actions[0, :horizon,:] - action_denorm[0, :horizon,:]), axis=0)}")
+print(
+    f"decoded short action error is {np.mean(np.abs(decoded_actions_short[0, :horizon, :] - action_denorm[0, :horizon, :]), axis=0)}"
+)
+print(
+    f"original action error is {np.mean(np.abs(decoded_actions[0, :horizon, :] - action_denorm[0, :horizon, :]), axis=0)}"
+)

@@ -23,12 +23,13 @@ class Args:
 
 def main(args: Args) -> None:
     ws_client_policy = _websocket_client_policy.WebsocketClientPolicy(
+        robot_id="aloha_real",
         host=args.host,
         port=args.port,
     )
-    logging.info(f"Server metadata: {ws_client_policy.get_server_metadata()}")
+    logging.info(f"Server metadata: {ws_client_policy.server_metadata}")
 
-    metadata = ws_client_policy.get_server_metadata()
+    metadata = ws_client_policy.server_metadata
     runtime = _runtime.Runtime(
         environment=_env.AlohaRealEnvironment(reset_position=metadata.get("reset_pose")),
         agent=_policy_agent.PolicyAgent(

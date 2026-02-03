@@ -3,8 +3,8 @@
 Simple comparison following the exact pattern from pi0.py sample_actions.
 """
 
-import time
 from dataclasses import dataclass
+import time
 
 import jax
 import jax.numpy as jnp
@@ -68,7 +68,7 @@ def compare_speeds(args: Args):
 
     model = policy._model  # noqa: SLF001
 
-    print(f"\nModel info:")
+    print("\nModel info:")
     print(f"  Action dim: {model.action_dim}")
     print(f"  Action horizon: {model.action_horizon}")
     print(f"  Pi0.5: {model.pi05}")
@@ -106,8 +106,7 @@ def compare_speeds(args: Args):
             kv_cache=None,
             adarms_cond=[None, adarms_cond],
         )
-        v_t = model.action_out_proj(action_out[:, -model.action_horizon :])
-        return v_t
+        return model.action_out_proj(action_out[:, -model.action_horizon :])
 
     # JIT compile
     print("JIT compiling...")
@@ -183,8 +182,7 @@ def compare_speeds(args: Args):
             kv_cache=kv_cache,
             adarms_cond=[None, adarms_cond],
         )
-        v_t = model.action_out_proj(action_out[:, -model.action_horizon :])
-        return v_t
+        return model.action_out_proj(action_out[:, -model.action_horizon :])
 
     # JIT compile
     print("\nJIT compiling...")
@@ -232,22 +230,22 @@ def compare_speeds(args: Args):
     print("COMPARISON SUMMARY")
     print("=" * 80)
 
-    print(f"\n1. Action expert WITHOUT prefix (empty KV cache):")
+    print("\n1. Action expert WITHOUT prefix (empty KV cache):")
     print(f"   {mean_no_prefix * 1000:.2f} ms per forward pass")
 
-    print(f"\n2. Action expert WITH prefix cached (images + prompt):")
+    print("\n2. Action expert WITH prefix cached (images + prompt):")
     print(f"   {mean_with_prefix * 1000:.2f} ms per forward pass")
 
     overhead = mean_with_prefix - mean_no_prefix
     overhead_pct = (overhead / mean_no_prefix) * 100
 
-    print(f"\n📊 OVERHEAD ANALYSIS:")
+    print("\n📊 OVERHEAD ANALYSIS:")
     print(f"   • Overhead from attending to cached prefix: {overhead * 1000:.2f} ms ({overhead_pct:.1f}%)")
 
     if overhead_pct > 5:
         print(f"   • The cached prefix adds {overhead_pct:.1f}% overhead to action expert runtime")
         print(f"   • Prefix tokens in cache: {prefix_tokens.shape[1]}")
-        print(f"   • This overhead comes from attention to the longer key/value sequence")
+        print("   • This overhead comes from attention to the longer key/value sequence")
     else:
         print(f"   • Negligible overhead ({overhead_pct:.1f}%) from cached prefix")
 

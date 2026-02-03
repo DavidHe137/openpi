@@ -175,3 +175,10 @@ policy_logs/
 !*.schema.json
 credentials/
 secrets/
+
+# Outputs
+logs/
+log/
+benchmarks/
+*.lprof
+jax_cache/

@@ -16,10 +16,15 @@ import functools
 
 import msgpack
 import numpy as np
+from enum import Enum
 
 
 def pack_array(obj):
-    if (isinstance(obj, (np.ndarray, np.generic))) and obj.dtype.kind in ("V", "O", "c"):
+    if (isinstance(obj, (np.ndarray, np.generic))) and obj.dtype.kind in (
+        "V",
+        "O",
+        "c",
+    ):
         raise ValueError(f"Unsupported dtype: {obj.dtype}")
 
     if isinstance(obj, np.ndarray):
@@ -37,6 +42,9 @@ def pack_array(obj):
             b"dtype": obj.dtype.str,
         }
 
+    if isinstance(obj, Enum):
+        return obj.value
+
     return obj
 
 
@@ -46,6 +54,9 @@ def unpack_array(obj):
 
     if b"__npgeneric__" in obj:
         return np.dtype(obj[b"dtype"]).type(obj[b"data"])
+
+    if isinstance(obj, Enum):
+        return Enum(obj["name"], obj["value"])
 
     return obj
 

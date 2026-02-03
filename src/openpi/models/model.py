@@ -236,7 +236,12 @@ class BaseModelConfig(abc.ABC):
         graphdef, state = nnx.split(model)
         if remove_extra_params:
             params = ocp.transform_utils.intersect_trees(state.to_pure_dict(), params)
-        at.check_pytree_equality(expected=state.to_pure_dict(), got=params, check_shapes=True, check_dtypes=False)
+        at.check_pytree_equality(
+            expected=state.to_pure_dict(),
+            got=params,
+            check_shapes=True,
+            check_dtypes=False,
+        )
         state.replace_by_pure_dict(params)
         return nnx.merge(graphdef, state)
 
@@ -280,7 +285,13 @@ class BaseModel(nnx.Module, abc.ABC):
     ) -> at.Float[at.Array, "*b ah"]: ...
 
     @abc.abstractmethod
-    def sample_actions(self, rng: at.KeyArrayLike, observation: Observation, **kwargs) -> Actions: ...
+    def sample_actions(
+        self, rng: at.KeyArrayLike, observation: Observation, **kwargs
+    ) -> tuple[Actions, dict | None]: ...
+
+    @abc.abstractmethod
+    def make_example_actions(self) -> Actions:
+        pass
 
 
 def restore_params(
@@ -319,7 +330,8 @@ def restore_params(
             ocp.args.PyTreeRestore(
                 item=item,
                 restore_args=jax.tree.map(
-                    lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype), item
+                    lambda _: ocp.ArrayRestoreArgs(sharding=sharding, restore_type=restore_type, dtype=dtype),
+                    item,
                 ),
             ),
         )["params"]

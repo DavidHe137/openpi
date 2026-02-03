@@ -27,6 +27,8 @@ from datetime import datetime
 import enum
 import json
 import os
+import pathlib
+import sys
 import time
 from typing import Any
 import warnings
@@ -38,6 +40,10 @@ from tqdm.asyncio import tqdm
 from openpi.policies.aloha_policy import make_aloha_example
 from openpi.policies.droid_policy import make_droid_example
 from openpi.policies.libero_policy import make_libero_example
+
+# Import shared utilities
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from utils import get_gpu_info
 
 
 class EnvMode(enum.Enum):
@@ -56,6 +62,7 @@ class RequestFuncOutput:
     latency: float  # seconds
     start_time: float
     error: str | None = None
+    outputs: dict | None = None
 
 
 @dataclass
@@ -171,7 +178,7 @@ def calculate_metrics(
 async def send_request(policy: AsyncWebsocketClientPolicy, obs: dict, pbar: tqdm | None) -> RequestFuncOutput:
     """Send a request to the server."""
     start_time = time.perf_counter()
-    _ = await policy.infer(obs)
+    outputs = await policy.infer(obs)
     latency = time.perf_counter() - start_time
     if pbar is not None:
         pbar.update(1)
@@ -180,6 +187,7 @@ async def send_request(policy: AsyncWebsocketClientPolicy, obs: dict, pbar: tqdm
         latency=latency * 1000,
         start_time=start_time,
         error=None,
+        outputs=outputs,
     )
 
 
@@ -205,6 +213,7 @@ async def benchmark(
         print(f"Server metadata: {metadata}")
         assert "num_steps" in metadata, "num_steps not found in server metadata"
         assert "action_horizon" in metadata, "action_horizon not found in server metadata"
+        assert "batch_size" in metadata, "batch_size not found in server metadata"
 
         # Warm-up request
         print("Running warm-up request...")
@@ -252,8 +261,17 @@ async def benchmark(
     # Calculate metrics
     metrics = calculate_metrics(outputs, benchmark_duration, num_requests, selected_percentiles)
 
+    # Get GPU info
+    gpu_info = get_gpu_info()
+
     # Print results
     print("{s:{c}^{n}}".format(s=" Benchmark Results ", n=50, c="="))
+    if gpu_info.get("gpu_available"):
+        print("{:<40} {:<10}".format("GPU:", gpu_info["gpu_name"]))
+        print("{:<40} {:<10}".format("Driver version:", gpu_info["driver_version"]))
+        print("{:<40} {:<10}".format("GPU memory:", gpu_info["memory_total"]))
+    else:
+        print("{:<40} {:<10}".format("GPU:", "Not available"))
     print("{:<40} {:<10}".format("Total requests:", metrics.total_requests))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
     print("{:<40} {:<10}".format("Failed requests:", metrics.total_requests - metrics.completed))
@@ -269,13 +287,14 @@ async def benchmark(
     print("=" * 50)
 
     # Return results
-    return {
+    result: dict[str, Any] = {
         "date": datetime.now(tz=UTC).isoformat(),
         "host": host,
         "port": port,
         "env": env.value,
         "num_steps": metadata["num_steps"],
         "action_horizon": metadata["action_horizon"],
+        "batch_size": metadata["batch_size"],
         "num_requests": num_requests,
         "request_rate": request_rate if request_rate != float("inf") else "inf",
         "max_concurrency": max_concurrency,
@@ -290,7 +309,10 @@ async def benchmark(
         "latencies": [o.latency for o in outputs if o.success],
         "arrival_times": arrival_times,
         "errors": [o.error for o in outputs if not o.success],
+        "gpu_info": gpu_info,
     }
+
+    return result
 
 
 def main(args: argparse.Namespace) -> dict[str, Any]:
