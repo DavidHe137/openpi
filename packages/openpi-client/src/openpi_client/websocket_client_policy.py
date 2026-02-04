@@ -86,6 +86,7 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             deadline=deadline,
             infer_type=infer_type,
             params=params,
+            noise=noise,
         )
         data = msgpack_numpy.packb(asdict(request))
 
@@ -151,6 +152,7 @@ class BidirectionalWebsocket:
         prev_action: Optional[np.ndarray] = None,
         s_param: Optional[int] = None,
         d_param: Optional[int] = None,
+        noise: Optional[np.ndarray] = None,
     ) -> None:
         infer_type = messages.InferType.SYNC
         params = None
@@ -168,6 +170,7 @@ class BidirectionalWebsocket:
             deadline=deadline,
             infer_type=infer_type,
             params=params,
+            noise=noise,
         )
         data = msgpack_numpy.packb(asdict(request))
 
