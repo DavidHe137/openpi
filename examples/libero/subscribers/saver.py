@@ -154,6 +154,9 @@ class Saver(_subscriber.Subscriber):
         # Build data dict for .npz file
         data_to_save = {}
 
+        # Save the initial state used for this episode
+        data_to_save["initial_state"] = self._environment.current_initial_state
+
         for i, chunk in enumerate(action_chunks):
             prefix = f"chunk_{i:04d}"
 

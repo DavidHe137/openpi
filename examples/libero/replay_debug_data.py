@@ -79,8 +79,16 @@ def load_metadata(debug_data_dir: pathlib.Path) -> dict:
         return json.load(f)
 
 
-def load_debug_chunks(debug_data_dir: pathlib.Path) -> List[dict]:
-    """Load all debug data chunks from the .npz file."""
+def load_debug_chunks(
+    debug_data_dir: pathlib.Path,
+) -> Tuple[List[dict], Optional[np.ndarray]]:
+    """Load all debug data chunks from the .npz file.
+
+    Returns:
+        Tuple of (chunks, initial_state) where:
+        - chunks: List of debug data chunks
+        - initial_state: Initial state array if present in debug data, None otherwise
+    """
     debug_file = debug_data_dir / "debug_data.npz"
     if not debug_file.exists():
         raise FileNotFoundError(f"Debug data file not found: {debug_file}")
@@ -88,9 +96,16 @@ def load_debug_chunks(debug_data_dir: pathlib.Path) -> List[dict]:
     # Load npz file
     data = np.load(debug_file, allow_pickle=True)
 
+    # Extract initial state if present
+    initial_state = data.get("initial_state")
+
     # Parse chunks by prefix
     chunks = {}
     for key in data.keys():
+        # Skip the initial_state key
+        if key == "initial_state":
+            continue
+
         parts = key.split("/", 1)
         if len(parts) == 2:
             chunk_prefix, field_path = parts
@@ -111,7 +126,7 @@ def load_debug_chunks(debug_data_dir: pathlib.Path) -> List[dict]:
     for chunk_prefix in sorted(chunks.keys()):
         chunk_list.append(chunks[chunk_prefix])
 
-    return chunk_list
+    return chunk_list, initial_state
 
 
 def create_observation_from_debug(debug_data: dict, prompt: str, step: int) -> dict:
@@ -126,7 +141,7 @@ def create_observation_from_debug(debug_data: dict, prompt: str, step: int) -> d
         state=obs["state"],
         image=obs["image"],
         wrist_image=obs.get("wrist_image"),
-        prompt=obs.get("prompt", prompt),
+        prompt=str(obs.get("prompt")),
         step=step,
     )
 
@@ -328,7 +343,7 @@ def replay_episode(
     """
     # Load metadata and chunks
     metadata = load_metadata(config.debug_data_dir)
-    chunks = load_debug_chunks(config.debug_data_dir)
+    chunks, saved_initial_state = load_debug_chunks(config.debug_data_dir)
 
     console.print(f"[bold blue]Loaded {len(chunks)} debug chunks[/bold blue]")
     console.print(f"  Task Suite: {metadata['task_suite_name']}")
@@ -344,14 +359,9 @@ def replay_episode(
     task_suite = benchmark_dict[metadata["task_suite_name"]]()
     task = task_suite.get_task(metadata["task_id"])
 
-    # Get initial state for this episode
-    all_initial_states = task_suite.get_task_init_states(metadata["task_id"])
-    episode_idx = (
-        metadata.get("episode_idx", 1) - 1
-    )  # episode_idx is 1-based after increment
-    if episode_idx >= len(all_initial_states):
-        episode_idx = 0
-    initial_state = all_initial_states[episode_idx : episode_idx + 1]
+    # Use the directly saved initial state (preferred)
+    initial_state = saved_initial_state[np.newaxis, :]  # Add batch dimension
+    console.print("[green]Using saved initial state from debug data[/green]")
 
     env_raw, task_description = utils._get_libero_env(
         task, LIBERO_ENV_RESOLUTION, seed=config.seed
