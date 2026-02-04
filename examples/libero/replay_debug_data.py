@@ -126,7 +126,7 @@ def create_observation_from_debug(debug_data: dict, prompt: str, step: int) -> d
         state=obs["state"],
         image=obs["image"],
         wrist_image=obs.get("wrist_image"),
-        prompt=str(obs.get("prompt", prompt)),
+        prompt=obs.get("prompt", prompt),
         step=step,
     )
 

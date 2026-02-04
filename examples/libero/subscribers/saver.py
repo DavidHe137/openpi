@@ -55,28 +55,19 @@ class Saver(_subscriber.Subscriber):
         self._environment = environment
         self._action_chunk_broker = action_chunk_broker
         self._timestamps: List[Timestamp] = []
-        self._images: List[np.ndarray] = []
         self._control_hz = environment.control_hz
-        self._observations_buffer: Dict[int, dict] = {}
+        self._observations_buffer: Dict[int, Observation] = {}
 
     @override
     def on_episode_start(self) -> None:
         self._timestamps = []
         self._action_chunk_indices = []
-        self._images = []
         self._observations_buffer = {}
 
     @override
     def on_step(self, observation: Observation, action: Action) -> None:
-        # Store observation in buffer for debug data coordination
-        self._observations_buffer[observation.step] = {
-            "state": observation.state,
-            "image": observation.image,
-            "wrist_image": observation.wrist_image,
-        }
-        # Add prompt if it's a LiberoObservation
-        if hasattr(observation, "prompt"):
-            self._observations_buffer[observation.step]["prompt"] = observation.prompt
+        # Store observation for debug data and video reconstruction
+        self._observations_buffer[observation.step] = observation
 
         self._timestamps.append(
             Timestamp(
@@ -86,7 +77,6 @@ class Saver(_subscriber.Subscriber):
                 env_step=observation.step,
             )
         )
-        self._images.append(observation.image)
 
     @override
     def on_episode_end(self) -> None:
@@ -140,9 +130,11 @@ class Saver(_subscriber.Subscriber):
 
     def _save_video(self, out_folder: pathlib.Path) -> None:
         logger.info(f"Saving video to {out_folder / 'out.mp4'}")
+        # Reconstruct images from observations buffer
+        images = [obs.image for obs in self._observations_buffer.values()]
         imageio.mimwrite(
             out_folder / "out.mp4",
-            [np.asarray(x) for x in self._images],
+            [np.asarray(x) for x in images],
             fps=self._control_hz,  # NOTE: saving in control hz fps for now
         )
 
@@ -168,14 +160,11 @@ class Saver(_subscriber.Subscriber):
             # Save observation that triggered this inference
             obs = self._observations_buffer.get(chunk.start_step)
             if obs is not None:
-                data_to_save[f"{prefix}/observation/state"] = obs["state"]
-                data_to_save[f"{prefix}/observation/image"] = obs["image"]
-                data_to_save[f"{prefix}/observation/wrist_image"] = obs["wrist_image"]
-                if "prompt" in obs:
-                    # Store prompt as object array for npz compatibility
-                    data_to_save[f"{prefix}/observation/prompt"] = np.array(
-                        obs["prompt"], dtype=object
-                    )
+                data_to_save[f"{prefix}/observation/state"] = obs.state
+                data_to_save[f"{prefix}/observation/image"] = obs.image
+                data_to_save[f"{prefix}/observation/wrist_image"] = obs.wrist_image
+                if hasattr(obs, "prompt"):
+                    data_to_save[f"{prefix}/observation/prompt"] = obs.prompt
             else:
                 logger.warning(
                     f"No observation found for chunk {i} at step {chunk.start_step}"
