@@ -186,14 +186,10 @@ class PI0Pytorch(nn.Module):
             observation.state,
         )
 
-    def sample_noise(self, shape, device):
-        return torch.normal(
-            mean=0.0,
-            std=1.0,
-            size=shape,
-            dtype=torch.float32,
-            device=device,
-        )
+    def sample_noise(self, device: str, batch_size: int = 1) -> torch.Tensor:
+        """Sample noise for diffusion process."""
+        noise_shape = (batch_size, self.action_horizon, self.action_dim)
+        return torch.randn(noise_shape, device=device)
 
     def sample_time(self, bsize, device):
         time_beta = sample_beta(1.5, 1.0, bsize, device)
@@ -335,7 +331,7 @@ class PI0Pytorch(nn.Module):
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
 
         if noise is None:
-            noise = self.sample_noise(actions.shape, actions.device)
+            noise = self.sample_noise(actions.device, actions.shape[0])
 
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
@@ -396,30 +392,14 @@ class PI0Pytorch(nn.Module):
         observation,
         noise=None,
         num_steps=10,
-        return_debug_data: bool = False,  # noqa: FBT001, FBT002
-    ) -> tuple[Tensor, dict | None]:
+    ) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
-        debug_data = {} if return_debug_data else None
-
-        if return_debug_data:
-            debug_data["obs_before_preprocess"] = {
-                "images": {k: v.cpu().numpy() for k, v in observation.images.items()},
-                "state": observation.state.cpu().numpy(),
-            }
 
         bsize = observation.state.shape[0]
         if noise is None:
-            actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
-            noise = self.sample_noise(actions_shape, device)
+            noise = self.sample_noise(device, bsize)
 
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
-
-        if return_debug_data:
-            debug_data["obs_after_preprocess"] = {
-                "images": {f"image_{i}": img.cpu().numpy() for i, img in enumerate(images)},
-                "state": state.cpu().numpy(),
-            }
-            debug_data["noise"] = noise.cpu().numpy()
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
 
@@ -457,10 +437,7 @@ class PI0Pytorch(nn.Module):
             x_t = x_t + dt * v_t
             time += dt
 
-        if return_debug_data:
-            debug_data["output_actions"] = x_t.cpu().numpy()
-
-        return x_t, debug_data
+        return x_t
 
     def denoise_step(
         self,

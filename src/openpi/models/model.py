@@ -290,6 +290,21 @@ class BaseModel(nnx.Module, abc.ABC):
     ) -> tuple[Actions, dict | None]: ...
 
     @abc.abstractmethod
+    def sample_noise(
+        self, rng: at.KeyArrayLike, batch_size: int = 1
+    ) -> at.Float[at.Array, "batch_size action_horizon noise_dim"]:
+        """Sample noise for the diffusion model.
+
+        Args:
+            rng: Random number generator key
+            batch_size: Number of noise samples to generate
+
+        Returns:
+            Noise tensor of shape (batch_size, action_horizon, noise_dim)
+        """
+        ...
+
+    @abc.abstractmethod
     def make_example_actions(self) -> Actions:
         pass
 

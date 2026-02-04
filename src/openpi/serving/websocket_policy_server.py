@@ -15,6 +15,7 @@ import traceback
 from typing import Any
 import uuid
 
+import numpy as np
 from openpi_client import msgpack_numpy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
@@ -370,10 +371,16 @@ class WebsocketPolicyServer:
                 # Track batch timing
                 batch_start_time = time.perf_counter()
 
+                # Extract noise from requests if present
+                batch_noise = None
+                if batch[0].infer_request.noise is not None:
+                    # Stack noise from all requests in the batch
+                    batch_noise = np.stack([req.infer_request.noise for req in batch], axis=0)
+
                 # Run inference
                 logger.info(f"Inferring batch of size {len(batch)}")
                 try:
-                    actions = self._policy.infer_batch([req.infer_request for req in batch])
+                    actions = self._policy.infer_batch([req.infer_request for req in batch], noise=batch_noise)
                 except Exception as e:
                     logger.error(f"Inference failed: {e}", exc_info=True)
                     continue
@@ -392,8 +399,10 @@ class WebsocketPolicyServer:
                 response_socket.send_pyobj(batch_metric)
 
                 # Send responses
-                for req, action in zip(batch, actions, strict=True):
-                    actions = action["actions"]
+                for req, action_dict in zip(batch, actions, strict=True):
+                    actions = action_dict["actions"]
+                    noise = action_dict.get("noise")
+
                     execution_horizon = len(actions)
                     if req.infer_request.robot_id in last_response:
                         execution_horizon = calculate_execution_horizon(
@@ -409,6 +418,7 @@ class WebsocketPolicyServer:
                         request_timestamp=req.infer_request.request_timestamp,
                         execution_horizon=execution_horizon,
                         actions=actions,
+                        noise=noise,
                     )
                     response_socket.send_pyobj(response)
                     last_response[req.infer_request.robot_id] = response

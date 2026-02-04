@@ -140,6 +140,17 @@ class LiberoSimEnvironment(_environment.Environment):
         return self._episode_idx
 
     @property
+    def current_initial_state(self) -> np.ndarray:
+        """Return the initial state used for the current episode.
+
+        Note: episode_idx is incremented after reset, so we need to subtract 1
+        to get the initial state that was actually used.
+        """
+        if self._episode_idx == 0:
+            raise RuntimeError("No episode has been started yet. Call reset() first.")
+        return self._initial_states[self._episode_idx - 1]
+
+    @property
     def episode_results(self) -> List[bool]:
         """Per-episode success flags accumulated so far."""
         return self._episode_results

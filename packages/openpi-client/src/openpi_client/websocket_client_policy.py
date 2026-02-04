@@ -71,7 +71,6 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
         prev_action: Optional[np.ndarray] = None,
         s_param: Optional[int] = None,
         d_param: Optional[int] = None,
-        return_debug_data: bool = False,
         noise: Optional[np.ndarray] = None,
     ) -> Dict:  # noqa: UP006
         infer_type = messages.InferType.SYNC
@@ -80,12 +79,13 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             infer_type = messages.InferType.INFERENCE_TIME_RTC
             params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)  # type: ignore
         request = messages.InferRequest(
+            request_timestamp=time.time(),
+            start_step=obs.step,
             robot_id=self._robot_id,
-            observation=obs,
+            observation=asdict(obs),
             deadline=deadline,
             infer_type=infer_type,
             params=params,
-            return_debug_data=return_debug_data,
             noise=noise,
         )
         data = msgpack_numpy.packb(asdict(request))
@@ -152,6 +152,7 @@ class BidirectionalWebsocket:
         prev_action: Optional[np.ndarray] = None,
         s_param: Optional[int] = None,
         d_param: Optional[int] = None,
+        noise: Optional[np.ndarray] = None,
     ) -> None:
         infer_type = messages.InferType.SYNC
         params = None
@@ -169,6 +170,7 @@ class BidirectionalWebsocket:
             deadline=deadline,
             infer_type=infer_type,
             params=params,
+            noise=noise,
         )
         data = msgpack_numpy.packb(asdict(request))
 
@@ -192,6 +194,7 @@ class BidirectionalWebsocket:
             response_timestamp=response_timestamp,
             start_step=infer_response.start_step,
             execution_horizon=infer_response.execution_horizon,
+            noise=infer_response.noise,
         )
         return action_chunk
 

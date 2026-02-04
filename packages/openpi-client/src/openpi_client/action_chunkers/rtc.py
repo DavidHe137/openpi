@@ -24,7 +24,6 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         s_min: int = 5,
         d_init: int = 3,
         delay_buffer_size: int = 10,
-        return_debug_data: bool = False,
     ):
         self._ws_client = ws_client
 

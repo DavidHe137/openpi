@@ -14,7 +14,6 @@ class SyncBrokerConfig:
 
     ws_client: _websocket_client_policy.BidirectionalWebsocket
     control_hz: int
-    return_debug_data: bool = False
 
 
 @dataclass

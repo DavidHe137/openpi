@@ -48,16 +48,10 @@ class Pi0TritonPytorch(nn.Module):
             checkpoint=weights, num_views=self.num_views, chunk_size=50, batch_size=self.batch_size
         )
 
-    def sample_noise(self, shape, device, is_numpy=False):  # noqa: FBT002
-        if is_numpy:
-            return np.random.normal(0.0, 1.0, shape)
-        return torch.normal(
-            mean=0.0,
-            std=1.0,
-            size=shape,
-            dtype=torch.float32,
-            device=device,
-        )
+    def sample_noise(self, device: str, batch_size: int = 1) -> torch.Tensor:
+        """Sample noise for diffusion process."""
+        noise_shape = (batch_size, self.action_horizon, self.action_dim)
+        return torch.randn(noise_shape, device=device)
 
     def make_example_actions(self) -> _model.Actions:
         return torch.zeros((self.action_horizon, self.action_dim))
@@ -241,10 +235,7 @@ class Pi0TritonPytorch(nn.Module):
         observation,
         noise=None,
         num_steps=10,
-        return_debug_data: bool = False,  # noqa: FBT001, FBT002
-    ) -> tuple[Tensor, np.ndarray, dict | None]:
-        debug_data = {} if return_debug_data else None
-
+    ) -> tuple[Tensor, np.ndarray]:
         # Get actual batch size from observation
         actual_batch_size = observation["state"].shape[0]
 
@@ -257,25 +248,9 @@ class Pi0TritonPytorch(nn.Module):
             )
 
         if noise is None:
-            actions_shape = (actual_batch_size, self.action_horizon, self.action_dim)
-            noise = self.sample_noise(actions_shape, device, is_numpy=True)
+            noise = self.sample_noise(device, actual_batch_size).numpy()
 
         transformed_inputs = self._apply_input_transforms(observation, action_dim=32, norm_stats=self.norm_stats)
-
-        if debug_data is not None:
-            # Save debug data for first batch item only
-            debug_data["obs_after_preprocess"] = {
-                "state": np.asarray(transformed_inputs["state"][0], dtype=np.float32),
-                "images": {
-                    "base_0_rgb": np.asarray(transformed_inputs["image"]["base_0_rgb"][0], dtype=np.float32)[None, ...],
-                    "left_wrist_0_rgb": np.asarray(
-                        transformed_inputs["image"]["left_wrist_0_rgb"][0], dtype=np.float32
-                    )[None, ...],
-                    "right_wrist_0_rgb": np.asarray(
-                        transformed_inputs["image"]["right_wrist_0_rgb"][0], dtype=np.float32
-                    )[None, ...],
-                },
-            }
 
         # Stack images: (batch, num_views=2, H, W, C)
         images = []
@@ -299,11 +274,5 @@ class Pi0TritonPytorch(nn.Module):
         # Convert to numpy
         actions = actions.cpu().float().numpy()
 
-        if debug_data is not None:
-            # Save output for first batch item only
-            debug_data["output_actions"] = np.asarray(actions[0])
-            if noise is not None:
-                debug_data["noise"] = np.asarray(noise[0])
-
         # FIXME: overrides superclass return type
-        return actions, transformed_inputs["state"], debug_data
+        return actions, transformed_inputs["state"]
