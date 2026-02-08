@@ -310,7 +310,6 @@ class Pi0FAST(_model.BaseModel):
         _, _, output_tokens, _, _, _ = jax.lax.while_loop(
             cond, step, (rng, last_logit, output_tokens, kv_cache, False, 0)
         )
-        # TODO: Pi0FAST doesn't support debug data yet
         return output_tokens, None
 
     def save_data(self) -> None:

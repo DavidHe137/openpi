@@ -6,7 +6,6 @@ from typing_extensions import override
 
 
 # FIXME: Saver uses action_chunks, but the envy is not clear and it's easy to remove it from this class
-# TODO: add debug data, though I think there should be a cleaner way to do this
 # NOTE: use concurrent.futures to infer in background if this takes too long
 # TODO: base policy class that lives on server should be different from policy that lives on client
 class SyncBroker(ActionChunkBroker):
