@@ -64,10 +64,6 @@ class SyncBroker(ActionChunkBroker):
                 self._sent_request = False
 
     @override
-    def _should_infer(self) -> bool:
-        return len(self._action_queue) == 0 and self._sent_request is False
-
-    @override
     def reset(self) -> None:
         with self._lock:
             self._action_queue.clear()

@@ -27,11 +27,11 @@ class ActionChunkBroker(ABC):
         self._background_thread = threading.Thread(target=self._receive_actions, daemon=True)
 
     def infer(self, obs: Observation) -> Action:
+        """Client continuously streams observations to the server."""
         with self._lock:
             action = self._action_queue.popleft() if self._action_queue else self._create_null_action(obs)
 
-            if self._should_infer():
-                self._infer(obs)
+            self._infer(obs)
 
         return action
 
@@ -50,9 +50,6 @@ class ActionChunkBroker(ABC):
         )
 
     def _receive_actions(self):
-        pass
-
-    def _should_infer(self) -> bool:
         pass
 
     def _infer(self, obs: Observation) -> None:
