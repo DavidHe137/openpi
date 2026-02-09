@@ -14,7 +14,7 @@ from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import (
     ActionChunkBrokerType,
-    SyncBrokerConfig,
+    BrokerConfig,
     RTCBrokerConfig,
 )
 from openpi_client.schemas import RuntimeMetadata, ServerMetadata
@@ -93,7 +93,7 @@ class Args:
 
     def create_broker_config(
         self, ws_client: _websocket_client_policy.BidirectionalWebsocket
-    ) -> Union[SyncBrokerConfig, RTCBrokerConfig]:
+    ) -> Union[BrokerConfig, RTCBrokerConfig]:
         """Helper to create the appropriate broker config from args."""
         if self.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC:
             return RTCBrokerConfig(
@@ -102,8 +102,8 @@ class Args:
                 s_min=self.action_chunk_broker.s_min,
                 d_init=self.action_chunk_broker.d_init,
             )
-        else:  # SYNC
-            return SyncBrokerConfig(
+        else:  # SYNC or NAIVE_ASYNC
+            return BrokerConfig(
                 ws_client=ws_client,
                 control_hz=self.control_hz,
             )
@@ -118,20 +118,10 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
 
 def delay_start(
     control_hz: int,
-    action_chunk_broker_config: ActionChunkBrokerArgs,
     server_metadata: ServerMetadata,
 ):
     """Return the period (in seconds) that a robot waits between requests."""
-    period = 0.0
-    if action_chunk_broker_config.broker_type == ActionChunkBrokerType.SYNC:
-        period = server_metadata.action_horizon / control_hz
-    elif action_chunk_broker_config.broker_type == ActionChunkBrokerType.RTC:
-        period = action_chunk_broker_config.s_min / control_hz
-    else:
-        raise ValueError(
-            f"Unknown action chunk broker type: {action_chunk_broker_config.broker_type}"
-        )
-
+    period = server_metadata.action_horizon / control_hz
     delay = np.random.uniform(0, period)
     time.sleep(delay)
 
@@ -220,7 +210,6 @@ def _robot_worker(task_args) -> None:
     runtime = create_runtime(args, job)
     delay_start(
         control_hz=args.control_hz,
-        action_chunk_broker_config=args.action_chunk_broker,
         server_metadata=server_metadata,
     )
 

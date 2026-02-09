@@ -1,12 +1,17 @@
+import time
 from typing import List
 from typing import Optional
 from openpi_client.schemas import ActionChunk
 from abc import ABC
 from collections import deque
+from openpi_client import websocket_client_policy as _websocket_client_policy
 from openpi_client.schemas import Action, Observation
 import threading
 
 
+# FIXME: Saver uses action_chunks, but the envy is not clear and it's easy to remove it from this class
+# NOTE: use concurrent.futures to infer in background if this takes too long
+# TODO: base policy class that lives on server should be different from policy that lives on client
 class ActionChunkBroker(ABC):
     """Wraps a policy to return action chunks one-at-a-time.
 
@@ -16,7 +21,10 @@ class ActionChunkBroker(ABC):
     list of chunks is exhausted.
     """
 
-    def __init__(self, control_hz: int, realtime: bool = True) -> None:
+    def __init__(
+        self, ws_client: _websocket_client_policy.BidirectionalWebsocket, control_hz: int, realtime: bool = True
+    ) -> None:
+        self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
         self._action_chunks: List[ActionChunk] = []
 
@@ -49,11 +57,31 @@ class ActionChunkBroker(ABC):
             index_in_chunk=None,
         )
 
-    def _receive_actions(self):
-        pass
+    def _receive_actions(self) -> None:
+        while True:
+            action_chunk = self._ws_client.receive()
+            self._action_chunks.append(action_chunk)
+            self._update_action_queue(action_chunk)
+
+    def _update_action_queue(self, action_chunk: ActionChunk):
+        with self._lock:
+            while self._action_queue and self._action_queue[-1].step >= action_chunk.start_step:
+                self._action_queue.pop()
+
+            # assumes that pausing is preferable to executing actions past the execution horizon
+            self._action_queue.extend(
+                Action(
+                    step=action_chunk.start_step + i,
+                    action=action_chunk.get_action(i),
+                    action_chunk_index=len(self._action_chunks) - 1,
+                    index_in_chunk=i,
+                )
+                for i in range(action_chunk.execution_horizon)
+            )
 
     def _infer(self, obs: Observation) -> None:
-        pass
+        deadline = time.time() + len(self._action_queue) * self._step_duration
+        self._ws_client.send(obs, deadline=deadline)
 
     def reset(self) -> None:
         with self._lock:

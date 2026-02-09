@@ -5,11 +5,12 @@ from typing import Type
 from openpi_client import websocket_client_policy as _websocket_client_policy
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
 from openpi_client.action_chunkers.sync import SyncBroker
+from openpi_client.action_chunkers.naive_async import NaiveAsyncBroker
 from openpi_client.action_chunkers.rtc import InferenceTimeRTCBroker
 
 
 @dataclass
-class SyncBrokerConfig:
+class BrokerConfig:
     """Configuration for SyncBroker."""
 
     ws_client: _websocket_client_policy.BidirectionalWebsocket
@@ -17,7 +18,7 @@ class SyncBrokerConfig:
 
 
 @dataclass
-class RTCBrokerConfig(SyncBrokerConfig):
+class RTCBrokerConfig(BrokerConfig):
     """Configuration for InferenceTimeRTCBroker."""
 
     s_min: int = 5
@@ -28,17 +29,16 @@ class RTCBrokerConfig(SyncBrokerConfig):
 _CLASS_MAPPING = {
     "sync": SyncBroker,
     "rtc": InferenceTimeRTCBroker,
-    # TODO:
-    # "naive_async": NaiveAsyncBroker,
+    "naive_async": NaiveAsyncBroker,
     # "temporal_ensembling": TemporalEnsemblingBroker,
     # "vlash": VLashBroker,
 }
 
 _CONFIG_MAPPING = {
-    "sync": SyncBrokerConfig,
+    "sync": BrokerConfig,
+    "naive_async": BrokerConfig,
     "rtc": RTCBrokerConfig,
     # TODO:
-    # "naive_async": NaiveAsyncBrokerConfig,
     # "temporal_ensembling": TemporalEnsemblingBrokerConfig,
     # "vlash": VLashBrokerConfig,
 }
@@ -46,6 +46,7 @@ _CONFIG_MAPPING = {
 
 class ActionChunkBrokerType(Enum):
     SYNC = "sync"
+    NAIVE_ASYNC = "naive_async"
     RTC = "rtc"
     # TODO: naive_async, temporal_ensembling, vlash
 

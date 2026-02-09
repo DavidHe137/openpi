@@ -1,119 +1,59 @@
-import math
-from collections import deque
-from typing import List
-
-import threading
 import time
-import numpy as np
-
-from openpi_client.schemas import ActionChunk, Action, Observation
+from openpi_client.schemas import Observation
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
 from openpi_client import websocket_client_policy as _websocket_client_policy
+from typing_extensions import override
+from collections import deque
 
 
 class InferenceTimeRTCBroker(ActionChunkBroker):
-    """Wraps a policy to return action chunks with inference time RTC support.
+    """Wraps a policy to return action chunks asynchronously.
 
-    The policy is called asynchronously in the background thread whenever the action queue is depleted.
+    The policy is called synchronously in the background thread whenever the current action chunk is exhausted.
     """
 
     def __init__(
         self,
         ws_client: _websocket_client_policy.BidirectionalWebsocket,
         control_hz: int,
+        realtime: bool = True,
         s_min: int = 5,
         d_init: int = 3,
         delay_buffer_size: int = 10,
     ):
-        self._ws_client = ws_client
-
-        self._action_queue: deque[Action] = deque()
-        self._action_chunks: List[ActionChunk] = []
-        self._step_duration = 1 / control_hz
-
-        self._lock = threading.Lock()
-        self._background_thread = threading.Thread(target=self._receive_actions, daemon=True)
-        self._background_thread.start()
-
+        """
+        Args:
+            ws_client: the websocket client to use for inference
+            control_hz: the control frequency of the environment
+            realtime: whether to run in realtime mode, setting this False essentially means inference latency is 0
+            s_min: the minimum number of steps to wait before sending an inference request
+            d_init: the initial delay in seconds
+            delay_buffer_size: the size of the delay buffer
+        """
+        super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
         self._s_min = s_min
         self._d_init = d_init
-        self._delays: deque[int] = deque([self._d_init], maxlen=delay_buffer_size)
-        self._steps_since_last_inference: int = 0
-        self._sent_request = False
+        self._delay_buffer_size = delay_buffer_size
 
-    def _convert_latency_to_delay(self, latency: float) -> int:
-        """Convert latency (in seconds) to delay (in steps)."""
-        return math.ceil(latency / self._step_duration)
+        self.reset()
+        self._background_thread.start()
 
+    @override
     def _infer(self, obs: Observation) -> None:
+        # NOTE: server will store previous actions + handle s logic
         deadline = time.time() + len(self._action_queue) * self._step_duration
         estimated_delay = max(self._delays)
-        # FIXME: hardcoded, should move this outside of this class
-        prev_action = self.current_action_chunk.actions if self.current_action_chunk is not None else np.zeros((50, 7))
-
         self._ws_client.send(
             obs,
             deadline=deadline,
             use_rtc=True,
-            prev_action=prev_action,
-            s_param=self._steps_since_last_inference,
+            s_param=self._s_min,
             d_param=estimated_delay,
         )
-        self._sent_request = True
 
-    def _receive_actions(self):
-        while True:
-            action_chunk = self._ws_client.receive()
-
-            with self._lock:
-                self._action_chunks.append(action_chunk)
-                self._delays.append(self._convert_latency_to_delay(action_chunk.latency))
-
-                while self._action_queue and self._action_queue[-1].step >= action_chunk.start_step:
-                    self._action_queue.pop()
-
-                self._action_queue.extend(
-                    Action(
-                        step=action_chunk.start_step + i,
-                        action=action_chunk.get_action(i),
-                        action_chunk_index=len(self._action_chunks) - 1,
-                        index_in_chunk=i,
-                    )
-                    for i in range(action_chunk.execution_horizon)
-                )
-
-                self._steps_since_last_inference = 0
-                self._sent_request = False
-
-    def _create_null_action(self, obs: Observation) -> Action:
-        # FIXME: hardcoded, should move this outside of this class
-        action = np.zeros(7)
-        action[-1] = self.current_action_chunk.get_action(-1)[-1] if self.current_action_chunk is not None else 0.0
-
-        return Action(
-            step=obs.step,
-            action=action,
-            action_chunk_index=None,
-            index_in_chunk=None,
-        )
-
-    def _should_infer(self) -> bool:
-        return len(self._action_queue) <= self._s_min and not self._sent_request
-
-    def infer(self, obs: Observation) -> Action:
-        with self._lock:
-            action = self._action_queue.popleft() if self._action_queue else self._create_null_action(obs)
-            self._steps_since_last_inference += 1
-
-            if self._should_infer():
-                self._infer(obs)
-
-        return action
-
+    @override
     def reset(self) -> None:
         with self._lock:
             self._action_queue.clear()
             self._action_chunks = []
-            self._steps_since_last_inference = 0
-            self._delays = deque([self._d_init], maxlen=self._delays.maxlen)
-            self._sent_request = False
+            self._delays = deque([self._d_init], maxlen=self._delay_buffer_size)
