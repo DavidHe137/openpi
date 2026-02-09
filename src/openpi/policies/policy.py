@@ -273,12 +273,7 @@ class Policy(BasePolicy):
 
         return _model.Observation.from_dict(inputs)
 
-    def infer_batch(
-        self,
-        requests: list[InferRequest],
-        *,
-        noise: np.ndarray | None = None,
-    ) -> list[InferResponse]:  # FIXME: return type is wrong
+    def infer_batch(self, requests: list[InferRequest]) -> list[InferResponse]:  # FIXME: return type is wrong
         """Run inference on a batch of request.
 
         Args:
@@ -291,24 +286,19 @@ class Policy(BasePolicy):
         if not requests:
             return []
 
-        # Use provided noise, or sample from model if not provided
+        # TODO: really bad code here
         batch_size = len(requests)
-        if noise is not None:
-            noise_to_use = noise
         # Sample batched noise from model
-        elif self._is_pytorch_model:
-            noise_to_use = self._model.sample_noise(self._pytorch_device, batch_size=batch_size)
-        else:
-            self._rng, noise_rng = jax.random.split(self._rng)
-            noise_to_use = self._model.sample_noise(noise_rng, batch_size=batch_size)
-
-        # TODO: separate logic for jax and pytorch?
-        if not self._is_pytorch_model:
-            # Convert to jax.Array (already batched)
-            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
-        else:
-            # Convert inputs to PyTorch tensors and move to correct device
+        if self._is_pytorch_model:
             sample_rng_or_pytorch_device = self._pytorch_device
+            noise_to_use = self._model.sample_noise(self._pytorch_device, batch_size=batch_size)
+            for i, request in enumerate(requests):
+                noise_to_use[i] = request.noise if request.noise is not None else noise_to_use[i]
+        else:
+            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+            noise_to_use = self._model.sample_noise(sample_rng_or_pytorch_device, batch_size=batch_size)
+            for i, request in enumerate(requests):
+                noise_to_use = noise_to_use.at[i].set(request.noise if request.noise is not None else noise_to_use[i])
 
         # FIXME: temporary hack
         def rename_keys(obs: dict) -> dict:
