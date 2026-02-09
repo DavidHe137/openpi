@@ -27,7 +27,6 @@ import zmq.asyncio
 from openpi.serving.metrics import BatchMetrics
 from openpi.serving.metrics import MetricsCollector
 from openpi.serving.metrics import plot_metrics
-from openpi.serving.request_queue import RequestQueue
 from openpi.serving.schemas import ArrivedRequest
 from openpi.serving.variable_execution import calculate_execution_horizon
 
@@ -50,8 +49,9 @@ class WebsocketPolicyServer:
     Architecture:
     - Main process: async websocket handlers with decoupled recv/send loops
     - Worker process: batched policy inference
-    - PUSH/PULL sockets for simple unidirectional IPC
-    - Stale requests are silently dropped
+    - Lock-free shared memory: dict maps robot_id -> latest request
+    - Handlers update atomically (single key write), worker snapshots and filters by timestamp
+    - Stale requests are silently skipped (worker tracks last_processed_timestamp per robot)
     """
 
     def __init__(
@@ -70,9 +70,12 @@ class WebsocketPolicyServer:
         self._max_batch_size = max_batch_size
         self._log_dir = log_dir
 
-        # IPC endpoints
+        # Shared memory for latest requests per robot
+        self._manager = mp.Manager()
+        self._latest_requests = self._manager.dict()  # robot_id -> ArrivedRequest
+
+        # IPC endpoint for responses only
         socket_id = uuid.uuid4().hex[:8]
-        self._request_endpoint = f"ipc:///tmp/openpi_req_{socket_id}"
         self._response_endpoint = f"ipc:///tmp/openpi_resp_{socket_id}"
 
         # Connection tracking
@@ -82,7 +85,7 @@ class WebsocketPolicyServer:
         self._worker = mp.Process(
             target=self._run_worker,
             args=(
-                self._request_endpoint,
+                self._latest_requests,
                 self._response_endpoint,
                 self._max_batch_size,
             ),
@@ -102,15 +105,11 @@ class WebsocketPolicyServer:
     async def _run(self):
         zmq_ctx = zmq.asyncio.Context()
 
-        # PUSH socket for sending requests to worker
-        self._request_socket = zmq_ctx.socket(zmq.PUSH)
-        self._request_socket.bind(self._request_endpoint)
-
         # PULL socket for receiving responses from worker
         self._response_socket = zmq_ctx.socket(zmq.PULL)
         self._response_socket.bind(self._response_endpoint)
 
-        # Start worker after sockets are bound
+        # Start worker after socket is bound
         await asyncio.sleep(0.1)
         self._worker.start()
 
@@ -159,9 +158,8 @@ class WebsocketPolicyServer:
             with contextlib.suppress(asyncio.CancelledError):
                 await response_task
 
-            # Close ZMQ sockets
-            logger.info("Closing ZMQ sockets...")
-            self._request_socket.close()
+            # Close ZMQ socket
+            logger.info("Closing ZMQ socket...")
             self._response_socket.close()
             zmq_ctx.term()
 
@@ -174,6 +172,10 @@ class WebsocketPolicyServer:
                     logger.warning("Worker did not terminate gracefully, killing...")
                     self._worker.kill()
                     self._worker.join()
+
+            # Shutdown manager
+            logger.info("Shutting down shared memory manager...")
+            self._manager.shutdown()
 
             # Generate plots after everything is stopped
             if self._log_dir:
@@ -271,7 +273,7 @@ class WebsocketPolicyServer:
             del self._connections[conn.conn_id]
 
     async def _recv_loop(self, conn: ConnectionState):
-        """Receives requests from websocket and forwards to worker."""
+        """Receives requests from websocket and updates shared dict."""
         while True:
             message = msgpack_numpy.unpackb(await conn.websocket.recv())
             infer_request = InferRequest(**message)
@@ -284,14 +286,17 @@ class WebsocketPolicyServer:
             conn.pending_requests.add(arrived_request.request_id)
             self._request_routing[arrived_request.request_id] = conn.conn_id
 
-            # Track queued time (when sent to worker)
+            # Update shared dict (overwrites previous request from same robot)
+            robot_id = arrived_request.infer_request.robot_id
+            self._latest_requests[robot_id] = arrived_request
+
+            # Track queued time (when written to shared dict)
             queued_time = time.perf_counter()
             self._metrics.add_request_queued(arrived_request.request_id, queued_time)
 
             logger.info(
                 f"Request from {arrived_request.infer_request.robot_id} for step {arrived_request.infer_request.start_step}"
             )
-            await self._request_socket.send_pyobj(arrived_request)
 
     async def _send_loop(self, conn: ConnectionState):
         """Sends responses from queue to websocket."""
@@ -302,8 +307,13 @@ class WebsocketPolicyServer:
             )
             await conn.websocket.send(msgpack_numpy.packb(asdict(response)))  # type: ignore
 
-    def _run_worker(self, request_endpoint: str, response_endpoint: str, max_batch_size: int):
-        """Worker process: receives requests, runs batched inference, sends responses."""
+    def _run_worker(
+        self,
+        latest_requests: dict,
+        response_endpoint: str,
+        max_batch_size: int,
+    ):
+        """Worker process: polls shared dict, runs batched inference, sends responses."""
         logger.info("Worker starting")
 
         # Graceful shutdown handling
@@ -323,8 +333,6 @@ class WebsocketPolicyServer:
 
         # Connect to main process
         zmq_ctx = zmq.Context()
-        request_socket = zmq_ctx.socket(zmq.PULL)
-        request_socket.connect(request_endpoint)
         response_socket = zmq_ctx.socket(zmq.PUSH)
         response_socket.connect(response_endpoint)
 
@@ -332,7 +340,8 @@ class WebsocketPolicyServer:
         response_socket.send_string("ready")
         logger.info("Worker ready")
 
-        request_queue = RequestQueue()
+        # Track last processed timestamp per robot for stale detection
+        last_processed_timestamp: dict[str, float] = {}
 
         # NOTE: hacky data structure for now
         last_response: dict[str, InferResponse] = {}
@@ -342,31 +351,34 @@ class WebsocketPolicyServer:
 
         try:
             while not shutdown_requested:
-                # Block for at least one message (with timeout to check shutdown)
-                try:
-                    request: ArrivedRequest = request_socket.recv_pyobj(flags=zmq.NOBLOCK)
-                    request_queue.add(request)
-                except zmq.Again:
-                    # No message available, sleep briefly and check shutdown
+                # Check if there are any requests available
+                if not latest_requests:
                     time.sleep(0.01)
                     continue
 
-                # Drain remaining messages without blocking
-                while True:
-                    try:
-                        request = request_socket.recv_pyobj(zmq.NOBLOCK)
-                        request_queue.add(request)
-                    except zmq.Again:
-                        break
+                # Take snapshot of current requests (atomic read via Manager)
+                snapshot = dict(latest_requests)
 
-                # Build batch from non-stale requests
-                batch: list[ArrivedRequest] = []
-                request_queue.clear_stale()
-                while not request_queue.empty and len(batch) < max_batch_size:
-                    batch.append(request_queue.pop())
+                # Filter non-stale candidates
+                candidates: list[tuple[str, ArrivedRequest]] = []
+                for robot_id, request in snapshot.items():
+                    request_timestamp = request.infer_request.request_timestamp
+
+                    # Check staleness - only process requests newer than last processed
+                    if request_timestamp > last_processed_timestamp.get(robot_id, 0):
+                        candidates.append((robot_id, request))
+
+                # Sort by deadline (earliest first) and select batch
+                candidates.sort(key=lambda x: x[1].infer_request.deadline)
+                batch = [request for _, request in candidates[:max_batch_size]]
 
                 if not batch:
+                    time.sleep(0.01)
                     continue
+
+                # Update last_processed_timestamp for selected requests
+                for request in batch:
+                    last_processed_timestamp[request.infer_request.robot_id] = request.infer_request.request_timestamp
 
                 # Track batch timing
                 batch_start_time = time.perf_counter()
@@ -429,10 +441,8 @@ class WebsocketPolicyServer:
             logger.info("Worker shutting down gracefully")
 
             # Set linger to allow pending messages to be sent (max 1 second)
-            request_socket.setsockopt(zmq.LINGER, 1000)
             response_socket.setsockopt(zmq.LINGER, 1000)
 
-            request_socket.close()
             response_socket.close()
             zmq_ctx.term()
             logger.info("Worker shutdown complete")
