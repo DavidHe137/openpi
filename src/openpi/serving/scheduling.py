@@ -54,3 +54,7 @@ class RequestScheduler:
 
     def update_last_response(self, robot_id: str, response: InferResponse) -> None:
         self._last_response[robot_id] = response
+
+    def reset_robot(self, robot_id: str) -> None:
+        self._last_response.pop(robot_id, None)
+        self._deadlines.pop(robot_id, None)

@@ -70,6 +70,7 @@ class WebsocketPolicyServer:
         # Shared memory for latest requests per robot
         self._manager = mp.Manager()
         self._latest_requests = self._manager.dict()  # robot_id -> ArrivedRequest
+        self._reset_robots = self._manager.list()  # robot_ids that need reset
 
         # IPC endpoint for responses only
         socket_id = uuid.uuid4().hex[:8]
@@ -84,6 +85,7 @@ class WebsocketPolicyServer:
             args=(
                 self._policy_factory,
                 self._latest_requests,
+                self._reset_robots,
                 self._response_endpoint,
                 self._max_batch_size,
             ),
@@ -272,10 +274,10 @@ class WebsocketPolicyServer:
             message = msgpack_numpy.unpackb(await conn.websocket.recv())
             # FIXME: hack for reset messages
             if "reset" in message:
-                logger.info(f"Reset request for robot {message['robot_id']}")
-                if message["robot_id"] in self._latest_requests:
-                    del self._latest_requests[message["robot_id"]]
-                    await conn.websocket.send(msgpack_numpy.packb({"success": True}))  # type: ignore
+                robot_id = message["robot_id"]
+                if robot_id in self._latest_requests:
+                    del self._latest_requests[robot_id]
+                self._reset_robots.append(robot_id)
                 continue
 
             infer_request = InferRequest(**message)
@@ -309,6 +311,7 @@ class WebsocketPolicyServer:
 def _run_worker(
     policy_factory: Callable,
     latest_requests: dict,
+    reset_robots: list,
     response_endpoint: str,
     max_batch_size: int,
 ):
@@ -346,6 +349,12 @@ def _run_worker(
 
     try:
         while not shutdown_requested:
+            # Process any pending resets
+            while reset_robots:
+                robot_id = reset_robots.pop(0)
+                scheduler.reset_robot(robot_id)
+                logger.info(f"Reset scheduler state for robot {robot_id}")
+
             snapshot = dict(latest_requests)
 
             batch = scheduler.get_next_batch(snapshot, max_batch_size)

@@ -201,14 +201,6 @@ class BidirectionalWebsocket:
     def reset(self) -> None:
         data = msgpack_numpy.packb({"reset": True, "robot_id": self._robot_id})
         self._ws.send(data)
-        print("Sent reset request")
-        response = self._ws.recv()
-        print("Received reset response")
-
-        if isinstance(response, str):
-            # we're expecting bytes; if the server sends a string, it's an error.
-            raise RuntimeError(f"Error in inference server:\n{response}")
-        assert msgpack_numpy.unpackb(response)["success"]
 
 
 class AsyncWebsocketClientPolicy:
