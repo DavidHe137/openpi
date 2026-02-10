@@ -47,4 +47,5 @@ class SyncBroker(ActionChunkBroker):
         with self._lock:
             self._action_queue.clear()
             self._action_chunks = []
+            self._ws_client.reset()
             self._sent_request = False

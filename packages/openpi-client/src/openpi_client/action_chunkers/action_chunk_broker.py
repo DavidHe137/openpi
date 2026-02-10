@@ -22,7 +22,10 @@ class ActionChunkBroker(ABC):
     """
 
     def __init__(
-        self, ws_client: _websocket_client_policy.BidirectionalWebsocket, control_hz: int, realtime: bool = True
+        self,
+        ws_client: _websocket_client_policy.BidirectionalWebsocket,
+        control_hz: int,
+        realtime: bool = True,
     ) -> None:
         self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
@@ -87,6 +90,7 @@ class ActionChunkBroker(ABC):
         with self._lock:
             self._action_queue.clear()
             self._action_chunks = []
+            self._ws_client.reset()
 
     @property
     def action_chunks(self) -> List[ActionChunk]:

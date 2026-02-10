@@ -270,6 +270,14 @@ class WebsocketPolicyServer:
         """Receives requests from websocket and updates shared dict."""
         while True:
             message = msgpack_numpy.unpackb(await conn.websocket.recv())
+            # FIXME: hack for reset messages
+            if "reset" in message:
+                logger.info(f"Reset request for robot {message['robot_id']}")
+                if message["robot_id"] in self._latest_requests:
+                    del self._latest_requests[message["robot_id"]]
+                    await conn.websocket.send(msgpack_numpy.packb({"success": True}))  # type: ignore
+                continue
+
             infer_request = InferRequest(**message)
 
             # Track arrival time
