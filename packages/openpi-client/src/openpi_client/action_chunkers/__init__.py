@@ -17,14 +17,6 @@ class BrokerConfig:
     control_hz: int
 
 
-@dataclass
-class RTCBrokerConfig(BrokerConfig):
-    """Configuration for InferenceTimeRTCBroker."""
-
-    s_min: int = 5
-    d_init: int = 3
-
-
 # Mappings outside the enum to avoid conflicts
 _CLASS_MAPPING = {
     "sync": SyncBroker,
@@ -32,15 +24,6 @@ _CLASS_MAPPING = {
     "naive_async": NaiveAsyncBroker,
     # "temporal_ensembling": TemporalEnsemblingBroker,
     # "vlash": VLashBroker,
-}
-
-_CONFIG_MAPPING = {
-    "sync": BrokerConfig,
-    "naive_async": BrokerConfig,
-    "rtc": RTCBrokerConfig,
-    # TODO:
-    # "temporal_ensembling": TemporalEnsemblingBrokerConfig,
-    # "vlash": VLashBrokerConfig,
 }
 
 
@@ -52,10 +35,6 @@ class ActionChunkBrokerType(Enum):
 
     def get_class(self) -> Type[ActionChunkBroker]:
         return _CLASS_MAPPING[self.value]
-
-    def get_config_class(self):
-        """Get the config dataclass for this broker type."""
-        return _CONFIG_MAPPING[self.value]
 
     def create(self, config) -> ActionChunkBroker:
         """Create broker from a config dataclass."""

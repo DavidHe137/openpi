@@ -250,8 +250,6 @@ class RuntimeMetadata(JSONDataclass):
 
     # Action chunking config
     broker_type: str
-    s_min: Optional[int] = None
-    d_init: Optional[int] = None
 
     # Other
     latency_ms: List[float] = field(default_factory=list)

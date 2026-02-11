@@ -71,6 +71,7 @@ class WebsocketPolicyServer:
         self._manager = mp.Manager()
         self._latest_requests = self._manager.dict()  # robot_id -> ArrivedRequest
         self._reset_robots = self._manager.list()  # robot_ids that need reset
+        self._requests_lock = self._manager.Lock()  # Lock for latest_requests access
 
         # IPC endpoint for responses only
         socket_id = uuid.uuid4().hex[:8]
@@ -86,6 +87,7 @@ class WebsocketPolicyServer:
                 self._policy_factory,
                 self._latest_requests,
                 self._reset_robots,
+                self._requests_lock,
                 self._response_endpoint,
                 self._max_batch_size,
             ),
@@ -275,8 +277,9 @@ class WebsocketPolicyServer:
             # FIXME: hack for reset messages
             if "reset" in message:
                 robot_id = message["robot_id"]
-                if robot_id in self._latest_requests:
-                    del self._latest_requests[robot_id]
+                with self._requests_lock:
+                    if robot_id in self._latest_requests:
+                        del self._latest_requests[robot_id]
                 self._reset_robots.append(robot_id)
                 continue
 
@@ -291,7 +294,8 @@ class WebsocketPolicyServer:
 
             # Update shared dict (overwrites previous request from same robot)
             robot_id = arrived_request.infer_request.robot_id
-            self._latest_requests[robot_id] = arrived_request
+            with self._requests_lock:
+                self._latest_requests[robot_id] = arrived_request
 
             # FIXME: review this later, maybe not necessary
             # Track queued time (when written to shared dict)
@@ -312,6 +316,7 @@ def _run_worker(
     policy_factory: Callable,
     latest_requests: dict,
     reset_robots: list,
+    requests_lock,
     response_endpoint: str,
     max_batch_size: int,
 ):
@@ -355,7 +360,8 @@ def _run_worker(
                 scheduler.reset_robot(robot_id)
                 logger.info(f"Reset scheduler state for robot {robot_id}")
 
-            snapshot = dict(latest_requests)
+            with requests_lock:
+                snapshot = dict(latest_requests)
 
             batch = scheduler.get_next_batch(snapshot, max_batch_size)
             if not batch:

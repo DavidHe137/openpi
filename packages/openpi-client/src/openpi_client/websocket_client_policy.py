@@ -44,7 +44,9 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     def server_metadata(self) -> ServerMetadata:
         return self._server_metadata
 
-    def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, ServerMetadata]:
+    def _wait_for_server(
+        self,
+    ) -> Tuple[websockets.sync.client.ClientConnection, ServerMetadata]:
         logging.info(f"Waiting for server at {self._uri}...")
         while True:
             try:
@@ -68,7 +70,6 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
         obs: Dict,
         use_rtc: bool = False,
         deadline: Optional[float] = None,
-        prev_action: Optional[np.ndarray] = None,
         s_param: Optional[int] = None,
         d_param: Optional[int] = None,
         noise: Optional[np.ndarray] = None,
@@ -77,7 +78,7 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
         params = None
         if use_rtc:
             infer_type = messages.InferType.INFERENCE_TIME_RTC
-            params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)  # type: ignore
+            params = messages.RTCParams(s_param=s_param, d_param=d_param)  # type: ignore
         request = messages.InferRequest(
             request_timestamp=time.time(),
             start_step=obs.step,
@@ -126,7 +127,9 @@ class BidirectionalWebsocket:
     def server_metadata(self) -> ServerMetadata:
         return self._server_metadata
 
-    def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, ServerMetadata]:
+    def _wait_for_server(
+        self,
+    ) -> Tuple[websockets.sync.client.ClientConnection, ServerMetadata]:
         logging.info(f"Waiting for server at {self._uri}...")
         while True:
             try:
@@ -157,9 +160,9 @@ class BidirectionalWebsocket:
         infer_type = messages.InferType.SYNC
         params = None
         if use_rtc:
-            assert prev_action is not None
             assert s_param is not None
             assert d_param is not None
+            assert prev_action is not None
             infer_type = messages.InferType.INFERENCE_TIME_RTC
             params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)
         request = messages.InferRequest(
@@ -278,7 +281,6 @@ class AsyncWebsocketClientPolicy:
         self,
         obs: Observation,
         use_rtc: bool = False,
-        prev_action: Optional[np.ndarray] = None,
         s_param: Optional[int] = None,
         d_param: Optional[int] = None,
     ) -> Dict:
@@ -294,7 +296,7 @@ class AsyncWebsocketClientPolicy:
         params = None
         if use_rtc:
             infer_type = messages.InferType.INFERENCE_TIME_RTC
-            params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)  # type: ignore
+            params = messages.RTCParams(s_param=s_param, d_param=d_param)  # type: ignore
         request = messages.InferRequest(
             robot_id=self._robot_id,
             observation=asdict(obs),
