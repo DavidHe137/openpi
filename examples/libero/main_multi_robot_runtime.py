@@ -2,7 +2,7 @@ import logging
 import pathlib
 import multiprocessing
 import shutil
-from typing import Union, List, Literal, Optional, Dict, Type
+from typing import List, Literal, Optional, Dict, Type
 import datetime
 import time
 
@@ -12,11 +12,7 @@ from libero.libero import benchmark
 from openpi_client import websocket_client_policy as _websocket_client_policy
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
-from openpi_client.action_chunkers import (
-    ActionChunkBrokerType,
-    SyncBrokerConfig,
-    RTCBrokerConfig,
-)
+from openpi_client.action_chunkers import ActionChunkBrokerType, BrokerConfig
 from openpi_client.schemas import RuntimeMetadata, ServerMetadata
 import tyro
 from dataclasses import dataclass, field
@@ -43,16 +39,6 @@ class Job:
 
 
 @dataclass
-class ActionChunkBrokerArgs:
-    """Arguments for action chunk broker configuration."""
-
-    broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
-    # RTC-specific params
-    s_min: int = 5
-    d_init: int = 4
-
-
-@dataclass
 class Args:
     #################################################################################################################
     # Model server parameters
@@ -60,9 +46,7 @@ class Args:
     host: str = "0.0.0.0"
     port: int = 8080
     resize_size: int = 224
-    action_chunk_broker: ActionChunkBrokerArgs = field(
-        default_factory=ActionChunkBrokerArgs
-    )
+    action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
     latency_ms: List[float] = field(
         default_factory=list
     )  # Optional per-robot artificial latency (ms); length <= num_robots
@@ -91,23 +75,6 @@ class Args:
     log_dir: Optional[str] = None
     debug: bool = False  # Run in single process with immediate progress output
 
-    def create_broker_config(
-        self, ws_client: _websocket_client_policy.BidirectionalWebsocket
-    ) -> Union[SyncBrokerConfig, RTCBrokerConfig]:
-        """Helper to create the appropriate broker config from args."""
-        if self.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC:
-            return RTCBrokerConfig(
-                ws_client=ws_client,
-                control_hz=self.control_hz,
-                s_min=self.action_chunk_broker.s_min,
-                d_init=self.action_chunk_broker.d_init,
-            )
-        else:  # SYNC
-            return SyncBrokerConfig(
-                ws_client=ws_client,
-                control_hz=self.control_hz,
-            )
-
 
 def _latency_for_robot(args: Args, robot_idx: int) -> float:
     """Return the latency (in ms) to use for a given robot index."""
@@ -118,20 +85,10 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
 
 def delay_start(
     control_hz: int,
-    action_chunk_broker_config: ActionChunkBrokerArgs,
     server_metadata: ServerMetadata,
 ):
     """Return the period (in seconds) that a robot waits between requests."""
-    period = 0.0
-    if action_chunk_broker_config.broker_type == ActionChunkBrokerType.SYNC:
-        period = server_metadata.action_horizon / control_hz
-    elif action_chunk_broker_config.broker_type == ActionChunkBrokerType.RTC:
-        period = action_chunk_broker_config.s_min / control_hz
-    else:
-        raise ValueError(
-            f"Unknown action chunk broker type: {action_chunk_broker_config.broker_type}"
-        )
-
+    period = server_metadata.action_horizon / control_hz
     delay = np.random.uniform(0, period)
     time.sleep(delay)
 
@@ -152,8 +109,11 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     )
 
     # Create broker config and instantiate
-    config = args.create_broker_config(ws_client)
-    broker = args.action_chunk_broker.broker_type.create(config)
+    config = BrokerConfig(
+        ws_client=ws_client,
+        control_hz=args.control_hz,
+    )
+    broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
 
 
@@ -220,7 +180,6 @@ def _robot_worker(task_args) -> None:
     runtime = create_runtime(args, job)
     delay_start(
         control_hz=args.control_hz,
-        action_chunk_broker_config=args.action_chunk_broker,
         server_metadata=server_metadata,
     )
 
@@ -301,10 +260,6 @@ def create_jobs(args: Args) -> List[Job]:
         )
         jobs.append(job)
 
-    n_repeats = (args.num_robots // len(jobs)) + 1
-    jobs = jobs * n_repeats
-    jobs = jobs[: args.num_robots]
-
     logging.info("Created %d jobs", len(jobs))
 
     return jobs
@@ -353,13 +308,7 @@ def main(args: Args) -> None:
         max_steps=args.max_steps,
         num_robots=args.num_robots,
         control_hz=args.control_hz,
-        broker_type=args.action_chunk_broker.broker_type.value,
-        s_min=args.action_chunk_broker.s_min
-        if args.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC
-        else None,
-        d_init=args.action_chunk_broker.d_init
-        if args.action_chunk_broker.broker_type == ActionChunkBrokerType.RTC
-        else None,
+        broker_type=args.action_chunk_broker_type.value,
         seed=args.seed,
         resize_size=args.resize_size,
         latency_ms=args.latency_ms,

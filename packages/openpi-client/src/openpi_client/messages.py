@@ -15,7 +15,7 @@ class InferType(Enum):
 
 @dataclass
 class RTCParams:
-    prev_action: np.ndarray
+    prev_action: Float[np.ndarray, "action_horizon action_dim"]
     s_param: int
     d_param: int
 

@@ -5,7 +5,6 @@ from collections.abc import Callable
 import contextlib
 from dataclasses import asdict
 from dataclasses import dataclass
-from dataclasses import field
 import http
 import logging
 import multiprocessing as mp
@@ -15,7 +14,6 @@ import traceback
 from typing import Any
 import uuid
 
-import numpy as np
 from openpi_client import msgpack_numpy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
@@ -27,9 +25,8 @@ import zmq.asyncio
 from openpi.serving.metrics import BatchMetrics
 from openpi.serving.metrics import MetricsCollector
 from openpi.serving.metrics import plot_metrics
-from openpi.serving.request_queue import RequestQueue
+from openpi.serving.scheduling import RequestScheduler
 from openpi.serving.schemas import ArrivedRequest
-from openpi.serving.variable_execution import calculate_execution_horizon
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +38,6 @@ class ConnectionState:
     websocket: _server.ServerConnection
     response_queue: asyncio.Queue[InferResponse]
     conn_id: str
-    pending_requests: set[int] = field(default_factory=set)
 
 
 class WebsocketPolicyServer:
@@ -50,8 +46,9 @@ class WebsocketPolicyServer:
     Architecture:
     - Main process: async websocket handlers with decoupled recv/send loops
     - Worker process: batched policy inference
-    - PUSH/PULL sockets for simple unidirectional IPC
-    - Stale requests are silently dropped
+    - Lock-free shared memory: dict maps robot_id -> latest request
+    - Handlers update atomically (single key write), worker snapshots and filters by timestamp
+    - Stale requests are silently skipped (worker tracks last_processed_timestamp per robot)
     """
 
     def __init__(
@@ -70,9 +67,14 @@ class WebsocketPolicyServer:
         self._max_batch_size = max_batch_size
         self._log_dir = log_dir
 
-        # IPC endpoints
+        # Shared memory for latest requests per robot
+        self._manager = mp.Manager()
+        self._latest_requests = self._manager.dict()  # robot_id -> ArrivedRequest
+        self._reset_robots = self._manager.list()  # robot_ids that need reset
+        self._requests_lock = self._manager.Lock()  # Lock for latest_requests access
+
+        # IPC endpoint for responses only
         socket_id = uuid.uuid4().hex[:8]
-        self._request_endpoint = f"ipc:///tmp/openpi_req_{socket_id}"
         self._response_endpoint = f"ipc:///tmp/openpi_resp_{socket_id}"
 
         # Connection tracking
@@ -80,16 +82,18 @@ class WebsocketPolicyServer:
         self._request_routing: dict[int, str] = {}  # request_id -> conn_id
 
         self._worker = mp.Process(
-            target=self._run_worker,
+            target=_run_worker,
             args=(
-                self._request_endpoint,
+                self._policy_factory,
+                self._latest_requests,
+                self._reset_robots,
+                self._requests_lock,
                 self._response_endpoint,
                 self._max_batch_size,
             ),
         )
 
         logging.getLogger("websockets.server").setLevel(logging.INFO)
-        self.responses = dict[int, asyncio.futures.Future]()
         self._worker_identity: bytes | None = None  # Worker identity (learned from first message)
         self.last_request_id = 0
 
@@ -102,15 +106,11 @@ class WebsocketPolicyServer:
     async def _run(self):
         zmq_ctx = zmq.asyncio.Context()
 
-        # PUSH socket for sending requests to worker
-        self._request_socket = zmq_ctx.socket(zmq.PUSH)
-        self._request_socket.bind(self._request_endpoint)
-
         # PULL socket for receiving responses from worker
         self._response_socket = zmq_ctx.socket(zmq.PULL)
         self._response_socket.bind(self._response_endpoint)
 
-        # Start worker after sockets are bound
+        # Start worker after socket is bound
         await asyncio.sleep(0.1)
         self._worker.start()
 
@@ -159,9 +159,8 @@ class WebsocketPolicyServer:
             with contextlib.suppress(asyncio.CancelledError):
                 await response_task
 
-            # Close ZMQ sockets
-            logger.info("Closing ZMQ sockets...")
-            self._request_socket.close()
+            # Close ZMQ socket
+            logger.info("Closing ZMQ socket...")
             self._response_socket.close()
             zmq_ctx.term()
 
@@ -174,6 +173,10 @@ class WebsocketPolicyServer:
                     logger.warning("Worker did not terminate gracefully, killing...")
                     self._worker.kill()
                     self._worker.join()
+
+            # Shutdown manager
+            logger.info("Shutting down shared memory manager...")
+            self._manager.shutdown()
 
             # Generate plots after everything is stopped
             if self._log_dir:
@@ -230,7 +233,6 @@ class WebsocketPolicyServer:
                 finished_time = time.perf_counter()
                 self._metrics.add_request_finished(response.request_id, finished_time)
 
-                conn.pending_requests.discard(response.request_id)
                 await conn.response_queue.put(response)  # type: ignore
 
             except asyncio.CancelledError:
@@ -266,14 +268,21 @@ class WebsocketPolicyServer:
             )
             raise
         finally:
-            for req_id in conn.pending_requests:
-                self._request_routing.pop(req_id, None)
             del self._connections[conn.conn_id]
 
     async def _recv_loop(self, conn: ConnectionState):
-        """Receives requests from websocket and forwards to worker."""
+        """Receives requests from websocket and updates shared dict."""
         while True:
             message = msgpack_numpy.unpackb(await conn.websocket.recv())
+            # FIXME: hack for reset messages
+            if "reset" in message:
+                robot_id = message["robot_id"]
+                with self._requests_lock:
+                    if robot_id in self._latest_requests:
+                        del self._latest_requests[robot_id]
+                self._reset_robots.append(robot_id)
+                continue
+
             infer_request = InferRequest(**message)
 
             # Track arrival time
@@ -281,17 +290,17 @@ class WebsocketPolicyServer:
             arrived_request = ArrivedRequest.receive(infer_request)
             self._metrics.add_request_arrival(arrived_request.request_id, arrival_time)
 
-            conn.pending_requests.add(arrived_request.request_id)
             self._request_routing[arrived_request.request_id] = conn.conn_id
 
-            # Track queued time (when sent to worker)
+            # Update shared dict (overwrites previous request from same robot)
+            robot_id = arrived_request.infer_request.robot_id
+            with self._requests_lock:
+                self._latest_requests[robot_id] = arrived_request
+
+            # FIXME: review this later, maybe not necessary
+            # Track queued time (when written to shared dict)
             queued_time = time.perf_counter()
             self._metrics.add_request_queued(arrived_request.request_id, queued_time)
-
-            logger.info(
-                f"Request from {arrived_request.infer_request.robot_id} for step {arrived_request.infer_request.start_step}"
-            )
-            await self._request_socket.send_pyobj(arrived_request)
 
     async def _send_loop(self, conn: ConnectionState):
         """Sends responses from queue to websocket."""
@@ -302,140 +311,118 @@ class WebsocketPolicyServer:
             )
             await conn.websocket.send(msgpack_numpy.packb(asdict(response)))  # type: ignore
 
-    def _run_worker(self, request_endpoint: str, response_endpoint: str, max_batch_size: int):
-        """Worker process: receives requests, runs batched inference, sends responses."""
-        logger.info("Worker starting")
 
-        # Graceful shutdown handling
-        shutdown_requested = False
+def _run_worker(
+    policy_factory: Callable,
+    latest_requests: dict,
+    reset_robots: list,
+    requests_lock,
+    response_endpoint: str,
+    max_batch_size: int,
+):
+    """Worker process: polls shared dict, runs batched inference, sends responses."""
+    logger.info("Worker starting")
 
-        def handle_shutdown(signum, frame):
-            nonlocal shutdown_requested
-            logger.info(f"Worker received signal {signum}, shutting down...")
-            shutdown_requested = True
+    # Graceful shutdown handling
+    shutdown_requested = False
 
-        signal.signal(signal.SIGTERM, handle_shutdown)
-        signal.signal(signal.SIGINT, handle_shutdown)
+    def handle_shutdown(signum, frame):
+        nonlocal shutdown_requested
+        logger.info(f"Worker received signal {signum}, shutting down...")
+        shutdown_requested = True
 
-        # Initialize policy in worker to avoid CUDA fork issues
-        self._policy = self._policy_factory()
-        self._policy.warmup(max_batch_size)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
 
-        # Connect to main process
-        zmq_ctx = zmq.Context()
-        request_socket = zmq_ctx.socket(zmq.PULL)
-        request_socket.connect(request_endpoint)
-        response_socket = zmq_ctx.socket(zmq.PUSH)
-        response_socket.connect(response_endpoint)
+    # Initialize policy in worker to avoid CUDA fork issues
+    policy = policy_factory()
+    policy.warmup(max_batch_size)
 
-        # Signal ready
-        response_socket.send_string("ready")
-        logger.info("Worker ready")
+    # Connect to main process
+    zmq_ctx = zmq.Context()
+    response_socket = zmq_ctx.socket(zmq.PUSH)
+    response_socket.connect(response_endpoint)
 
-        request_queue = RequestQueue()
+    # Signal ready
+    response_socket.send_string("ready")
+    logger.info("Worker ready")
 
-        # NOTE: hacky data structure for now
-        last_response: dict[str, InferResponse] = {}
+    scheduler = RequestScheduler()
 
-        # Batch counter for metrics
-        batch_counter = 0
+    # Batch counter for metrics
+    batch_counter = 0
 
-        try:
-            while not shutdown_requested:
-                # Block for at least one message (with timeout to check shutdown)
-                try:
-                    request: ArrivedRequest = request_socket.recv_pyobj(flags=zmq.NOBLOCK)
-                    request_queue.add(request)
-                except zmq.Again:
-                    # No message available, sleep briefly and check shutdown
-                    time.sleep(0.01)
-                    continue
+    try:
+        while not shutdown_requested:
+            # Process any pending resets
+            while reset_robots:
+                robot_id = reset_robots.pop(0)
+                scheduler.reset_robot(robot_id)
+                logger.info(f"Reset scheduler state for robot {robot_id}")
 
-                # Drain remaining messages without blocking
-                while True:
-                    try:
-                        request = request_socket.recv_pyobj(zmq.NOBLOCK)
-                        request_queue.add(request)
-                    except zmq.Again:
-                        break
+            with requests_lock:
+                snapshot = dict(latest_requests)
 
-                # Build batch from non-stale requests
-                batch: list[ArrivedRequest] = []
-                request_queue.clear_stale()
-                while not request_queue.empty and len(batch) < max_batch_size:
-                    batch.append(request_queue.pop())
+            batch = scheduler.get_next_batch(snapshot, max_batch_size)
+            if not batch:
+                time.sleep(0.01)
+                continue
 
-                if not batch:
-                    continue
+            batch_start_time = time.perf_counter()
 
-                # Track batch timing
-                batch_start_time = time.perf_counter()
+            # Run inference
+            logger.info(f"Inferring batch of size {len(batch)}")
+            try:
+                actions = policy.infer_batch([req.infer_request for req in batch])
+            except Exception as e:
+                logger.error(f"Inference failed: {e}", exc_info=True)
+                continue
 
-                # Extract noise from requests if present
-                batch_noise = None
-                if batch[0].infer_request.noise is not None:
-                    # Stack noise from all requests in the batch
-                    batch_noise = np.stack([req.infer_request.noise for req in batch], axis=0)
+            batch_end_time = time.perf_counter()
 
-                # Run inference
-                logger.info(f"Inferring batch of size {len(batch)}")
-                try:
-                    actions = self._policy.infer_batch([req.infer_request for req in batch], noise=batch_noise)
-                except Exception as e:
-                    logger.error(f"Inference failed: {e}", exc_info=True)
-                    continue
+            # Create and send batch metrics
+            batch_metric = BatchMetrics(
+                batch_id=batch_counter,
+                processing_start_time=batch_start_time,
+                processing_end_time=batch_end_time,
+                num_real_requests=len(batch),
+                total_batch_size=len(batch),
+                request_ids=[req.request_id for req in batch],
+            )
+            response_socket.send_pyobj(batch_metric)
 
-                batch_end_time = time.perf_counter()
-
-                # Create and send batch metrics
-                batch_metric = BatchMetrics(
-                    batch_id=batch_counter,
-                    processing_start_time=batch_start_time,
-                    processing_end_time=batch_end_time,
-                    num_real_requests=len(batch),
-                    total_batch_size=len(batch),
-                    request_ids=[req.request_id for req in batch],
+            # FIXME: add typing to infer_batch so we don't index into dict
+            # Send responses
+            for req, action_dict in zip(batch, actions, strict=True):
+                execution_horizon = scheduler.calculate_execution_horizon(
+                    req.infer_request.robot_id, action_dict["actions"]
                 )
-                response_socket.send_pyobj(batch_metric)
 
-                # Send responses
-                for req, action_dict in zip(batch, actions, strict=True):
-                    actions = action_dict["actions"]
-                    noise = action_dict.get("noise")
+                response = InferResponse(
+                    robot_id=req.infer_request.robot_id,
+                    request_id=req.request_id,
+                    start_step=req.infer_request.start_step,
+                    request_timestamp=req.infer_request.request_timestamp,
+                    execution_horizon=execution_horizon,
+                    actions=action_dict["actions"],
+                    noise=action_dict["noise"],
+                )
+                response_socket.send_pyobj(response)
+                scheduler.update_last_response(req.infer_request.robot_id, response)
 
-                    execution_horizon = len(actions)
-                    if req.infer_request.robot_id in last_response:
-                        execution_horizon = calculate_execution_horizon(
-                            last_response[req.infer_request.robot_id],
-                            req.infer_request.start_step,
-                            actions,
-                        )
+            scheduler.update_deadlines(batch)
 
-                    response = InferResponse(
-                        robot_id=req.infer_request.robot_id,
-                        request_id=req.request_id,
-                        start_step=req.infer_request.start_step,
-                        request_timestamp=req.infer_request.request_timestamp,
-                        execution_horizon=execution_horizon,
-                        actions=actions,
-                        noise=noise,
-                    )
-                    response_socket.send_pyobj(response)
-                    last_response[req.infer_request.robot_id] = response
+            batch_counter += 1
 
-                batch_counter += 1
+    finally:
+        logger.info("Worker shutting down gracefully")
 
-        finally:
-            logger.info("Worker shutting down gracefully")
+        # Set linger to allow pending messages to be sent (max 1 second)
+        response_socket.setsockopt(zmq.LINGER, 1000)
 
-            # Set linger to allow pending messages to be sent (max 1 second)
-            request_socket.setsockopt(zmq.LINGER, 1000)
-            response_socket.setsockopt(zmq.LINGER, 1000)
-
-            request_socket.close()
-            response_socket.close()
-            zmq_ctx.term()
-            logger.info("Worker shutdown complete")
+        response_socket.close()
+        zmq_ctx.term()
+        logger.info("Worker shutdown complete")
 
 
 def _health_check(connection: _server.ServerConnection, request: Any) -> Any | None:

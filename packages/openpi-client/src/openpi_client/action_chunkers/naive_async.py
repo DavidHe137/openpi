@@ -1,10 +1,8 @@
-from openpi_client.schemas import Observation
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
 from openpi_client import websocket_client_policy as _websocket_client_policy
-from typing_extensions import override
 
 
-class SyncBroker(ActionChunkBroker):
+class NaiveAsyncBroker(ActionChunkBroker):
     """Wraps a policy to return action chunks asynchronously.
 
     The policy is called synchronously in the background thread whenever the current action chunk is exhausted.
@@ -25,27 +23,3 @@ class SyncBroker(ActionChunkBroker):
         super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
         self.reset()
         self._background_thread.start()
-
-    @override
-    def _infer(self, obs: Observation) -> None:
-        if len(self._action_queue) > 0 or self._sent_request:
-            return
-
-        super()._infer(obs)
-        self._sent_request = True
-
-    @override
-    def _receive_actions(self) -> None:
-        while True:
-            action_chunk = self._ws_client.receive()
-            self._action_chunks.append(action_chunk)
-            self._update_action_queue(action_chunk)
-            self._sent_request = False
-
-    @override
-    def reset(self) -> None:
-        with self._lock:
-            self._action_queue.clear()
-            self._action_chunks = []
-            self._ws_client.reset()
-            self._sent_request = False
