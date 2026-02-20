@@ -60,7 +60,7 @@ class WebsocketPolicyServer:
         metadata: dict | None = None,
         max_batch_size: int = 1,
         log_dir: str | None = None,
-        scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST,
+        scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.GREEDY,
     ) -> None:
         self._policy_factory = policy_factory
         self._host = host
@@ -323,7 +323,7 @@ def _run_worker(
     requests_lock,
     response_endpoint: str,
     max_batch_size: int,
-    scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST,
+    scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.GREEDY,
 ):
     """Worker process: polls shared dict, runs batched inference, sends responses."""
     logger.info("Worker starting")
@@ -386,24 +386,16 @@ def _run_worker(
 
             batch_end_time = time.perf_counter()
 
-            # Create and send batch metrics
-            batch_metric = BatchMetrics(
-                batch_id=batch_counter,
-                processing_start_time=batch_start_time,
-                processing_end_time=batch_end_time,
-                num_real_requests=len(batch),
-                total_batch_size=len(batch),
-                request_ids=[req.request_id for req in batch],
-            )
-            response_socket.send_pyobj(batch_metric)
+            # Build responses and collect per-robot info for metrics
+            responses: list[InferResponse] = []
+            batch_robot_ids: list[str] = []
+            batch_start_steps: list[int] = []
+            batch_execution_horizons: list[int] = []
 
-            # FIXME: add typing to infer_batch so we don't index into dict
-            # Send responses
             for req, action_dict in zip(batch, actions, strict=True):
                 execution_horizon = scheduler.calculate_execution_horizon(
                     req.infer_request.robot_id, action_dict["actions"]
                 )
-
                 response = InferResponse(
                     robot_id=req.infer_request.robot_id,
                     request_id=req.request_id,
@@ -412,9 +404,31 @@ def _run_worker(
                     execution_horizon=execution_horizon,
                     actions=action_dict["actions"],
                     noise=action_dict["noise"],
+                    server_compute_ms=(batch_end_time - batch_start_time) * 1e3,
                 )
+                responses.append(response)
+                batch_robot_ids.append(req.infer_request.robot_id)
+                batch_start_steps.append(req.infer_request.start_step)
+                batch_execution_horizons.append(execution_horizon)
+
+            # Send batch metrics (with scheduling data)
+            batch_metric = BatchMetrics(
+                batch_id=batch_counter,
+                processing_start_time=batch_start_time,
+                processing_end_time=batch_end_time,
+                num_real_requests=len(batch),
+                total_batch_size=len(batch),
+                request_ids=[req.request_id for req in batch],
+                robot_ids=batch_robot_ids,
+                start_steps=batch_start_steps,
+                execution_horizons=batch_execution_horizons,
+            )
+            response_socket.send_pyobj(batch_metric)
+
+            # Send individual responses
+            for response in responses:
                 response_socket.send_pyobj(response)
-                scheduler.update_last_response(req.infer_request.robot_id, response)
+                scheduler.update_last_response(response.robot_id, response)
 
             scheduler.update_deadlines(batch)
 

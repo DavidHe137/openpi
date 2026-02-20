@@ -14,5 +14,8 @@
     "gitlens.advanced.blame.customArguments": [
         "--ignore-revs-file",
         "${workspaceFolder}/.git-blame-ignore-revs"
+    ],
+    "cursorpyright.analysis.extraPaths": [
+        "${workspaceFolder}/third_party/libero"
     ]
 }

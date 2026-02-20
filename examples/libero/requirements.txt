@@ -25,7 +25,7 @@ importlib-metadata==8.5.0
 importlib-resources==6.4.5
 jaxtyping==0.2.19
 kiwisolver==1.4.7
--e file:///coc/flash8/dhe83/openpi/third_party/libero
+-e file:///coc/flash7/rbansal66/vvla/openpi/third_party/libero
 line-profiler==5.0.0
 llvmlite==0.41.1
 markdown-it-py==3.0.0
@@ -37,7 +37,7 @@ mujoco==3.2.3
 numba==0.58.1
 numpy==1.22.4
 opencv-python==4.6.0.66
--e file:///coc/flash8/dhe83/openpi/packages/openpi-client
+-e file:///coc/flash7/rbansal66/vvla/openpi/packages/openpi-client
 packaging==24.2
 pandas==2.0.3
 pillow==10.4.0

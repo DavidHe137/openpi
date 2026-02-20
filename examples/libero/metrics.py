@@ -27,6 +27,29 @@ def load_episodes(output_path: pathlib.Path) -> pd.DataFrame:
     return pd.DataFrame([asdict(result) for result in results])
 
 
+def load_actions_left(output_path: pathlib.Path) -> Dict[str, List[np.ndarray]]:
+    """Load actions_left.npy files grouped by robot_idx.
+
+    Returns:
+        {robot_idx_str: [episode_array, ...]} sorted by episode order.
+    """
+    files = sorted(output_path.glob("**/actions_left.npy"))
+    by_robot: dict[str, list[tuple[int, np.ndarray]]] = {}
+    for f in files:
+        # path: <out_dir>/<robot_idx>/<ep_idx>_<suite>_<task>_<result>/actions_left.npy
+        parts = f.parts
+        robot_idx = parts[-3]   # e.g. "0"
+        ep_prefix = parts[-2]   # e.g. "0_libero_10_0_success"
+        ep_idx = int(ep_prefix.split("_")[0])
+        arr = np.load(f)
+        by_robot.setdefault(robot_idx, []).append((ep_idx, arr))
+
+    return {
+        robot: [arr for _, arr in sorted(eps)]
+        for robot, eps in sorted(by_robot.items(), key=lambda kv: int(kv[0]))
+    }
+
+
 def load_action_chunks(output_path: pathlib.Path) -> pd.DataFrame:
     """Load all action_chunks.parquet files with task metadata."""
     action_chunk_files = list(output_path.glob("**/action_chunks.parquet"))
@@ -498,6 +521,70 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
     print(f"Saved {plots_dir / 'steps_taken.png'}")
 
 
+def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
+    """Heatmap of actions_left[step, robot] using ground-truth queue lengths.
+
+    Each robot's episodes are concatenated along the step axis.
+    Episode boundaries are marked with vertical lines.
+    """
+    by_robot = load_actions_left(output_path)
+    if not by_robot:
+        print("No actions_left.npy data found")
+        return
+
+    robots = list(by_robot.keys())
+    n_robots = len(robots)
+
+    # Concatenate episodes per robot; pad shorter robots with NaN
+    robot_series: list[np.ndarray] = [np.concatenate(by_robot[r]) for r in robots]
+    max_len = max(len(s) for s in robot_series)
+    matrix = np.full((n_robots, max_len), np.nan)
+    episode_boundaries: list[list[int]] = []
+
+    for i, robot in enumerate(robots):
+        episodes = by_robot[robot]
+        boundaries = []
+        offset = 0
+        for ep in episodes:
+            end = offset + len(ep)
+            matrix[i, offset:end] = ep
+            boundaries.append(offset)
+            offset = end
+        episode_boundaries.append(boundaries)
+
+    fig, ax = plt.subplots(figsize=(max(12, max_len // 20), max(4, n_robots * 0.6)))
+
+    im = ax.imshow(
+        matrix,
+        aspect="auto",
+        cmap="RdYlGn",
+        interpolation="nearest",
+        origin="lower",
+        vmin=0,
+    )
+
+    # Episode boundary markers (thin white lines)
+    for i, bounds in enumerate(episode_boundaries):
+        for b in bounds[1:]:   # skip step 0
+            ax.plot([b - 0.5, b - 0.5], [i - 0.4, i + 0.4], color="white", linewidth=0.8, alpha=0.7)
+
+    cbar = fig.colorbar(im, ax=ax, pad=0.01)
+    cbar.set_label("Actions left in queue", fontweight="bold")
+
+    ax.set_yticks(range(n_robots))
+    ax.set_yticklabels([f"robot_{r}" for r in robots], fontsize=8)
+    ax.set_xlabel("Step (episodes concatenated, white lines = episode boundaries)", fontweight="bold")
+    ax.set_ylabel("Robot", fontweight="bold")
+    ax.set_title("Actions Left Per Robot Over Time", fontsize=14, fontweight="bold")
+
+    plt.tight_layout()
+    plots_dir = output_path / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plots_dir / "actions_left_heatmap.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {plots_dir / 'actions_left_heatmap.png'}")
+
+
 def generate_per_robot_success_rate_plot(output_path: pathlib.Path) -> None:
     """Success rate bar chart broken down by robot."""
     df = load_episodes(output_path)
@@ -592,6 +679,7 @@ def generate_all_plots(output_path: pathlib.Path) -> None:
     generate_steps_plot(output_path)
     generate_per_robot_success_rate_plot(output_path)
     generate_per_robot_completion_speed_plot(output_path)
+    generate_actions_left_heatmap(output_path)
     print("Done!")
 
 

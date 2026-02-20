@@ -35,12 +35,14 @@ class ActionChunkBroker(ABC):
         self._realtime = realtime
 
         self._lock = threading.Lock()
+        self._actions_left_history: list[int] = []
         self._background_thread = threading.Thread(target=self._receive_actions, daemon=True)
 
     def infer(self, obs: Observation) -> Action:
         """Client continuously streams observations to the server."""
         with self._lock:
             action = self._action_queue.popleft() if self._action_queue else self._create_null_action(obs)
+            self._actions_left_history.append(len(self._action_queue))
 
             self._infer(obs)
 
@@ -90,6 +92,7 @@ class ActionChunkBroker(ABC):
         with self._lock:
             self._action_queue.clear()
             self._action_chunks = []
+            self._actions_left_history = []
             self._ws_client.reset()
 
     @property
@@ -102,3 +105,8 @@ class ActionChunkBroker(ABC):
     @property
     def current_action_chunk(self) -> Optional[ActionChunk]:
         return self._action_chunks[-1] if self._action_chunks else None
+
+    @property
+    def actions_left_history(self) -> List[int]:
+        """Actions remaining in queue after each step (recorded inside the lock)."""
+        return list(self._actions_left_history)

@@ -66,7 +66,7 @@ class Args:
     log_dir: str = "logs/server"
 
     # Scheduling algorithm for batching requests.
-    scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST
+    scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.GREEDY
 
 
 def create_policy(args: Args) -> _policy.Policy:

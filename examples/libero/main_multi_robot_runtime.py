@@ -54,15 +54,15 @@ class Args:
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
-    task_suite_name: str = "libero_90"
+    task_suite_name: str = "libero_10"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
-    num_trials_per_robot: int = 4  # Number of rollouts per robot per task
-    max_steps: int = 500  # Maximum number of control steps per episode
+    num_trials_per_robot: int = 10  # Number of rollouts per robot per task
+    max_steps: int = 2000  # Maximum number of control steps per episode
 
     #################################################################################################################
     # Multi-robot / threading parameters
     #################################################################################################################
-    num_robots: int = 25  # Number of always-running sims (robots)
+    num_robots: int = 5 # Number of always-running sims (robots)
     control_hz: int = 20  # Target control frequency for each sim #NOTE: int because this is the fps of the video
 
     #################################################################################################################
