@@ -78,6 +78,8 @@ def run_network_profile(args) -> None:
     t_rtt:           list[list[float]] = [[] for _ in range(batch_size)]
     t_server_compute: list[list[float]] = [[] for _ in range(batch_size)]
     t_network:       list[list[float]] = [[] for _ in range(batch_size)]
+    t_send_dur:      list[list[float]] = [[] for _ in range(batch_size)]
+    t_recv_dur:      list[list[float]] = [[] for _ in range(batch_size)]
     batch_rtts:      list[float] = []  # time from first send to last recv across all robots
 
     # Barrier so all threads send as close to simultaneously as possible.
@@ -101,11 +103,13 @@ def run_network_profile(args) -> None:
             barrier.wait()  # synchronise all robots before sending
             t_send = time.perf_counter()
             ws.send(data)
+            t_after_send = time.perf_counter()
             response_bytes = ws.recv()
             t_recv = time.perf_counter()
             response = msgpack_numpy.unpackb(response_bytes)
             iter_results[idx] = {
                 "t_send": t_send,
+                "t_after_send": t_after_send,
                 "t_recv": t_recv,
                 "server_ms": response.get("server_compute_ms", 0.0),
                 "req_bytes": len(data),
@@ -130,15 +134,22 @@ def run_network_profile(args) -> None:
             batch_rtts.append(batch_rtt_ms)
             for idx, r in enumerate(iter_results):
                 rtt_ms    = (r["t_recv"] - r["t_send"]) * 1e3
+                send_ms   = (r["t_after_send"] - r["t_send"]) * 1e3
                 server_ms = r["server_ms"]
+                recv_ms   = (r["t_recv"] - r["t_after_send"]) * 1e3
                 t_rtt[idx].append(rtt_ms)
                 t_server_compute[idx].append(server_ms)
                 t_network[idx].append(rtt_ms - server_ms)
+                t_send_dur[idx].append(send_ms)
+                t_recv_dur[idx].append(recv_ms)
 
         if args.verbose:
             label = "warmup" if is_warmup else "timed "
             per_robot = "  ".join(
-                f"r{idx}:{(r['t_recv']-r['t_send'])*1e3:.0f}ms(net:{(r['t_recv']-r['t_send'])*1e3-r['server_ms']:.0f}ms)"
+                f"r{idx}: rtt={(r['t_recv']-r['t_send'])*1e3:.0f}ms"
+                f"(send={(r['t_after_send']-r['t_send'])*1e3:.0f}ms"
+                f" infer={r['server_ms']:.0f}ms"
+                f" recv={(r['t_recv']-r['t_after_send'])*1e3:.0f}ms)"
                 for idx, r in enumerate(iter_results)
             )
             print(f"  [{label} {i:3d}] batch_rtt={batch_rtt_ms:.2f}ms  {per_robot}")
@@ -150,9 +161,8 @@ def run_network_profile(args) -> None:
     all_rtt     = [v for lst in t_rtt for v in lst]
     all_server  = [v for lst in t_server_compute for v in lst]
     all_network = [v for lst in t_network for v in lst]
-
-    req_bytes  = statistics.mean(iter_results[0]["req_bytes"] for _ in [None])
-    resp_bytes = statistics.mean(iter_results[0]["resp_bytes"] for _ in [None])
+    all_send    = [v for lst in t_send_dur for v in lst]
+    all_recv    = [v for lst in t_recv_dur for v in lst]
 
     print(f"\n--- Latency profile: batch_size={batch_size}, {args.num_iters} iters ---")
     print(f"  Request payload:   {iter_results[0]['req_bytes'] / 1024:.1f} KB  (per robot)")
@@ -162,8 +172,10 @@ def run_network_profile(args) -> None:
         _print_stats("batch RTT (wall)", batch_rtts)
         print()
     _print_stats("per-robot RTT", all_rtt)
-    _print_stats("  server compute", all_server)
-    _print_stats("  network", all_network)
+    _print_stats("  send", all_send)
+    _print_stats("  server infer", all_server)
+    _print_stats("  recv", all_recv)
+    _print_stats("  network overhead", all_network)
 
 
 def run_local(args) -> None:
