@@ -26,6 +26,7 @@ from openpi.serving.metrics import BatchMetrics
 from openpi.serving.metrics import MetricsCollector
 from openpi.serving.metrics import plot_metrics
 from openpi.serving.scheduling import RequestScheduler
+from openpi.serving.scheduling import SchedulingAlgorithm
 from openpi.serving.schemas import ArrivedRequest
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class WebsocketPolicyServer:
         metadata: dict | None = None,
         max_batch_size: int = 1,
         log_dir: str | None = None,
+        scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST,
     ) -> None:
         self._policy_factory = policy_factory
         self._host = host
@@ -66,6 +68,7 @@ class WebsocketPolicyServer:
         self._metadata = metadata or {}
         self._max_batch_size = max_batch_size
         self._log_dir = log_dir
+        self._scheduling_algorithm = scheduling_algorithm
 
         # Shared memory for latest requests per robot
         self._manager = mp.Manager()
@@ -90,6 +93,7 @@ class WebsocketPolicyServer:
                 self._requests_lock,
                 self._response_endpoint,
                 self._max_batch_size,
+                self._scheduling_algorithm,
             ),
         )
 
@@ -319,6 +323,7 @@ def _run_worker(
     requests_lock,
     response_endpoint: str,
     max_batch_size: int,
+    scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST,
 ):
     """Worker process: polls shared dict, runs batched inference, sends responses."""
     logger.info("Worker starting")
@@ -347,7 +352,8 @@ def _run_worker(
     response_socket.send_string("ready")
     logger.info("Worker ready")
 
-    scheduler = RequestScheduler()
+    scheduler = RequestScheduler(algorithm=scheduling_algorithm)
+    logger.info(f"Using scheduling algorithm: {scheduling_algorithm.value}")
 
     # Batch counter for metrics
     batch_counter = 0

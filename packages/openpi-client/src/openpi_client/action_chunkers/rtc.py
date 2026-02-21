@@ -29,6 +29,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         """
         super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
         self._delay_buffer_size = delay_buffer_size
+        self._last_request_time = None  # Track when we sent the last request
 
         self.reset()
         self._background_thread.start()
@@ -36,6 +37,9 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
     @override
     def _infer(self, obs: Observation) -> None:
         # NOTE: server will store previous actions + handle s logic
+        # Record when we send the request for delay tracking
+        self._last_request_time = time.time()
+
         deadline = time.time() + len(self._action_queue) * self._step_duration
         estimated_delay = max(self._delays)
         current_step = obs.step
@@ -54,10 +58,30 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         )
 
     @override
+    def _receive_actions(self) -> None:
+        """Receive actions and track actual delays per Algorithm 1 line 22."""
+        while True:
+            action_chunk = self._ws_client.receive()
+            receive_time = time.time()
+
+            # Calculate actual observed delay: time from request to response
+            # This corresponds to 't' in Algorithm 1 line 22: "enqueue t onto Q"
+            if self._last_request_time is not None:
+                delay_seconds = receive_time - self._last_request_time
+                delay_steps = int(delay_seconds / self._step_duration)  # Convert to steps
+
+                with self._lock:
+                    self._delays.append(delay_steps)
+
+            self._action_chunks.append(action_chunk)
+            self._update_action_queue(action_chunk)
+
+    @override
     def reset(self) -> None:
         with self._lock:
             self._action_queue.clear()
             self._action_chunks = []
-            # FIXME: estimate delay from server
-            self._delays = deque([3], maxlen=self._delay_buffer_size)
+            # Initialize per Algorithm 1: d_init = 4 steps (~200ms at 20Hz)
+            self._delays = deque([4], maxlen=self._delay_buffer_size)
+            self._last_request_time = None
             self._ws_client.reset()

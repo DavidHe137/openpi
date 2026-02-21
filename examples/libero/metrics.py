@@ -498,6 +498,91 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
     print(f"Saved {plots_dir / 'steps_taken.png'}")
 
 
+def generate_per_robot_success_rate_plot(output_path: pathlib.Path) -> None:
+    """Success rate bar chart broken down by robot."""
+    df = load_episodes(output_path)
+    if df.empty:
+        print("No episode data for per-robot success rate plot")
+        return
+
+    robot_summary = (
+        df.groupby("robot_idx")["success"].agg(["mean", "count"]).reset_index()
+    )
+    robot_summary = robot_summary.sort_values("robot_idx")
+
+    overall_rate = df["success"].mean()
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bars = ax.bar(
+        robot_summary["robot_idx"].astype(str),
+        robot_summary["mean"],
+        color="steelblue",
+        edgecolor="black",
+        alpha=0.8,
+    )
+    ax.axhline(
+        y=overall_rate,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"Overall: {overall_rate:.2%}",
+    )
+
+    for bar, rate, count in zip(bars, robot_summary["mean"], robot_summary["count"]):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height() + 0.02,
+            f"{rate:.0%}\n(n={count})",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+
+    ax.set_xlabel("Robot Index", fontsize=12)
+    ax.set_ylabel("Success Rate", fontsize=12)
+    ax.set_title("Per-Robot Success Rate", fontsize=14, fontweight="bold")
+    ax.set_ylim(0, 1.15)
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    plots_dir = output_path / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plots_dir / "per_robot_success_rate.png", dpi=150)
+    plt.close(fig)
+    print(f"Saved {plots_dir / 'per_robot_success_rate.png'}")
+
+
+def generate_per_robot_completion_speed_plot(output_path: pathlib.Path) -> None:
+    """Box plot of steps taken per robot (lower = faster completion)."""
+    df = load_episodes(output_path)
+    if df.empty:
+        print("No episode data for per-robot completion speed plot")
+        return
+
+    robots = sorted(df["robot_idx"].unique())
+    data_by_robot = [df[df["robot_idx"] == r]["steps_taken"].values for r in robots]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    bp = ax.boxplot(data_by_robot, labels=[str(r) for r in robots], patch_artist=True)
+
+    for patch in bp["boxes"]:
+        patch.set_facecolor("lightblue")
+        patch.set_alpha(0.7)
+
+    ax.set_xlabel("Robot Index", fontsize=12)
+    ax.set_ylabel("Steps Taken", fontsize=12)
+    ax.set_title("Per-Robot Task Completion Speed", fontsize=14, fontweight="bold")
+    ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    plots_dir = output_path / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plots_dir / "per_robot_completion_speed.png", dpi=150)
+    plt.close(fig)
+    print(f"Saved {plots_dir / 'per_robot_completion_speed.png'}")
+
+
 def generate_all_plots(output_path: pathlib.Path) -> None:
     """Generate all plots."""
     print("Generating plots...")
@@ -505,6 +590,8 @@ def generate_all_plots(output_path: pathlib.Path) -> None:
     generate_execution_horizon_plot(output_path)
     generate_success_rate_plot(output_path)
     generate_steps_plot(output_path)
+    generate_per_robot_success_rate_plot(output_path)
+    generate_per_robot_completion_speed_plot(output_path)
     print("Done!")
 
 

@@ -1,3 +1,4 @@
+import enum
 import logging
 
 import numpy as np
@@ -12,11 +13,22 @@ MINIMUM_EXECUTION_HORIZON = 5
 logger = logging.getLogger(__name__)
 
 
+class SchedulingAlgorithm(str, enum.Enum):
+    """Scheduling algorithm for batching requests."""
+
+    EARLIEST_DEADLINE_FIRST = "edf"
+    ROUND_ROBIN = "round_robin"
+
+
 class RequestScheduler:
-    def __init__(self):
+    def __init__(self, algorithm: SchedulingAlgorithm = SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST):
+        self._algorithm = algorithm
         self._deadlines: dict[str, float] = {}
         self._last_response: dict[str, InferResponse] = {}
-        # TODO: handle execution horizon for RTC requests
+
+        # Round-robin state
+        self._rr_index: int = 0
+        self._rr_robot_order: list[str] = []
 
     def _can_infer(self, request: ArrivedRequest) -> bool:
         robot_id = request.infer_request.robot_id
@@ -28,10 +40,51 @@ class RequestScheduler:
 
         return not stale and not inside_execution_minimum
 
+    def _register_robot(self, robot_id: str) -> None:
+        """Register a robot in the round-robin order if not already present."""
+        if robot_id not in self._rr_robot_order:
+            self._rr_robot_order.append(robot_id)
+
     def get_next_batch(self, snapshot: dict[str, ArrivedRequest], max_batch_size: int) -> list[ArrivedRequest]:
-        # earliest deadline first + max batch size
+        # Register any new robots for round-robin tracking
+        for robot_id in snapshot:
+            self._register_robot(robot_id)
+
         candidates: list[ArrivedRequest] = [request for request in snapshot.values() if self._can_infer(request)]
+
+        if not candidates:
+            return []
+
+        if self._algorithm == SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST:
+            return self._edf_batch(candidates, max_batch_size)
+        return self._round_robin_batch(candidates, max_batch_size)
+
+    def _edf_batch(self, candidates: list[ArrivedRequest], max_batch_size: int) -> list[ArrivedRequest]:
+        """Earliest Deadline First: sort by deadline, take up to max_batch_size."""
         return sorted(candidates, key=lambda x: x.infer_request.deadline)[:max_batch_size]
+
+    def _round_robin_batch(self, candidates: list[ArrivedRequest], max_batch_size: int) -> list[ArrivedRequest]:
+        """Round Robin: cycle through robots starting from current pointer, fill to max_batch_size."""
+        candidate_by_robot = {req.infer_request.robot_id: req for req in candidates}
+        n_robots = len(self._rr_robot_order)
+        if n_robots == 0:
+            return []
+
+        batch: list[ArrivedRequest] = []
+        checked = 0
+        idx = self._rr_index % n_robots
+
+        while len(batch) < max_batch_size and checked < n_robots:
+            robot_id = self._rr_robot_order[idx]
+            if robot_id in candidate_by_robot:
+                batch.append(candidate_by_robot[robot_id])
+            idx = (idx + 1) % n_robots
+            checked += 1
+
+        # Advance pointer past the last robot we picked
+        self._rr_index = idx
+
+        return batch
 
     def update_deadlines(self, batch: list[ArrivedRequest]) -> None:
         for request in batch:

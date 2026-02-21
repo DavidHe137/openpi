@@ -12,6 +12,7 @@ from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.policies.policy import EnvMode
 from openpi.serving import websocket_policy_server
+from openpi.serving.scheduling import SchedulingAlgorithm
 from openpi.shared import logging_config
 from openpi.training import config as _config
 
@@ -63,6 +64,9 @@ class Args:
 
     # Log directory to save the logs to.
     log_dir: str = "logs/server"
+
+    # Scheduling algorithm for batching requests.
+    scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST
 
 
 def create_policy(args: Args) -> _policy.Policy:
@@ -141,6 +145,7 @@ def main(args: Args) -> None:
         metadata=dataclasses.asdict(server_metadata),
         max_batch_size=args.max_batch_size,
         log_dir=args.log_dir,
+        scheduling_algorithm=args.scheduling_algorithm,
     )
     server.serve_forever()
 
