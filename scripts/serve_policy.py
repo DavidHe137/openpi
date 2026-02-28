@@ -126,7 +126,7 @@ def main(args: Args) -> None:
         num_steps=args.num_steps,
         max_batch_size=args.max_batch_size,
         env=args.env.value,
-        policy_metadata=train_config.policy_metadata or {},
+        scheduling_algorithm=args.scheduling_algorithm.value,
     )
 
     # TODO: this looks sus to me
@@ -135,7 +135,7 @@ def main(args: Args) -> None:
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
     server = PolicyServer(
-        config=server_metadata,
+        metadata=server_metadata,
         policy_factory=policy_factory,
     )
     server.serve_forever(host="0.0.0.0", port=args.port)

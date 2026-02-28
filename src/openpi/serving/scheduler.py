@@ -4,9 +4,9 @@ import random
 
 import numpy as np
 from openpi_client.messages import InferResponse
+from openpi_client.messages import ResetRequest
 import zmq
 
-from openpi.messages import ResetRequest
 from openpi.serving.schemas import ArrivedRequest
 
 DEFAULT_EXECUTION_HORIZON = 10

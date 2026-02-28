@@ -34,11 +34,12 @@ from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
 from openpi_client.schemas import ServerMetadata  # TODO: i don't think this should be used in both client and server
 import uvicorn
-import zmq
 
 from openpi.serving.engine import _run_gpu_worker
 from openpi.serving.scheduler import _run_scheduler
 from openpi.serving.schemas import ArrivedRequest
+from openpi.serving.utils import ZmqAsyncPullQueue
+from openpi.serving.utils import ZmqAsyncPushQueue
 
 # TODO: set up multi process logging with queue handler in logging_config.py
 logger = logging.getLogger(__name__)
@@ -54,8 +55,8 @@ class ConnectionState:
     """State for a single WebSocket connection."""
 
     websocket: WebSocket  # unique per connection
-    scheduler_sock: zmq.Socket  # shared for all connections
-    response_sock: zmq.Socket  # unique per connection
+    scheduler_sock: ZmqAsyncPushQueue[ResetRequest | ArrivedRequest]
+    response_sock: ZmqAsyncPullQueue[InferResponse]
 
 
 async def _recv_loop(conn: ConnectionState) -> None:
@@ -65,49 +66,63 @@ async def _recv_loop(conn: ConnectionState) -> None:
         message = msgpack_numpy.unpackb(raw)
 
         if "reset" in message:
-            await conn.scheduler_sock.send_pyobj(ResetRequest(robot_id=message["robot_id"]))
+            await conn.scheduler_sock.put(ResetRequest(robot_id=message["robot_id"]))
             continue
 
         arrived = ArrivedRequest.receive(InferRequest(**message))
-        await conn.scheduler_sock.send_pyobj(arrived)
+        await conn.scheduler_sock.put(arrived)
 
 
 async def _send_loop(conn: ConnectionState) -> None:
     """Dequeues InferResponses and sends them to the WebSocket client."""
     while True:
         response: InferResponse = await conn.response_sock.get()
-        await conn.websocket.send_bytes(msgpack_numpy.packb(asdict(response)))
+        raw = msgpack_numpy.packb(asdict(response))
+        assert raw is not None
+        await conn.websocket.send_bytes(raw)
 
 
-def _start_backend(self) -> None:
+_uid = uuid.uuid4().hex[:8]
+socket_addresses = {
+    "sched_in_ep": f"ipc:///tmp/openpi_sched_in_{_uid}",
+    "sched_out_ep": f"ipc:///tmp/openpi_sched_out_{_uid}",
+    "gpu_in_ep": f"ipc:///tmp/openpi_gpu_in_{_uid}",
+    "gpu_out_ep": f"ipc:///tmp/openpi_gpu_out_{_uid}",
+}
+
+
+def _start_backend(metadata: ServerMetadata, policy_factory: Callable) -> tuple[mp.Process, mp.Process]:
     """Start the scheduler and GPU processes."""
-    self._scheduler_proc = mp.Process(
+    # Unique IPC endpoints for this server instance
+
+    scheduler_proc = mp.Process(
         target=_run_scheduler,
         args=(
-            self._sched_in_ep,
-            self._sched_out_ep,
-            self._gpu_in_ep,
-            self._gpu_out_ep,
-            self._metadata.max_batch_size,
-            self._metadata.scheduling_algorithm,
+            socket_addresses["sched_in_ep"],
+            socket_addresses["sched_out_ep"],
+            socket_addresses["gpu_in_ep"],
+            socket_addresses["gpu_out_ep"],
+            metadata.max_batch_size,
+            metadata.scheduling_algorithm,
         ),
         daemon=True,
     )
-    self._scheduler_proc.start()
+    scheduler_proc.start()
     logger.info("Starting scheduler subprocess…")
 
-    self._gpu_proc = mp.Process(
+    gpu_proc = mp.Process(
         target=_run_gpu_worker,
-        args=(self._policy_factory, self._metadata.max_batch_size, self._gpu_in_ep, self._gpu_out_ep),
+        args=(policy_factory, metadata.max_batch_size, socket_addresses["gpu_in_ep"], socket_addresses["gpu_out_ep"]),
         daemon=True,
     )
-    self._gpu_proc.start()
+    gpu_proc.start()
     logger.info("Starting GPU subprocess…")
+    return scheduler_proc, gpu_proc
 
 
 @dataclass
 class ServerState:
-    scheduler_sock: zmq.Socket
+    scheduler_sock: ZmqAsyncPushQueue[ResetRequest | ArrivedRequest]
     gpu_proc: mp.Process
     scheduler_proc: mp.Process
 
@@ -118,7 +133,7 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable) -> FastAPI:
         # start backend processes
         scheduler_proc, gpu_proc = _start_backend(metadata, policy_factory)
         app.state.server = ServerState(
-            scheduler_sock=zmq.Socket(zmq.PAIR),
+            scheduler_sock=ZmqAsyncPushQueue(socket_addresses["sched_in_ep"], create=True, encoder=lambda x: asdict(x)),
             gpu_proc=gpu_proc,
             scheduler_proc=scheduler_proc,
         )
@@ -132,10 +147,13 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable) -> FastAPI:
     @app.websocket("/ws")
     async def ws_handler(websocket: WebSocket):
         await websocket.accept()
+        # TODO: need to understand dealer-router, maybe we don't need to create another ZmqAsyncPullQueue here
         conn = ConnectionState(
             websocket=websocket,
             scheduler_sock=websocket.app.state.server.scheduler_sock,
-            response_sock=websocket.app.state.server.response_sock,
+            response_sock=ZmqAsyncPullQueue(
+                socket_addresses["sched_out_ep"], create=False, decoder=lambda x: InferResponse(**x)
+            ),
         )
         await asyncio.gather(_recv_loop(conn), _send_loop(conn))
 
@@ -165,17 +183,6 @@ class PolicyServer:
     def __init__(self, metadata: ServerMetadata, policy_factory: Callable):
         self._metadata = metadata
         self._policy_factory = policy_factory
-
-        # TODO: factor away
-        # Unique IPC endpoints for this server instance
-        _uid = uuid.uuid4().hex[:8]
-        self._sched_in_ep = f"ipc:///tmp/openpi_sched_in_{_uid}"
-        self._sched_out_ep = f"ipc:///tmp/openpi_sched_out_{_uid}"
-        self._gpu_in_ep = f"ipc:///tmp/openpi_gpu_in_{_uid}"
-        self._gpu_out_ep = f"ipc:///tmp/openpi_gpu_out_{_uid}"
-
-        self._gpu_proc: mp.Process | None = None
-        self._scheduler_proc: mp.Process | None = None
 
     def serve_forever(self, host="0.0.0.0", port=8000):
         app = create_app(self._metadata, self._policy_factory)
