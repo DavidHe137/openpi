@@ -11,8 +11,8 @@ import tyro
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.policies.policy import EnvMode
-from openpi.serving import websocket_policy_server
-from openpi.serving.scheduling import SchedulingAlgorithm
+from openpi.serving.scheduler import SchedulingAlgorithm
+from openpi.serving.server import PolicyServer
 from openpi.shared import logging_config
 from openpi.training import config as _config
 
@@ -50,8 +50,6 @@ class Args:
 
     # Port to serve the policy on.
     port: int = 8080
-    # Record the policy's behavior for debugging.
-    record: bool = False
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -105,9 +103,6 @@ def main(args: Args) -> None:
         # Ensure policy metadata includes env for make_example()
         if "env" not in policy._metadata:  # noqa: SLF001
             policy._metadata["env"] = args.env.value  # noqa: SLF001
-        # Record the policy's behavior.
-        if args.record:
-            policy = _policy.PolicyRecorder(policy, "policy_records")
         return policy
 
     # Build metadata without loading the model to avoid CUDA initialization
@@ -134,20 +129,16 @@ def main(args: Args) -> None:
         policy_metadata=train_config.policy_metadata or {},
     )
 
+    # TODO: this looks sus to me
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
-    server = websocket_policy_server.WebsocketPolicyServer(
+    server = PolicyServer(
+        config=server_metadata,
         policy_factory=policy_factory,
-        host="0.0.0.0",
-        port=args.port,
-        metadata=dataclasses.asdict(server_metadata),
-        max_batch_size=args.max_batch_size,
-        log_dir=args.log_dir,
-        scheduling_algorithm=args.scheduling_algorithm,
     )
-    server.serve_forever()
+    server.serve_forever(host="0.0.0.0", port=args.port)
 
 
 if __name__ == "__main__":

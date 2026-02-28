@@ -1,68 +1,61 @@
-"""Serve the OpenPI policy on Modal with a direct WebSocket tunnel.
+"""Serve the FastAPI policy server on Modal.
 
-Usage:
-  uv run modal run scripts/modal_serve.py::serve
-
-It prints a tunnel URL like:
-  Tunnel: wss://...modal.run
-Then connect with:
+Connect with:
   uv run scripts/infer.py --host https://....modal.run --num-iters 50 --verbose
-
-Keep this terminal open — Ctrl-C stops the server.
 """
 
-import dataclasses
 import pathlib
 import subprocess
-import tempfile
 
 import modal
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-APP_NAME = "openpi-serve"
+app = modal.App("openpi-serve")
+
 GPU = "h100"
-POLICY_PORT = 8080
-NUM_STEPS = 10
+MAX_NUM_ROBOTS = 10
+REGION = "us-east-1"
+ENV_MODE = "LIBERO"
 MAX_BATCH_SIZE = 4
-CONFIG_NAME = "pi05_libero"
-CHECKPOINT_URL = "gs://openpi-assets/checkpoints/pi05_libero"
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 
-app = modal.App(APP_NAME)
 
 checkpoint_volume = modal.Volume.from_name("openpi-checkpoints", create_if_missing=True)
 CHECKPOINT_VOLUME_PATH = "/checkpoints"
 
-# ---------------------------------------------------------------------------
-# Requirements from uv lockfile
-# ---------------------------------------------------------------------------
-_LOCKFILE_EXCLUDE = [
-    "torch", "jax", "jaxlib",
-    "jax-cuda12-plugin", "jax-cuda12-pjrt",
-    "openpi", "openpi-client",
+REQUIREMENTS_FILE = REPO_ROOT / "requirements-modal.txt"
+
+_MODAL_EXCLUDE = [
+    "torch",
+    "jax",
+    "jaxlib",
+    "jax-cuda12-plugin",
+    "jax-cuda12-pjrt",
+    "openpi",
+    "openpi-client",
     "av",
 ]
 
 
-def _export_requirements() -> pathlib.Path:
-    import shutil
-    if not shutil.which("uv"):
-        return pathlib.Path("/dev/null")
+# NOTE: this is necessary because Modal does not support uv workspaces, which are in the pyproject.toml
+def generate_requirements() -> None:
+    """Export a flat requirements.txt for Modal (excludes packages installed separately)."""
     cmd = [
-        "uv", "export",
-        "--no-hashes", "--no-dev", "--no-emit-workspace",
-        *[arg for pkg in _LOCKFILE_EXCLUDE for arg in ("--no-emit-package", pkg)],
+        "uv",
+        "export",
+        "--no-hashes",
+        "--no-dev",
+        "--no-emit-workspace",
+        *[arg for pkg in _MODAL_EXCLUDE for arg in ("--no-emit-package", pkg)],
+        "-o",
+        str(REQUIREMENTS_FILE),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True, cwd=REPO_ROOT)
-    req_file = pathlib.Path(tempfile.mktemp(suffix="-openpi-modal.txt"))
-    req_file.write_text(result.stdout)
-    return req_file
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+    print(f"Written {REQUIREMENTS_FILE}")
 
 
-_req_file = _export_requirements()
+if modal.is_local():
+    generate_requirements()
 
 # ---------------------------------------------------------------------------
 # Image
@@ -75,70 +68,50 @@ _base = (
 )
 
 image = (
-    _base
-    .pip_install("av==12.3.0", "pytest==8.3.4")
-    .pip_install_from_requirements(str(_req_file))
+    _base.pip_install("av==12.3.0", "pytest==8.3.4")
+    .pip_install_from_requirements(str(REQUIREMENTS_FILE))
     .add_local_python_source("openpi", "openpi_client")
+    .env(
+        {
+            "OPENPI_DATA_HOME": CHECKPOINT_VOLUME_PATH,
+            "JAX_COMPILATION_CACHE_DIR": f"{CHECKPOINT_VOLUME_PATH}/.cache/jax_compilation",
+            "TORCHINDUCTOR_CACHE_DIR": f"{CHECKPOINT_VOLUME_PATH}/.cache/torch_inductor",
+            "XLA_FLAGS": "--xla_gpu_triton_gemm_any=True --xla_gpu_enable_latency_hiding_scheduler=true",
+            "GCLOUD_ANONYMOUS_ACCESS": "True",
+            # "MUJOCO_GL": "egl", # FIXME: shouldn't be needed
+            "JAX_PLATFORMS": "cuda",
+            "TF_CPP_MIN_LOG_LEVEL": "2",  # to suppress warnings
+            "ABSL_FLAGS_VERBOSITY": "0",
+        }
+    )
 )
 
-# ---------------------------------------------------------------------------
-# Server — run with: modal run scripts/modal_serve.py::serve
-# ---------------------------------------------------------------------------
-@app.function(
+
+@app.cls(
     gpu=GPU,
     image=image,
     volumes={CHECKPOINT_VOLUME_PATH: checkpoint_volume},
-    timeout=3600,
-    memory=32768,
+    enable_memory_snapshot=True,
+    experimental_options={"enable_gpu_snapshot": True},
+    region=[REGION],
 )
-def serve() -> None:
-    import logging
-    import os
+@modal.concurrent(max_inputs=MAX_NUM_ROBOTS)
+class ModalPolicyServer:
+    @modal.enter(snap=True)
+    def startup(self) -> None:
+        cmd = [
+            "uv",
+            "run",
+            "scripts/serve_policy.py",
+            "--env",
+            ENV_MODE,
+            "--max-batch-size",
+            MAX_BATCH_SIZE,
+        ]
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    os.environ["OPENPI_DATA_HOME"] = CHECKPOINT_VOLUME_PATH
-    os.environ["XLA_FLAGS"] = "--xla_gpu_triton_gemm_any=True --xla_gpu_enable_latency_hiding_scheduler=true"
-    os.environ["GCLOUD_ANONYMOUS_ACCESS"] = "True"
-    os.environ["MUJOCO_GL"] = "egl"
+        self.process = subprocess.Popen(cmd)
 
-    from openpi.policies import policy_config as _policy_config
-    from openpi.serving import websocket_policy_server
-    from openpi.shared import download
-    from openpi.training import config as _config
-    from openpi_client.schemas import ServerMetadata
-
-    config = _config.get_config(CONFIG_NAME)
-    checkpoint_dir = download.maybe_download(CHECKPOINT_URL)
-    checkpoint_volume.commit()
-
-    def policy_factory():
-        policy = _policy_config.create_trained_policy(
-            config, checkpoint_dir, sample_kwargs={"num_steps": NUM_STEPS}, batch_size=MAX_BATCH_SIZE
-        )
-        if "env" not in policy._metadata:  # noqa: SLF001
-            policy._metadata["env"] = "libero"  # noqa: SLF001
-        return policy
-
-    server_metadata = ServerMetadata(
-        config_name=config.name,
-        checkpoint_dir=str(checkpoint_dir),
-        action_horizon=config.model.action_horizon,
-        action_dim=config.model.action_dim,
-        num_steps=NUM_STEPS,
-        max_batch_size=MAX_BATCH_SIZE,
-        env="libero",
-        policy_metadata=config.policy_metadata or {},
-    )
-
-    server = websocket_policy_server.WebsocketPolicyServer(
-        policy_factory=policy_factory,
-        host="0.0.0.0",
-        port=POLICY_PORT,
-        metadata=dataclasses.asdict(server_metadata),
-        max_batch_size=MAX_BATCH_SIZE,
-    )
-
-    with modal.forward(POLICY_PORT) as tunnel:
-        logging.info("Tunnel: %s", tunnel.url)
-        print(f"\nTunnel: {tunnel.url}\n")
-        server.serve_forever()
+    @modal.exit()
+    def teardown(self) -> None:
+        """Clean up subprocesses on container exit."""
+        self.process.terminate()

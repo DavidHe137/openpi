@@ -46,6 +46,11 @@ class InferRequest:
 
 
 @dataclass(frozen=True)
+class ResetRequest:
+    robot_id: str
+
+
+@dataclass(frozen=True)
 class InferResponse:
     robot_id: str
     request_id: int  # for routing response to correct connection

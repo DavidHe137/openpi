@@ -54,3 +54,9 @@ class SentRequest:
     arrival_timestamp: float
     dequeue_timestamp: float
     send_timestamp: float
+
+
+@dataclass(frozen=True)
+class NewConnection:
+    robot_id: str
+    response_sock_addr: str

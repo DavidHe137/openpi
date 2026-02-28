@@ -227,9 +227,7 @@ class ServerMetadata(JSONDataclass):
     # Server configuration
     max_batch_size: int
     env: str  # environment mode (ALOHA, LIBERO, etc.)
-
-    # Optional policy-specific metadata
-    policy_metadata: dict = field(default_factory=dict)
+    scheduling_algorithm: str  # TODO: maybe reference the enum from scheduler.py
 
 
 @dataclass(frozen=True)
