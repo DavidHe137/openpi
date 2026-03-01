@@ -1,18 +1,20 @@
 """
 3 processes:
     WS main process     - FastAPI ASGI app
-    Scheduler process   - collects requests from WS main process and dispatches batches to GPU
-    GPU process         - loads weights, runs batches on GPU
-
+    Scheduler process   - collects requests from WS main; runs ILP; dispatches batches to GPU
+    GPU process         - loads weights; runs batches; sends responses directly to WS main
 
 ZMQ topology (all ipc://, unique per server instance):
-    WS main  ──[PUSH: ArrivedRequest / ResetMessage]──► Scheduler
-    WS main  ◄──[PULL: InferResponse / BatchMetrics]─── Scheduler
-    Scheduler ──[PUSH: List[ArrivedRequest]]───────────► GPU
-    Scheduler ◄──[PULL: (batch, actions, t0, t1)]──────── GPU
+    WS main  ──[PUSH: SlotRequest / ResetRequest]──► Scheduler [binds sched_in_ep]
+    WS main  ──write_obs()─────────────────────────► mp.RawArray shared memory
+    GPU      ──[PUSH: list[InferResponse]]──────────► WS main   [binds gpu_out_ep]
+    GPU      ──[PUSH: list[CompletionNotification]]► Scheduler [binds result_ep]
+    Scheduler ──[mp.Queue: list[SlotRequest]]───────► GPU
+    GPU      ──read_obs()──────────────────────────► mp.RawArray shared memory
 
-    # TODO: document server architecture in a non-vibecoded way
-    # TODO: note handshakes, scheduler tells main server its ready only after GPU says its ready
+    GPU responses bypass the scheduler entirely so ILP solving cannot delay client delivery.
+    A single _router_task in WS main reads from gpu_out_ep and dispatches to per-robot queues.
+    Large numpy arrays (observations) cross zero process boundaries via ZMQ.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from dataclasses import asdict
 from dataclasses import dataclass
 import logging
 import multiprocessing as mp
+import time
 import uuid
 
 from fastapi import FastAPI
@@ -32,130 +35,180 @@ from openpi_client import msgpack_numpy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
-from openpi_client.schemas import ServerMetadata  # TODO: i don't think this should be used in both client and server
+from openpi_client.schemas import ServerMetadata
 import uvicorn
+import zmq.asyncio
 
 from openpi.serving.engine import _run_gpu_worker
 from openpi.serving.scheduler import _run_scheduler
-from openpi.serving.schemas import ArrivedRequest
-from openpi.serving.utils import ZmqAsyncPullQueue
-from openpi.serving.utils import ZmqAsyncPushQueue
+from openpi.serving.schemas import SlotRequest
+from openpi.serving.schemas import _request_id_counter
+from openpi.serving.slots import RobotSlots
 
-# TODO: set up multi process logging with queue handler in logging_config.py
 logger = logging.getLogger(__name__)
-
-# TODO: factor away global state, use a more pythonic way
-_GLOBAL_STATE = None
-
-app = FastAPI()
-
-
-@dataclass
-class ConnectionState:
-    """State for a single WebSocket connection."""
-
-    websocket: WebSocket  # unique per connection
-    scheduler_sock: ZmqAsyncPushQueue[ResetRequest | ArrivedRequest]
-    response_sock: ZmqAsyncPullQueue[InferResponse]
-
-
-async def _recv_loop(conn: ConnectionState) -> None:
-    """Receives bytes from WebSocket, forwards ArrivedRequest / ResetMessage to scheduler."""
-    while True:
-        raw = await conn.websocket.receive_bytes()
-        message = msgpack_numpy.unpackb(raw)
-
-        if "reset" in message:
-            await conn.scheduler_sock.put(ResetRequest(robot_id=message["robot_id"]))
-            continue
-
-        arrived = ArrivedRequest.receive(InferRequest(**message))
-        await conn.scheduler_sock.put(arrived)
-
-
-async def _send_loop(conn: ConnectionState) -> None:
-    """Dequeues InferResponses and sends them to the WebSocket client."""
-    while True:
-        response: InferResponse = await conn.response_sock.get()
-        raw = msgpack_numpy.packb(asdict(response))
-        assert raw is not None
-        await conn.websocket.send_bytes(raw)
-
 
 _uid = uuid.uuid4().hex[:8]
 socket_addresses = {
     "sched_in_ep": f"ipc:///tmp/openpi_sched_in_{_uid}",
-    "sched_out_ep": f"ipc:///tmp/openpi_sched_out_{_uid}",
-    "gpu_in_ep": f"ipc:///tmp/openpi_gpu_in_{_uid}",
     "gpu_out_ep": f"ipc:///tmp/openpi_gpu_out_{_uid}",
+    "result_ep": f"ipc:///tmp/openpi_result_{_uid}",
 }
 
 
-def _start_backend(metadata: ServerMetadata, policy_factory: Callable) -> tuple[mp.Process, mp.Process]:
-    """Start the scheduler and GPU processes."""
-    # Unique IPC endpoints for this server instance
+@dataclass
+class ServerState:
+    scheduler_sock: zmq.asyncio.Socket  # PUSH to scheduler
+    response_queues: dict[str, asyncio.Queue]
+    slots: RobotSlots  # WS manages slot allocation
+    gpu_proc: mp.Process
+    scheduler_proc: mp.Process
+
+
+async def _router_task(response_sock: zmq.asyncio.Socket, response_queues: dict[str, asyncio.Queue]) -> None:
+    """Reads batches of InferResponses directly from GPU and dispatches to per-robot queues."""
+    while True:
+        responses: list[InferResponse] = await response_sock.recv_pyobj()
+        for response in responses:
+            queue = response_queues.get(response.robot_id)
+            if queue is not None:
+                await queue.put(response)
+            else:
+                logger.debug("No active connection for robot %s, dropping response", response.robot_id)
+
+
+def _start_backend(
+    metadata: ServerMetadata, policy_factory: Callable
+) -> tuple[mp.Process, mp.Process, RobotSlots, mp.Event, mp.Event]:
+    slots = RobotSlots(max_robots=metadata.max_batch_size * 4)
+    batch_queue: mp.Queue = mp.Queue(maxsize=2)
+    sched_ready = mp.Event()
+    gpu_ready = mp.Event()
 
     scheduler_proc = mp.Process(
         target=_run_scheduler,
         args=(
             socket_addresses["sched_in_ep"],
-            socket_addresses["sched_out_ep"],
-            socket_addresses["gpu_in_ep"],
-            socket_addresses["gpu_out_ep"],
+            socket_addresses["result_ep"],
+            batch_queue,
             metadata.max_batch_size,
             metadata.scheduling_algorithm,
+            sched_ready,
         ),
         daemon=True,
     )
-    scheduler_proc.start()
-    logger.info("Starting scheduler subprocess…")
 
     gpu_proc = mp.Process(
         target=_run_gpu_worker,
-        args=(policy_factory, metadata.max_batch_size, socket_addresses["gpu_in_ep"], socket_addresses["gpu_out_ep"]),
+        args=(
+            policy_factory,
+            metadata.max_batch_size,
+            slots,
+            batch_queue,
+            socket_addresses["gpu_out_ep"],
+            socket_addresses["result_ep"],
+            gpu_ready,
+        ),
         daemon=True,
     )
-    gpu_proc.start()
+
+    logger.info("Starting scheduler subprocess…")
+    scheduler_proc.start()
     logger.info("Starting GPU subprocess…")
-    return scheduler_proc, gpu_proc
+    gpu_proc.start()
 
-
-@dataclass
-class ServerState:
-    scheduler_sock: ZmqAsyncPushQueue[ResetRequest | ArrivedRequest]
-    gpu_proc: mp.Process
-    scheduler_proc: mp.Process
+    return scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready
 
 
 def create_app(metadata: ServerMetadata, policy_factory: Callable) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # start backend processes
-        scheduler_proc, gpu_proc = _start_backend(metadata, policy_factory)
+        scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready = _start_backend(metadata, policy_factory)
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, sched_ready.wait)
+        logger.info("Scheduler ready")
+        await loop.run_in_executor(None, gpu_ready.wait)
+        logger.info("GPU worker ready")
+
+        zmq_ctx = zmq.asyncio.Context()
+
+        scheduler_sock = zmq_ctx.socket(zmq.PUSH)
+        scheduler_sock.connect(socket_addresses["sched_in_ep"])
+
+        # WS main binds gpu_out_ep so GPU can connect to us
+        response_sock = zmq_ctx.socket(zmq.PULL)
+        response_sock.bind(socket_addresses["gpu_out_ep"])
+
+        response_queues: dict[str, asyncio.Queue] = {}
+
         app.state.server = ServerState(
-            scheduler_sock=ZmqAsyncPushQueue(socket_addresses["sched_in_ep"], create=True, encoder=lambda x: asdict(x)),
+            scheduler_sock=scheduler_sock,
+            response_queues=response_queues,
+            slots=slots,
             gpu_proc=gpu_proc,
             scheduler_proc=scheduler_proc,
         )
+
+        router = asyncio.create_task(_router_task(response_sock, response_queues))
+
         yield
-        # cleanup
+
+        router.cancel()
         gpu_proc.terminate()
         scheduler_proc.terminate()
+        scheduler_sock.close()
+        response_sock.close()
+        zmq_ctx.term()
 
     app = FastAPI(lifespan=lifespan)
 
     @app.websocket("/ws")
-    async def ws_handler(websocket: WebSocket):
+    async def ws_handler(websocket: WebSocket, robot_id: str):
         await websocket.accept()
-        # TODO: need to understand dealer-router, maybe we don't need to create another ZmqAsyncPullQueue here
-        conn = ConnectionState(
-            websocket=websocket,
-            scheduler_sock=websocket.app.state.server.scheduler_sock,
-            response_sock=ZmqAsyncPullQueue(
-                socket_addresses["sched_out_ep"], create=False, decoder=lambda x: InferResponse(**x)
-            ),
-        )
-        await asyncio.gather(_recv_loop(conn), _send_loop(conn))
+        state: ServerState = websocket.app.state.server
+        response_queue: asyncio.Queue = asyncio.Queue()
+
+        slot_index = state.slots.register(robot_id)
+        state.response_queues[robot_id] = response_queue
+
+        async def recv():
+            while True:
+                raw = await websocket.receive_bytes()
+                msg = msgpack_numpy.unpackb(raw)
+
+                if "reset" in msg:
+                    await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
+                    continue
+
+                req = InferRequest(**msg)
+
+                # Write obs directly to shared memory — no ZMQ copy of image arrays
+                state.slots.write_obs(slot_index, req.observation)
+
+                slot_req = SlotRequest(
+                    slot_index=slot_index,
+                    robot_id=robot_id,
+                    request_id=next(_request_id_counter),
+                    arrival_timestamp=time.time(),
+                    start_step=req.start_step,
+                    request_timestamp=req.request_timestamp,
+                    deadline=req.deadline,
+                    infer_type=req.infer_type,
+                    params=req.params,
+                    noise=req.noise,
+                )
+                await state.scheduler_sock.send_pyobj(slot_req)
+
+        async def send():
+            while True:
+                response: InferResponse = await response_queue.get()
+                await websocket.send_bytes(msgpack_numpy.packb(asdict(response)))
+
+        try:
+            await asyncio.gather(recv(), send())
+        finally:
+            state.slots.free(robot_id)
+            state.response_queues.pop(robot_id, None)
 
     @app.get("/metadata")
     async def server_metadata() -> str:
