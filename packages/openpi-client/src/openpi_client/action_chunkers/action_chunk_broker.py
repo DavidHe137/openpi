@@ -4,7 +4,7 @@ from typing import Optional
 from openpi_client.schemas import ActionChunk
 from abc import ABC
 from collections import deque
-from openpi_client import websocket_client_policy as _websocket_client_policy
+from openpi_client.client import BidirectionalWebsocket
 from openpi_client.schemas import Action, Observation
 import threading
 
@@ -23,7 +23,7 @@ class ActionChunkBroker(ABC):
 
     def __init__(
         self,
-        ws_client: _websocket_client_policy.BidirectionalWebsocket,
+        ws_client: BidirectionalWebsocket,
         control_hz: int,
         realtime: bool = True,
     ) -> None:

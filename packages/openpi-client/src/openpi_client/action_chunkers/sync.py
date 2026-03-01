@@ -1,6 +1,6 @@
 from openpi_client.schemas import Observation
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
-from openpi_client import websocket_client_policy as _websocket_client_policy
+from openpi_client.client import BidirectionalWebsocket
 from typing_extensions import override
 
 
@@ -12,7 +12,7 @@ class SyncBroker(ActionChunkBroker):
 
     def __init__(
         self,
-        ws_client: _websocket_client_policy.BidirectionalWebsocket,
+        ws_client: BidirectionalWebsocket,
         control_hz: int,
         realtime: bool = True,
     ):

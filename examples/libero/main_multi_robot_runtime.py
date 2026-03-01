@@ -9,7 +9,7 @@ import time
 import numpy as np
 from jaxtyping import Float
 from libero.libero import benchmark
-from openpi_client import websocket_client_policy as _websocket_client_policy
+from openpi_client.client import BidirectionalWebsocket
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import ActionChunkBrokerType, BrokerConfig
@@ -62,7 +62,7 @@ class Args:
     #################################################################################################################
     # Multi-robot / threading parameters
     #################################################################################################################
-    num_robots: int = 5 # Number of always-running sims (robots)
+    num_robots: int = 5  # Number of always-running sims (robots)
     control_hz: int = 20  # Target control frequency for each sim #NOTE: int because this is the fps of the video
 
     #################################################################################################################
@@ -102,7 +102,7 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     # Store queue globally for access in create_runtime
     _progress_queue = progress_queue
 
-    ws_client = _websocket_client_policy.BidirectionalWebsocket(
+    ws_client = BidirectionalWebsocket(
         robot_id=f"robot_{robot_idx}",
         host=args.host,
         port=args.port,
@@ -293,12 +293,13 @@ def main(args: Args) -> None:
     jobs = create_jobs(args)
 
     # Connect to get server metadata
-    temp_client = _websocket_client_policy.WebsocketClientPolicy(
+    temp_client = BidirectionalWebsocket(
         robot_id="robot",
         host=args.host,
         port=args.port,
     )
     server_metadata = temp_client.server_metadata
+    temp_client.close()
 
     # Create runtime metadata
     runtime_metadata = RuntimeMetadata(

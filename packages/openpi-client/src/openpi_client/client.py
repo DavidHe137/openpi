@@ -1,6 +1,9 @@
+import json
 import logging
 import time
-from typing import Optional, Tuple
+import urllib.error
+import urllib.request
+from typing import Optional
 
 import numpy as np
 from dataclasses import asdict
@@ -25,37 +28,41 @@ class BidirectionalWebsocket:
         api_key: Optional[str] = None,
     ) -> None:
         self._robot_id = robot_id
-        self._uri = f"ws://{host}"
-        if port is not None:
-            self._uri += f":{port}"
-        self._uri += f"/ws?robot_id={robot_id}"
-        self._packer = msgpack_numpy.Packer()
+        base = f"{host}" if port is None else f"{host}:{port}"
+        self._ws_uri = f"ws://{base}/ws?robot_id={robot_id}"
+        self._http_base = f"http://{base}"
         self._api_key = api_key
-        self._ws, self._server_metadata = self._wait_for_server()
+        self._server_metadata = self._wait_for_server()
+        self._ws = self._connect_ws()
 
     @property
     def server_metadata(self) -> ServerMetadata:
         return self._server_metadata
 
-    def _wait_for_server(
-        self,
-    ) -> Tuple[websockets.sync.client.ClientConnection, ServerMetadata]:
-        logging.info(f"Waiting for server at {self._uri}...")
+    def _wait_for_server(self) -> ServerMetadata:
+        logging.info(f"Waiting for server at {self._http_base}...")
         while True:
             try:
-                headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
-                conn = websockets.sync.client.connect(
-                    self._uri,
-                    compression=None,
-                    max_size=None,
-                    additional_headers=headers,
-                )
-                metadata_dict = msgpack_numpy.unpackb(conn.recv())
-                metadata = ServerMetadata(**metadata_dict)
-                return conn, metadata
-            except ConnectionRefusedError:
+                req = urllib.request.Request(f"{self._http_base}/metadata")
+                if self._api_key:
+                    req.add_header("Authorization", f"Api-Key {self._api_key}")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    return ServerMetadata(**json.loads(resp.read()))
+            except (urllib.error.URLError, OSError):
                 logging.info("Still waiting for server...")
                 time.sleep(5)
+
+    def _connect_ws(self) -> websockets.sync.client.ClientConnection:
+        headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
+        return websockets.sync.client.connect(
+            self._ws_uri,
+            compression=None,
+            max_size=None,
+            additional_headers=headers,
+        )
+
+    def close(self) -> None:
+        self._ws.close()
 
     def send(
         self,
