@@ -77,7 +77,7 @@ async def _router_task(response_sock: zmq.asyncio.Socket, response_queues: dict[
 
 
 def _start_backend(
-    metadata: ServerMetadata, policy_factory: Callable
+    metadata: ServerMetadata, policy_factory: Callable, log_queue: mp.Queue | None
 ) -> tuple[mp.Process, mp.Process, RobotSlots, mp.Event, mp.Event]:
     slots = RobotSlots(max_robots=metadata.max_batch_size * 4)
     batch_queue: mp.Queue = mp.Queue(maxsize=2)
@@ -93,6 +93,7 @@ def _start_backend(
             metadata.max_batch_size,
             metadata.scheduling_algorithm,
             sched_ready,
+            log_queue,
         ),
         daemon=True,
     )
@@ -107,6 +108,7 @@ def _start_backend(
             socket_addresses["gpu_out_ep"],
             socket_addresses["result_ep"],
             gpu_ready,
+            log_queue,
         ),
         daemon=True,
     )
@@ -119,10 +121,10 @@ def _start_backend(
     return scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready
 
 
-def create_app(metadata: ServerMetadata, policy_factory: Callable) -> FastAPI:
+def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp.Queue | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready = _start_backend(metadata, policy_factory)
+        scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready = _start_backend(metadata, policy_factory, log_queue)
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, sched_ready.wait)
@@ -233,10 +235,11 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable) -> FastAPI:
 
 
 class PolicyServer:
-    def __init__(self, metadata: ServerMetadata, policy_factory: Callable):
+    def __init__(self, metadata: ServerMetadata, policy_factory: Callable, log_queue: mp.Queue | None = None):
         self._metadata = metadata
         self._policy_factory = policy_factory
+        self._log_queue = log_queue
 
     def serve_forever(self, host="0.0.0.0", port=8000):
-        app = create_app(self._metadata, self._policy_factory)
+        app = create_app(self._metadata, self._policy_factory, self._log_queue)
         uvicorn.run(app, host=host, port=port)

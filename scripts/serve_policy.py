@@ -4,6 +4,7 @@ import logging
 import pathlib
 import socket
 import sys
+from typing import Literal
 
 from openpi_client.schemas import ServerMetadata
 import tyro
@@ -11,7 +12,6 @@ import tyro
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.policies.policy import EnvMode
-from openpi.serving.scheduler import SchedulingAlgorithm
 from openpi.serving.server import PolicyServer
 from openpi.shared import logging_config
 from openpi.training import config as _config
@@ -63,8 +63,8 @@ class Args:
     # Log directory to save the logs to.
     log_dir: str = "logs/server"
 
-    # Scheduling algorithm for batching requests.
-    scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.GREEDY
+    # Scheduling algorithm for batching requests. # TODO: maybe should use enum?
+    scheduling_algorithm: Literal["greedy", "round_robin", "random"] = "greedy"
 
 
 def create_policy(args: Args) -> _policy.Policy:
@@ -95,7 +95,7 @@ def main(args: Args) -> None:
         / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    logging_config.setup_logging(log_path=log_path)
+    log_queue, log_listener = logging_config.setup_logging(log_path=log_path)
 
     # Create policy factory to avoid CUDA context fork issues
     def policy_factory():
@@ -126,7 +126,7 @@ def main(args: Args) -> None:
         num_steps=args.num_steps,
         max_batch_size=args.max_batch_size,
         env=args.env.value,
-        scheduling_algorithm=args.scheduling_algorithm.value,
+        scheduling_algorithm=args.scheduling_algorithm,
     )
 
     # TODO: this looks sus to me
@@ -137,8 +137,12 @@ def main(args: Args) -> None:
     server = PolicyServer(
         metadata=server_metadata,
         policy_factory=policy_factory,
+        log_queue=log_queue,
     )
-    server.serve_forever(host="0.0.0.0", port=args.port)
+    try:
+        server.serve_forever(host="0.0.0.0", port=args.port)
+    finally:
+        log_listener.stop()
 
 
 if __name__ == "__main__":

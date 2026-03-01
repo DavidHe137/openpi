@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import multiprocessing as mp
 
@@ -10,6 +12,7 @@ from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
 from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SlotRequest
+from openpi.shared import logging_config
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,7 @@ def _run_scheduler(
     max_batch_size: int,
     algorithm: str,
     ready_event: mp.Event,
+    log_queue: mp.Queue | None = None,
 ) -> None:
     """Owns all robot state; dispatches batches to GPU via mp.Queue.
 
@@ -35,6 +39,9 @@ def _run_scheduler(
     cannot delay client response delivery. This process only receives small CompletionNotifications
     from GPU for state bookkeeping.
     """
+    if log_queue is not None:
+        logging_config.setup_worker_logging(log_queue, process_name="scheduler")
+
     logger.info("Scheduler starting (algorithm=%s)", algorithm)
 
     cls = _SCHEDULER_REGISTRY.get(algorithm)

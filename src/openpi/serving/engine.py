@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 import logging
 import multiprocessing as mp
@@ -10,6 +12,7 @@ import zmq
 from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.slots import RobotSlots
+from openpi.shared import logging_config
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,7 @@ def _run_gpu_worker(
     gpu_out_ep: str,
     result_ep: str,
     ready_event: mp.Event,
+    log_queue: mp.Queue | None = None,
 ) -> None:
     """Loads model, then loops: recv batch → read obs from shared memory → infer → send results.
 
@@ -29,6 +33,9 @@ def _run_gpu_worker(
     to the scheduler (result_ep) for state updates. These are decoupled so ILP solving in the
     scheduler cannot delay response delivery to clients.
     """
+    if log_queue is not None:
+        logging_config.setup_worker_logging(log_queue, process_name="gpu-worker")
+
     logger.info("GPU worker starting")
 
     policy = policy_factory()
