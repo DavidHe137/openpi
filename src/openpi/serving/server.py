@@ -36,6 +36,7 @@ from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
 from openpi_client.schemas import ServerMetadata
+from starlette.websockets import WebSocketDisconnect
 import uvicorn
 import zmq.asyncio
 
@@ -174,52 +175,54 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
         state.response_queues[robot_id] = response_queue
 
         async def recv():
-            while True:
-                raw = await websocket.receive_bytes()
-                msg = msgpack_numpy.unpackb(raw)
+            try:
+                while True:
+                    raw = await websocket.receive_bytes()
+                    msg = msgpack_numpy.unpackb(raw)
 
-                if "reset" in msg:
-                    await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
-                    continue
+                    if "reset" in msg:
+                        await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
+                        continue
 
-                req = InferRequest(**msg)
+                    req = InferRequest(**msg)
 
-                # Write obs directly to shared memory — no ZMQ copy of image arrays
-                state.slots.write_obs(slot_index, req.observation)
+                    # Write obs directly to shared memory - no ZMQ copy of image arrays
+                    state.slots.write_obs(slot_index, req.observation)
 
-                slot_req = SlotRequest(
-                    slot_index=slot_index,
-                    robot_id=robot_id,
-                    request_id=next(_request_id_counter),
-                    arrival_timestamp=time.time(),
-                    start_step=req.start_step,
-                    request_timestamp=req.request_timestamp,
-                    deadline=req.deadline,
-                    infer_type=req.infer_type,
-                    params=req.params,
-                    noise=req.noise,
-                )
-                await state.scheduler_sock.send_pyobj(slot_req)
+                    slot_req = SlotRequest(
+                        slot_index=slot_index,
+                        robot_id=robot_id,
+                        request_id=next(_request_id_counter),
+                        arrival_timestamp=time.time(),
+                        start_step=req.start_step,
+                        request_timestamp=req.request_timestamp,
+                        deadline=req.deadline,
+                        infer_type=req.infer_type,
+                        params=req.params,
+                        noise=req.noise,
+                    )
+                    await state.scheduler_sock.send_pyobj(slot_req)
+            except WebSocketDisconnect:
+                logger.debug("Robot %s disconnected", robot_id)
 
         async def send():
             while True:
                 response: InferResponse = await response_queue.get()
                 await websocket.send_bytes(msgpack_numpy.packb(asdict(response)))
 
+        recv_task = asyncio.create_task(recv())
+        send_task = asyncio.create_task(send())
         try:
-            await asyncio.gather(recv(), send())
+            await recv_task
         finally:
+            send_task.cancel()
             state.slots.free(robot_id)
             state.response_queues.pop(robot_id, None)
 
+    # can also be used for health check
     @app.get("/metadata")
-    async def server_metadata() -> str:
-        # TODO:
-        return "OK"
-
-    @app.get("/healthz")
-    async def health() -> str:
-        return "OK"
+    async def server_metadata() -> dict:
+        return asdict(metadata)
 
     @app.post("/reset-metrics")
     async def reset_metrics() -> None:
