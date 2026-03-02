@@ -127,6 +127,8 @@ def _start_backend(
             metadata.scheduling_algorithm,
             sched_ready,
             log_queue,
+            metadata.lookahead_horizon,
+            metadata.lookahead_execution_horizon_s,
         ),
         daemon=True,
     )

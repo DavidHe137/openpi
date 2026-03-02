@@ -12,6 +12,7 @@ from openpi.scheduling import RequestScheduler
 from openpi.scheduling.baselines import GreedyScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
+from openpi.scheduling.lookahead import LookaheadScheduler
 from openpi.serving.schemas import BatchProfile
 from openpi.serving.schemas import SlotRequest
 from openpi.shared import logging_config
@@ -38,6 +39,7 @@ _SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
     "greedy": GreedyScheduler,
     "round_robin": RoundRobinScheduler,
     "random": RandomBatchScheduler,
+    "lookahead": LookaheadScheduler,
 }
 
 
@@ -49,6 +51,8 @@ def _run_scheduler(
     algorithm: str,
     ready_event: Event,
     log_queue: mp.Queue | None = None,
+    lookahead_horizon: int = 5,
+    lookahead_execution_horizon_s: float = 0.5,
 ) -> None:
     """Owns all robot state; dispatches batches to GPU via mp.Queue.
 
@@ -96,7 +100,13 @@ def _run_scheduler(
 
     batch_profile = _recv_batch_profile(result_sock)
 
-    scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile)
+    extra_kwargs: dict = {}
+    if algorithm == "lookahead":
+        extra_kwargs = {
+            "horizon": lookahead_horizon,
+            "execution_horizon_s": lookahead_execution_horizon_s,
+        }
+    scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile, **extra_kwargs)
 
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)

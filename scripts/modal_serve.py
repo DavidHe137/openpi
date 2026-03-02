@@ -1,9 +1,3 @@
-"""Serve the FastAPI policy server on Modal.
-
-Connect with:
-  uv run scripts/infer.py --host https://....modal.run --num-iters 50 --verbose
-"""
-
 import logging
 import pathlib
 import subprocess

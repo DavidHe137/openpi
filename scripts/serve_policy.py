@@ -64,7 +64,7 @@ class Args:
     log_dir: str = "logs/server"
 
     # Scheduling algorithm for batching requests. # TODO: maybe should use enum?
-    scheduling_algorithm: Literal["greedy", "round_robin", "random"] = "greedy"
+    scheduling_algorithm: Literal["greedy", "round_robin", "random", "lookahead"] = "greedy"
 
     # Logging level.
     log_debug: bool = False
