@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 app = modal.App("openpi-serve")
 
-GPU = "a10g"
+GPU = "h100"
 MAX_NUM_ROBOTS = 10
 REGION = "us-east"
 ENV_MODE = "LIBERO"
@@ -86,7 +86,6 @@ image = (
             "TORCHINDUCTOR_CACHE_DIR": f"{CHECKPOINT_VOLUME_PATH}/.cache/torch_inductor",
             "XLA_FLAGS": "--xla_gpu_triton_gemm_any=True --xla_gpu_enable_latency_hiding_scheduler=true",
             "GCLOUD_ANONYMOUS_ACCESS": "True",
-            # "MUJOCO_GL": "egl", # FIXME: shouldn't be needed
             "JAX_PLATFORMS": "cuda",
             "TF_CPP_MIN_LOG_LEVEL": "2",  # to suppress warnings
             "ABSL_FLAGS_VERBOSITY": "0",
@@ -104,11 +103,12 @@ image = (
     region=[REGION],
     enable_memory_snapshot=True,
     experimental_options={"enable_gpu_snapshot": True},
+    scaledown_window=5 * 60,  # seconds, time to wait before scaling down
+    timeout=2 * 60 * 60,  # 2 hours
 )
 @modal.experimental.http_server(
     port=PORT,  # wrapped code must listen on this port
     proxy_regions=[REGION],  # location of proxies, should be same as Cls region
-    exit_grace_period=15,  # seconds, time to finish up requests when closing down
     startup_timeout=10 * 60,  # how long can server startup take?
 )
 @modal.concurrent(target_inputs=MAX_NUM_ROBOTS)
