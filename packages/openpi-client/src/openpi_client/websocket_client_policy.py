@@ -97,7 +97,13 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
         if isinstance(response, str):
             # we're expecting bytes; if the server sends a string, it's an error.
             raise RuntimeError(f"Error in inference server:\n{response}")
-        return msgpack_numpy.unpackb(response)
+
+        result = msgpack_numpy.unpackb(response)
+        receive_time = time.time()
+        ack = messages.ResponseAck(request_id=result["request_id"], receive_time=receive_time)
+        with self._ws_lock:
+            self._ws.send(msgpack_numpy.packb(asdict(ack)))
+        return result
 
 
 class AsyncWebsocketClientPolicy:
