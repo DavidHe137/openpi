@@ -1,21 +1,13 @@
-"""Metrics collection and visualization for the websocket policy server."""
+"""MetricsStore: in-memory metrics state for the websocket policy server."""
 
 from collections import deque
 from dataclasses import dataclass
 from dataclasses import field
-import io
-import logging
 import time
 from typing import Any
 
-import matplotlib  # noqa: ICN001
-
-matplotlib.use("Agg")  # Non-interactive backend
-import matplotlib.pyplot as plt
 import numpy as np
 from openpi_client.messages import InferResponse
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -38,7 +30,6 @@ class BatchSummary:
 
     @property
     def queue_delays_ms(self) -> list[float]:
-        """Per-request queue delay: time from server arrival to inference start."""
         return [(self.inference_start_time - t) * 1000 for t in self.server_arrival_times]
 
 
@@ -51,7 +42,7 @@ class RobotState:
     last_server_send_times: dict = field(default_factory=dict)  # request_id → server_send_time
     total_starvations: int = 0
     total_wasted_actions: int = 0
-    recent_network_delays_ms: deque = field(default_factory=lambda: deque(maxlen=20))
+    recent_network_delays_ms: deque = field(default_factory=lambda: deque(maxlen=500))
 
 
 @dataclass
@@ -64,7 +55,7 @@ class MetricsStore:
     _batch_counter: int = field(default=0, init=False)
 
     def record_batch(self, responses: list[InferResponse]) -> None:
-        """Called once per batch by _router_task. Builds BatchSummary and updates RobotState."""
+        """Called once per batch by _router_task."""
         if not responses:
             return
 
@@ -97,13 +88,13 @@ class MetricsStore:
             state.last_execution_horizon = response.execution_horizon
 
     def record_send(self, robot_id: str, request_id: int, server_send_time: float) -> None:
-        """Called from send() just before websocket.send_bytes(). Stores send time for ack matching."""
+        """Called from send() just before websocket.send_bytes()."""
         state = self.robot_states.get(robot_id)
         if state is not None:
             state.last_server_send_times[request_id] = server_send_time
 
     def record_ack(self, robot_id: str, request_id: int, receive_time: float) -> None:
-        """Called when client sends ResponseAck. Computes and stores outbound network delay."""
+        """Called when client sends ResponseAck."""
         state = self.robot_states.get(robot_id)
         if state is None:
             return
@@ -113,7 +104,7 @@ class MetricsStore:
             state.recent_network_delays_ms.append(delay_ms)
 
     def snapshot(self) -> dict[str, Any]:
-        """Return a JSON-serializable metrics summary."""
+        """JSON-serializable summary of current metrics."""
         now = time.time()
         batches = list(self.recent_batches)
         uptime_s = now - self.start_time
@@ -122,7 +113,6 @@ class MetricsStore:
         gpu_times = [b.gpu_time_ms for b in batches]
         avg_gpu_time_ms = float(np.mean(gpu_times)) if gpu_times else 0.0
 
-        # Latency = inference_end_time - request_timestamp (server-observable, excludes outbound network)
         latencies_ms = [(b.inference_end_time - req_ts) * 1000 for b in batches for req_ts in b.request_timestamps]
         p50_latency_ms = float(np.percentile(latencies_ms, 50)) if latencies_ms else 0.0
         p99_latency_ms = float(np.percentile(latencies_ms, 99)) if latencies_ms else 0.0
@@ -153,54 +143,46 @@ class MetricsStore:
             "per_robot": per_robot,
         }
 
-    def gantt_png(self, window_s: float = 60.0) -> bytes:
-        """Render Gantt chart for the last window_s seconds. Returns PNG bytes (no file I/O)."""
-        now = time.time()
-        cutoff = now - window_s
-        batches = [b for b in self.recent_batches if b.inference_end_time >= cutoff]
+    def history(self) -> dict[str, Any]:
+        """Per-batch time-series data for Plotly charts in the dashboard."""
+        batches = list(self.recent_batches)
+        t0 = self.start_time
 
-        fig, ax = plt.subplots(figsize=(16, 3))
-
-        if not batches:
-            ax.text(0.5, 0.5, "No data in window", ha="center", va="center", transform=ax.transAxes)
-            buf = io.BytesIO()
-            plt.savefig(buf, format="png", bbox_inches="tight")
-            plt.close(fig)
-            return buf.getvalue()
-
-        all_robot_ids = sorted({rid for b in batches for rid in b.robot_ids})
-        robot_to_y = {r: i for i, r in enumerate(all_robot_ids)}
-        n_robots = len(all_robot_ids)
-
-        colors = plt.cm.tab20.colors  # type: ignore[attr-defined]
-
-        fig, ax = plt.subplots(figsize=(16, max(3, n_robots * 0.5 + 1)))
-        for batch in batches:
-            t0, t1 = batch.inference_start_time, batch.inference_end_time
-            for robot_id in batch.robot_ids:
-                y = robot_to_y[robot_id]
-                ax.barh(
-                    y,
-                    t1 - t0,
-                    left=t0,
-                    height=0.7,
-                    color=colors[y % len(colors)],
-                    edgecolor="black",
-                    linewidth=0.3,
+        batch_data = []
+        for b in batches:
+            per_req = []
+            for i, rid in enumerate(b.robot_ids):
+                per_req.append(
+                    {
+                        "robot_id": rid,
+                        "inbound_ms": round((b.server_arrival_times[i] - b.request_timestamps[i]) * 1000, 2),
+                        "queue_ms": round((b.inference_start_time - b.server_arrival_times[i]) * 1000, 2),
+                        "infer_ms": round(b.gpu_time_ms, 2),
+                    }
                 )
+            batch_data.append(
+                {
+                    "t": round(b.inference_end_time - t0, 3),
+                    "batch_size": len(b.robot_ids),
+                    "gpu_time_ms": round(b.gpu_time_ms, 2),
+                    "inference_start_t": round(b.inference_start_time - t0, 3),
+                    "inference_end_t": round(b.inference_end_time - t0, 3),
+                    "robot_ids": b.robot_ids,
+                    "per_request": per_req,
+                }
+            )
 
-        ax.set_yticks(range(n_robots))
-        ax.set_yticklabels(all_robot_ids, fontsize=8)
-        ax.set_xlabel("Wall-clock time (s)", fontweight="bold")
-        ax.set_ylabel("Robot", fontweight="bold")
-        ax.set_title(f"GPU Processing Gantt (last {window_s:.0f}s)", fontweight="bold")
-        ax.grid(visible=True, alpha=0.3, axis="x")
-        plt.tight_layout()
+        outbound: dict[str, list[float]] = {
+            robot_id: [round(d, 2) for d in state.recent_network_delays_ms]
+            for robot_id, state in self.robot_states.items()
+            if state.recent_network_delays_ms
+        }
 
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png", bbox_inches="tight")
-        plt.close(fig)
-        return buf.getvalue()
+        return {
+            "server_start_time": t0,
+            "batches": batch_data,
+            "outbound_delays_ms": outbound,
+        }
 
     def reset(self) -> None:
         """Clear all accumulated metrics and reset counters."""

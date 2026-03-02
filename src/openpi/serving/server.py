@@ -28,15 +28,16 @@ import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event
 import os
+from pathlib import Path
 import signal
 import time
 import uuid
 
 from fastapi import FastAPI
 from fastapi import Request
-from fastapi import Response
 from fastapi import WebSocket
 from fastapi.concurrency import asynccontextmanager
+from fastapi.responses import HTMLResponse
 from openpi_client import msgpack_numpy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
@@ -271,26 +272,28 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
             state.slots.free(robot_id)
             state.response_queues.pop(robot_id, None)
 
+    _dashboard_html = (Path(__file__).parent / "metrics" / "dashboard.html").read_text()
+
     # can also be used for health check
     @app.get("/metadata")
     async def server_metadata() -> dict:
         return asdict(metadata)
 
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard():
+        return _dashboard_html
+
     @app.get("/metrics")
     async def get_metrics(request: Request) -> dict:
-        state: ServerState = request.app.state.server
-        return state.metrics_store.snapshot()
+        return request.app.state.server.metrics_store.snapshot()
 
-    @app.get("/metrics/gantt")
-    async def get_metrics_gantt(request: Request, window_s: float = 60.0) -> Response:
-        state: ServerState = request.app.state.server
-        png = state.metrics_store.gantt_png(window_s=window_s)
-        return Response(content=png, media_type="image/png")
+    @app.get("/metrics/history")
+    async def get_metrics_history(request: Request) -> dict:
+        return request.app.state.server.metrics_store.history()
 
     @app.post("/reset-metrics")
     async def reset_metrics(request: Request) -> dict:
-        state: ServerState = request.app.state.server
-        state.metrics_store.reset()
+        request.app.state.server.metrics_store.reset()
         return {"status": "ok"}
 
     return app
