@@ -13,14 +13,15 @@ import urllib.error
 import urllib.request
 
 import modal
+import modal.experimental
 
 log = logging.getLogger(__name__)
 
 app = modal.App("openpi-serve")
 
-GPU = "h100"
+GPU = "a10g"
 MAX_NUM_ROBOTS = 10
-REGION = "us-east-1"
+REGION = "us-east"
 ENV_MODE = "LIBERO"
 MAX_BATCH_SIZE = 4
 PORT = 8080
@@ -100,11 +101,17 @@ image = (
     gpu=GPU,
     image=image,
     volumes={CHECKPOINT_VOLUME_PATH: checkpoint_volume},
+    region=[REGION],
     enable_memory_snapshot=True,
     experimental_options={"enable_gpu_snapshot": True},
-    region=[REGION],
 )
-@modal.concurrent(max_inputs=MAX_NUM_ROBOTS)
+@modal.experimental.http_server(
+    port=PORT,  # wrapped code must listen on this port
+    proxy_regions=[REGION],  # location of proxies, should be same as Cls region
+    exit_grace_period=15,  # seconds, time to finish up requests when closing down
+    startup_timeout=10 * 60,  # how long can server startup take?
+)
+@modal.concurrent(target_inputs=MAX_NUM_ROBOTS)
 class ModalPolicyServer:
     @modal.enter(snap=True)
     def startup(self) -> None:
@@ -123,30 +130,23 @@ class ModalPolicyServer:
             str(PORT),
         ]
 
-        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-
         def _stream_logs(proc: subprocess.Popen) -> None:
             for line in proc.stdout:
-                logger.info(line.rstrip())
+                print(line, end="", flush=True)
 
-        threading.Thread(target=_stream_logs, args=(self.process,), daemon=True).start()
+        def _start_process() -> subprocess.Popen:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            threading.Thread(target=_stream_logs, args=(proc,), daemon=True).start()
+            return proc
 
-        # Block until server is ready so Modal snapshots a fully-loaded server.
-        logger.info("Waiting for server to be ready...")
+        self.process = _start_process()
         while True:
             try:
                 urllib.request.urlopen(f"http://localhost:{PORT}/metadata", timeout=5)
-                break
+                logger.info("Server ready, snapshot will be taken now.")
+                return
             except (urllib.error.URLError, OSError):
                 time.sleep(1)
-        logger.info("Server ready, snapshot will be taken now.")
-
-    @modal.web_server(
-        port=PORT,  # wrapped code must listen on this port
-        startup_timeout=10 * 60,  # how long can server startup take?
-    )
-    def serve(self):
-        pass
 
     @modal.exit()
     def teardown(self) -> None:

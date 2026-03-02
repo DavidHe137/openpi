@@ -38,7 +38,7 @@ def setup_logging(
     return log_queue, listener
 
 
-def setup_worker_logging(log_queue: mp.Queue, process_name: str, level: int = logging.DEBUG) -> None:
+def setup_worker_logging(log_queue: mp.Queue, process_name: str, level: int = logging.INFO) -> None:
     """Configure a worker subprocess to forward all log records to the main process queue."""
     mp.current_process().name = process_name
     root = logging.getLogger()

@@ -70,6 +70,19 @@ class Args:
     log_debug: bool = False
 
 
+class _PolicyFactory:
+    """Module-level picklable callable required by spawn multiprocessing."""
+
+    def __init__(self, args: Args):
+        self._args = args
+
+    def __call__(self) -> _policy.Policy:
+        policy = create_policy(self._args)
+        if "env" not in policy._metadata:  # noqa: SLF001
+            policy._metadata["env"] = self._args.env.value  # noqa: SLF001
+        return policy
+
+
 def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
     match args.policy:
@@ -103,12 +116,7 @@ def main(args: Args) -> None:
     )
 
     # Create policy factory to avoid CUDA context fork issues
-    def policy_factory():
-        policy = create_policy(args)
-        # Ensure policy metadata includes env for make_example()
-        if "env" not in policy._metadata:  # noqa: SLF001
-            policy._metadata["env"] = args.env.value  # noqa: SLF001
-        return policy
+    policy_factory = _PolicyFactory(args)
 
     # Build metadata without loading the model to avoid CUDA initialization
     match args.policy:
