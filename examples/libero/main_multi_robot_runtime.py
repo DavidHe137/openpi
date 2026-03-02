@@ -9,7 +9,7 @@ import time
 import numpy as np
 from jaxtyping import Float
 from libero.libero import benchmark
-from openpi_client import websocket_client_policy as _websocket_client_policy
+from openpi_client.client import BidirectionalWebsocket
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import ActionChunkBrokerType, BrokerConfig
@@ -26,6 +26,8 @@ from examples.libero.metrics import calculate_metrics, generate_all_plots
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,7 +64,7 @@ class Args:
     #################################################################################################################
     # Multi-robot / threading parameters
     #################################################################################################################
-    num_robots: int = 9  # Number of always-running sims (robots)
+    num_robots: int = 5  # Number of always-running sims (robots)
     control_hz: int = 20  # Target control frequency for each sim #NOTE: int because this is the fps of the video
 
     #################################################################################################################
@@ -102,7 +104,7 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     # Store queue globally for access in create_runtime
     _progress_queue = progress_queue
 
-    ws_client = _websocket_client_policy.BidirectionalWebsocket(
+    ws_client = BidirectionalWebsocket(
         robot_id=f"robot_{robot_idx}",
         host=args.host,
         port=args.port,
@@ -270,9 +272,13 @@ def main(args: Args) -> None:
         log_file_name = f"libero_multi_robot_runtime_{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
         log_file_path = pathlib.Path(args.log_dir) / log_file_name
         pathlib.Path(args.log_dir).mkdir(parents=True, exist_ok=True)
-        logging_config.setup_logging(log_path=log_file_path)
+        logging_config.setup_logging(
+            log_path=log_file_path, level=logging.DEBUG if args.debug else logging.INFO
+        )
     else:
-        logging_config.setup_logging()
+        logging_config.setup_logging(
+            level=logging.DEBUG if args.debug else logging.INFO
+        )
 
     if not args.overwrite and pathlib.Path(args.output_dir).exists():
         raise ValueError(f"Output path {args.output_dir} already exists")
@@ -293,12 +299,13 @@ def main(args: Args) -> None:
     jobs = create_jobs(args)
 
     # Connect to get server metadata
-    temp_client = _websocket_client_policy.WebsocketClientPolicy(
+    temp_client = BidirectionalWebsocket(
         robot_id="robot",
         host=args.host,
         port=args.port,
     )
     server_metadata = temp_client.server_metadata
+    temp_client.close()
 
     # Create runtime metadata
     runtime_metadata = RuntimeMetadata(

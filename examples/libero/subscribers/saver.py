@@ -2,6 +2,7 @@ import logging
 import pathlib
 import time
 import imageio
+import matplotlib.pyplot as plt
 import numpy as np
 
 from typing import List, Dict
@@ -63,6 +64,8 @@ class Saver(_subscriber.Subscriber):
         self._timestamps = []
         self._action_chunk_indices = []
         self._observations_buffer = {}
+        self._actions_left_snapshot: list[int] = []
+        self._cost_history: list[float] = []
 
     @override
     def on_step(self, observation: Observation, action: Action) -> None:
@@ -78,6 +81,21 @@ class Saver(_subscriber.Subscriber):
             )
         )
 
+        # Snapshot broker queue length after this step's action was consumed.
+        # broker.infer() already recorded into _actions_left_history; mirror it here
+        # by reading the latest entry (avoids a second lock acquisition).
+        history = self._action_chunk_broker.actions_left_history
+        self._actions_left_snapshot.append(history[-1] if history else 0)
+
+        # Cost: elapsed time from when the observation was sent for inference
+        # until this step executes that chunk's action.
+        if action.action_chunk_index is not None:
+            chunk = self._action_chunk_broker.action_chunks[action.action_chunk_index]
+            cost = time.time() - chunk.request_timestamp
+        else:
+            cost = float("nan")
+        self._cost_history.append(cost)
+
     @override
     def on_episode_end(self) -> None:
         out_folder = self._get_out_folder()
@@ -87,6 +105,8 @@ class Saver(_subscriber.Subscriber):
         self._save_action_chunks(out_folder)
         self._save_video(out_folder)
         self._save_debug_data(out_folder)
+        self._save_actions_left(out_folder)
+        self._save_cost_history(out_folder)
 
     def _get_out_folder(self) -> pathlib.Path:
         robot_folder = self._out_dir / str(self._robot_idx)
@@ -187,3 +207,30 @@ class Saver(_subscriber.Subscriber):
         # Save as compressed npz
         np.savez_compressed(debug_data_file, **data_to_save)
         logger.info(f"Saved {len(action_chunks)} chunks to {debug_data_file}")
+
+    def _save_actions_left(self, out_folder: pathlib.Path) -> None:
+        path = out_folder / "actions_left.npy"
+        np.save(path, np.array(self._actions_left_snapshot, dtype=np.int32))
+        logger.info(f"Saved actions_left to {path}")
+
+    def _save_cost_history(self, out_folder: pathlib.Path) -> None:
+        costs = np.array(self._cost_history, dtype=np.float64)
+        npy_path = out_folder / "cost_history.npy"
+        np.save(npy_path, costs)
+        logger.info(f"Saved cost_history to {npy_path}")
+
+        plot_path = out_folder / "cost_history.png"
+        steps = np.arange(len(costs))
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(steps, costs, linewidth=0.8, color="steelblue")
+        ax.set_xlabel("Environment step")
+        ax.set_ylabel("Cost (s)")
+        ax.set_title(
+            f"Cost per step — robot {self._robot_idx} | "
+            f"{self._task_suite_name} task {self._task_id}"
+        )
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(plot_path, dpi=150)
+        plt.close(fig)
+        logger.info(f"Saved cost_history plot to {plot_path}")

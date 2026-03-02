@@ -46,6 +46,11 @@ class InferRequest:
 
 
 @dataclass(frozen=True)
+class ResetRequest:
+    robot_id: str
+
+
+@dataclass(frozen=True)
 class InferResponse:
     robot_id: str
     request_id: int  # for routing response to correct connection
@@ -54,3 +59,4 @@ class InferResponse:
     actions: Float[np.ndarray, "1 action_horizon action_dim"]  # TODO: check the type on this
     execution_horizon: int
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
+    server_compute_ms: float = 0.0  # server-side inference time; allows client to isolate network latency

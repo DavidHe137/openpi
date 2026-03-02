@@ -4,6 +4,7 @@ import logging
 import pathlib
 import socket
 import sys
+from typing import Literal
 
 from openpi_client.schemas import ServerMetadata
 import tyro
@@ -11,8 +12,7 @@ import tyro
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.policies.policy import EnvMode
-from openpi.serving import websocket_policy_server
-from openpi.serving.scheduling import SchedulingAlgorithm
+from openpi.serving.server import PolicyServer
 from openpi.shared import logging_config
 from openpi.training import config as _config
 
@@ -50,8 +50,6 @@ class Args:
 
     # Port to serve the policy on.
     port: int = 8080
-    # Record the policy's behavior for debugging.
-    record: bool = False
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -65,8 +63,25 @@ class Args:
     # Log directory to save the logs to.
     log_dir: str = "logs/server"
 
-    # Scheduling algorithm for batching requests.
-    scheduling_algorithm: SchedulingAlgorithm = SchedulingAlgorithm.EARLIEST_DEADLINE_FIRST
+    # Scheduling algorithm for batching requests. # TODO: maybe should use enum?
+    scheduling_algorithm: Literal["greedy", "round_robin", "random"] = "greedy"
+
+    # Logging level.
+    log_debug: bool = False
+
+
+# FIXME: may not be needed
+class _PolicyFactory:
+    """Module-level picklable callable required by spawn multiprocessing."""
+
+    def __init__(self, args: Args):
+        self._args = args
+
+    def __call__(self) -> _policy.Policy:
+        policy = create_policy(self._args)
+        if "env" not in policy._metadata:  # noqa: SLF001
+            policy._metadata["env"] = self._args.env.value  # noqa: SLF001
+        return policy
 
 
 def create_policy(args: Args) -> _policy.Policy:
@@ -97,18 +112,12 @@ def main(args: Args) -> None:
         / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    logging_config.setup_logging(log_path=log_path)
+    log_queue, log_listener = logging_config.setup_logging(
+        log_path=log_path, level=logging.DEBUG if args.log_debug else logging.INFO
+    )
 
     # Create policy factory to avoid CUDA context fork issues
-    def policy_factory():
-        policy = create_policy(args)
-        # Ensure policy metadata includes env for make_example()
-        if "env" not in policy._metadata:  # noqa: SLF001
-            policy._metadata["env"] = args.env.value  # noqa: SLF001
-        # Record the policy's behavior.
-        if args.record:
-            policy = _policy.PolicyRecorder(policy, "policy_records")
-        return policy
+    policy_factory = _PolicyFactory(args)
 
     # Build metadata without loading the model to avoid CUDA initialization
     match args.policy:
@@ -131,23 +140,23 @@ def main(args: Args) -> None:
         num_steps=args.num_steps,
         max_batch_size=args.max_batch_size,
         env=args.env.value,
-        policy_metadata=train_config.policy_metadata or {},
+        scheduling_algorithm=args.scheduling_algorithm,
     )
 
+    # TODO: this looks sus to me
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
-    server = websocket_policy_server.WebsocketPolicyServer(
+    server = PolicyServer(
+        metadata=server_metadata,
         policy_factory=policy_factory,
-        host="0.0.0.0",
-        port=args.port,
-        metadata=dataclasses.asdict(server_metadata),
-        max_batch_size=args.max_batch_size,
-        log_dir=args.log_dir,
-        scheduling_algorithm=args.scheduling_algorithm,
+        log_queue=log_queue,
     )
-    server.serve_forever()
+    try:
+        server.serve_forever(host="0.0.0.0", port=args.port)
+    finally:
+        log_listener.stop()
 
 
 if __name__ == "__main__":

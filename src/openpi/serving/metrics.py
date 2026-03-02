@@ -56,6 +56,9 @@ class BatchMetrics:
     num_real_requests: int
     total_batch_size: int
     request_ids: list[int]
+    robot_ids: list[str] = field(default_factory=list)
+    start_steps: list[int] = field(default_factory=list)
+    execution_horizons: list[int] = field(default_factory=list)
 
     @property
     def batch_processing_time(self) -> float:
@@ -69,6 +72,17 @@ class BatchMetrics:
 
 
 @dataclass
+class RobotSchedulingState:
+    """Per-robot tracking for scheduling visualizations."""
+
+    last_start_step: int = 0
+    last_execution_horizon: int = 0
+    last_response_time: float = 0.0
+    total_starvations: int = 0
+    total_wasted_actions: int = 0
+
+
+@dataclass
 class MetricsCollector:
     """Aggregates and manages metrics collection."""
 
@@ -77,6 +91,9 @@ class MetricsCollector:
 
     # Per-batch tracking
     batch_metrics: list[BatchMetrics] = field(default_factory=list)
+
+    # Per-robot scheduling state
+    robot_states: dict[str, RobotSchedulingState] = field(default_factory=dict)
 
     # Rolling window of recent latencies for logging (max 10)
     recent_latencies: deque = field(default_factory=lambda: deque(maxlen=10))
@@ -119,17 +136,38 @@ class MetricsCollector:
                 self.recent_latencies.append(metrics.end_to_end_latency)
 
     def add_batch_metrics(self, batch_metric: BatchMetrics) -> None:
-        """Record batch-level metrics."""
-        self.batch_metrics.append(
-            BatchMetrics(
-                batch_id=batch_metric.batch_id,
-                processing_start_time=batch_metric.processing_start_time - self.start_time,
-                processing_end_time=batch_metric.processing_end_time - self.start_time,
-                num_real_requests=batch_metric.num_real_requests,
-                total_batch_size=batch_metric.total_batch_size,
-                request_ids=batch_metric.request_ids,
-            )
+        """Record batch-level metrics and update per-robot scheduling state."""
+        normalized = BatchMetrics(
+            batch_id=batch_metric.batch_id,
+            processing_start_time=batch_metric.processing_start_time - self.start_time,
+            processing_end_time=batch_metric.processing_end_time - self.start_time,
+            num_real_requests=batch_metric.num_real_requests,
+            total_batch_size=batch_metric.total_batch_size,
+            request_ids=batch_metric.request_ids,
+            robot_ids=batch_metric.robot_ids,
+            start_steps=batch_metric.start_steps,
+            execution_horizons=batch_metric.execution_horizons,
         )
+        self.batch_metrics.append(normalized)
+
+        response_time = normalized.processing_end_time
+        for robot_id, start_step, exec_horizon in zip(
+            normalized.robot_ids, normalized.start_steps, normalized.execution_horizons, strict=True
+        ):
+            state = self.robot_states.setdefault(robot_id, RobotSchedulingState())
+
+            if state.last_execution_horizon > 0:
+                actions_consumed = start_step - state.last_start_step
+                actions_remaining = state.last_execution_horizon - actions_consumed
+
+                if actions_remaining < 0:
+                    state.total_starvations += abs(actions_remaining)
+                elif actions_remaining > 0:
+                    state.total_wasted_actions += actions_remaining
+
+            state.last_start_step = start_step
+            state.last_execution_horizon = exec_horizon
+            state.last_response_time = response_time
 
     def get_recent_latency_stats(self) -> dict[str, float]:
         """Get statistics for recent latencies (1, 5, 10 samples)."""
@@ -367,3 +405,150 @@ def plot_metrics(metrics: MetricsCollector, output_dir: str) -> None:
             )
 
     logger.info(f"Raw metrics saved to {csv_path}")
+
+    # Scheduling-specific plots (only if robot_ids are available)
+    has_scheduling_data = any(b.robot_ids for b in metrics.batch_metrics)
+    if has_scheduling_data:
+        _plot_scheduling_metrics(metrics, output_path)
+
+
+def _plot_scheduling_metrics(metrics: MetricsCollector, output_path: Path) -> None:
+    """Generate the 4 scheduling-specific plots."""
+    sns.set_style("darkgrid")
+    xlim = (metrics.first_arrival_time - 1, metrics.last_arrival_time + 1)
+
+    # Collect per-robot event timelines: list of (response_time, start_step, execution_horizon)
+    robot_events: dict[str, list[tuple[float, int, int]]] = defaultdict(list)
+    for batch in metrics.batch_metrics:
+        for robot_id, ss, eh in zip(batch.robot_ids, batch.start_steps, batch.execution_horizons, strict=True):
+            robot_events[robot_id].append((batch.processing_end_time, ss, eh))
+
+    robots_sorted = sorted(robot_events.keys())
+    robot_to_y = {r: i for i, r in enumerate(robots_sorted)}
+    n_robots = len(robots_sorted)
+
+    if n_robots == 0:
+        return
+
+    colors = plt.cm.tab20.colors  # type: ignore[attr-defined]
+
+    # ---- Plot 1: GPU Processing Timeline (Gantt chart) ----
+    fig, ax = plt.subplots(figsize=(16, max(4, n_robots * 0.4)))
+    for batch in metrics.batch_metrics:
+        t0, t1 = batch.processing_start_time, batch.processing_end_time
+        for robot_id in batch.robot_ids:
+            y = robot_to_y[robot_id]
+            ax.barh(y, t1 - t0, left=t0, height=0.7, color=colors[y % len(colors)], edgecolor="black", linewidth=0.3)
+
+    ax.set_yticks(range(n_robots))
+    ax.set_yticklabels(robots_sorted, fontsize=8)
+    ax.set_xlabel("Time (seconds)", fontweight="bold")
+    ax.set_ylabel("Robot", fontweight="bold")
+    ax.set_title("GPU Processing Timeline", fontsize=14, fontweight="bold")
+    ax.set_xlim(xlim)
+    ax.grid(visible=True, alpha=0.3, axis="x")
+    plt.tight_layout()
+    fig.savefig(output_path / "gpu_timeline.pdf", bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"GPU timeline saved to {output_path / 'gpu_timeline.pdf'}")
+
+    # ---- Plot 2: Actions Left Per Robot Over Time (gradient from fresh → depleted) ----
+    from matplotlib.colors import LinearSegmentedColormap
+
+    fresh_cmap = LinearSegmentedColormap.from_list("fresh", ["#d73027", "#fee08b", "#1a9850"])
+    N_SLICES = 40  # thin slices per chunk to approximate a smooth gradient
+
+    fig, ax = plt.subplots(figsize=(16, max(4, n_robots * 0.4)))
+    bar_height = 0.7
+
+    for robot_id in robots_sorted:
+        events = robot_events[robot_id]
+        y_base = robot_to_y[robot_id]
+
+        for i, (t_resp, ss, eh) in enumerate(events):
+            if i + 1 < len(events):
+                t_next = events[i + 1][0]
+                ss_next = events[i + 1][1]
+                consumed = ss_next - ss
+                t_empty = t_resp + (t_next - t_resp) * min(eh / max(consumed, 1), 1.0) if consumed > 0 else t_next
+            else:
+                if len(events) > 1:
+                    avg_dt = (events[-1][0] - events[0][0]) / (len(events) - 1)
+                    t_empty = t_resp + avg_dt
+                else:
+                    t_empty = t_resp + 1.0
+
+            chunk_duration = t_empty - t_resp
+            if chunk_duration <= 0:
+                continue
+
+            # Draw gradient slices: green (fresh, fraction=1) → red (depleted, fraction=0)
+            slice_w = chunk_duration / N_SLICES
+            for s in range(N_SLICES):
+                frac = 1.0 - s / N_SLICES  # 1 = fresh, 0 = depleted
+                ax.barh(
+                    y_base, slice_w, left=t_resp + s * slice_w,
+                    height=bar_height, color=fresh_cmap(frac), linewidth=0,
+                )
+
+            # Starvation gap (solid red)
+            if i + 1 < len(events):
+                t_next_resp = events[i + 1][0]
+                if t_empty < t_next_resp:
+                    ax.barh(y_base, t_next_resp - t_empty, left=t_empty, height=bar_height, color="#d73027", alpha=0.5, linewidth=0)
+
+    # Colorbar legend
+    sm = plt.cm.ScalarMappable(cmap=fresh_cmap, norm=plt.Normalize(0, 1))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, pad=0.01, aspect=30)
+    cbar.set_label("Actions remaining (fraction)", fontweight="bold")
+    cbar.set_ticks([0, 0.5, 1])
+    cbar.set_ticklabels(["depleted", "half", "fresh"])
+
+    ax.set_yticks(range(n_robots))
+    ax.set_yticklabels(robots_sorted, fontsize=8)
+    ax.set_xlabel("Time (seconds)", fontweight="bold")
+    ax.set_ylabel("Robot", fontweight="bold")
+    ax.set_title("Actions Left Per Robot Over Time (green=fresh chunk, red=depleted/starved)", fontsize=14, fontweight="bold")
+    ax.set_xlim(xlim)
+    ax.grid(visible=True, alpha=0.3, axis="x")
+    plt.tight_layout()
+    fig.savefig(output_path / "actions_left_timeline.pdf", bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Actions-left timeline saved to {output_path / 'actions_left_timeline.pdf'}")
+
+    # ---- Plot 3: Total Robot Starvations (bar chart) ----
+    fig, ax = plt.subplots(figsize=(10, 5))
+    starvations = [metrics.robot_states.get(r, RobotSchedulingState()).total_starvations for r in robots_sorted]
+    bar_colors = ["red" if s > 0 else "steelblue" for s in starvations]
+    ax.bar(robots_sorted, starvations, color=bar_colors, edgecolor="black", alpha=0.8)
+    for i, (r, s) in enumerate(zip(robots_sorted, starvations)):
+        if s > 0:
+            ax.text(i, s + 0.2, str(s), ha="center", fontsize=9, fontweight="bold")
+    ax.set_xlabel("Robot", fontweight="bold")
+    ax.set_ylabel("Starvation Count", fontweight="bold")
+    ax.set_title("Total Robot Starvations (ran out of actions before new chunk)", fontsize=14, fontweight="bold")
+    ax.grid(axis="y", alpha=0.3)
+    plt.xticks(rotation=45, ha="right", fontsize=8)
+    plt.tight_layout()
+    fig.savefig(output_path / "starvations.pdf", bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Starvations plot saved to {output_path / 'starvations.pdf'}")
+
+    # ---- Plot 4: Wasted Actions From Chunk Overlap (bar chart) ----
+    fig, ax = plt.subplots(figsize=(10, 5))
+    wasted = [metrics.robot_states.get(r, RobotSchedulingState()).total_wasted_actions for r in robots_sorted]
+    bar_colors = ["orange" if w > 0 else "steelblue" for w in wasted]
+    ax.bar(robots_sorted, wasted, color=bar_colors, edgecolor="black", alpha=0.8)
+    for i, (r, w) in enumerate(zip(robots_sorted, wasted)):
+        if w > 0:
+            ax.text(i, w + 0.2, str(w), ha="center", fontsize=9, fontweight="bold")
+    ax.set_xlabel("Robot", fontweight="bold")
+    ax.set_ylabel("Wasted Actions", fontweight="bold")
+    ax.set_title("Wasted Actions From Chunk Overlap (new chunk arrived before old finished)", fontsize=14, fontweight="bold")
+    ax.grid(axis="y", alpha=0.3)
+    plt.xticks(rotation=45, ha="right", fontsize=8)
+    plt.tight_layout()
+    fig.savefig(output_path / "wasted_actions.pdf", bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Wasted actions plot saved to {output_path / 'wasted_actions.pdf'}")

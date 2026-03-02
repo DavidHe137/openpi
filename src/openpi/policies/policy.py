@@ -415,6 +415,20 @@ class Policy(BasePolicy):
     def make_example_actions(self) -> np.ndarray:
         return self._model.make_example_actions()
 
+    # FIXME: reorganize warmup code later
+    def make_infer_request(self) -> InferRequest:
+        observation = self.make_example()
+        return InferRequest(
+            robot_id="test_robot",
+            start_step=0,
+            request_timestamp=0,
+            deadline=0,
+            observation=observation,
+            infer_type=InferType.SYNC,
+            params=None,
+            noise=None,
+        )
+
     def warmup(self, max_batch_size: int) -> None:
         """Warm up policy by running inference to trigger JIT compilation."""
         observation = self.make_example()

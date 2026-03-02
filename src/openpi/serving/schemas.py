@@ -1,56 +1,56 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 import itertools
-import time
 
-from openpi_client.messages import InferRequest
+import numpy as np
+from openpi_client.messages import InferType
+from openpi_client.messages import RTCParams
+from openpi_client.messages import TrainTimeRTCParams
+from openpi_client.messages import VlashParams
 
+DEFAULT_EXECUTION_HORIZON = 10
+DISTANCE_THRESHOLD = 0.5
+MINIMUM_EXECUTION_HORIZON = 5
 _request_id_counter = itertools.count(1)
 
 
 @dataclass(frozen=True)
-class ArrivedRequest:
-    infer_request: InferRequest
+class SlotRequest:
+    """Flows end-to-end: built by WS → sent to Scheduler → put in batch_queue → received by GPU."""
+
+    slot_index: int
+    robot_id: str
     request_id: int
-    arrival_timestamp: float
+    arrival_timestamp: float  # when WS received the request (server-side)
+    start_step: int
+    request_timestamp: float
+    deadline: float
+    infer_type: InferType
+    params: RTCParams | VlashParams | TrainTimeRTCParams | None
+    noise: np.ndarray | None
 
-    @classmethod
-    def receive(cls, req: InferRequest) -> "ArrivedRequest":
-        return cls(
-            infer_request=req,
-            request_id=next(_request_id_counter),
-            arrival_timestamp=time.time(),
+    # TODO: fix
+    def can_infer(self, last_start_step: dict[str, int], deadlines: dict[str, float]) -> bool:
+        robot_id = self.robot_id
+        stale: bool = robot_id in deadlines and self.deadline < deadlines[robot_id]
+        inside_execution_minimum: bool = (
+            robot_id in last_start_step and self.start_step < last_start_step[robot_id] + MINIMUM_EXECUTION_HORIZON
         )
 
-    def dequeue(self) -> "DequeuedRequest":
-        return DequeuedRequest(
-            infer_request=self.infer_request,
-            request_id=self.request_id,
-            arrival_timestamp=self.arrival_timestamp,
-            dequeue_timestamp=time.time(),
-        )
+        return not stale and not inside_execution_minimum
 
 
 @dataclass(frozen=True)
-class DequeuedRequest:
-    infer_request: InferRequest
-    request_id: int
-    arrival_timestamp: float
-    dequeue_timestamp: float
+class CompletionNotification:
+    """Sent from GPU to scheduler after inference so the scheduler can update its state."""
 
-    def send(self) -> "SentRequest":
-        return SentRequest(
-            infer_request=self.infer_request,
-            request_id=self.request_id,
-            arrival_timestamp=self.arrival_timestamp,
-            dequeue_timestamp=self.dequeue_timestamp,
-            send_timestamp=time.time(),
-        )
+    robot_id: str
+    start_step: int
 
 
 @dataclass(frozen=True)
-class SentRequest:
-    infer_request: InferRequest
-    request_id: int
-    arrival_timestamp: float
-    dequeue_timestamp: float
-    send_timestamp: float
+class BatchProfile:
+    """Latency profile per batch size (ms). Sent once from GPU to scheduler after warmup."""
+
+    latency_ms: dict[int, float]
