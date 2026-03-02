@@ -27,6 +27,8 @@ from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class Job:
@@ -270,9 +272,13 @@ def main(args: Args) -> None:
         log_file_name = f"libero_multi_robot_runtime_{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
         log_file_path = pathlib.Path(args.log_dir) / log_file_name
         pathlib.Path(args.log_dir).mkdir(parents=True, exist_ok=True)
-        logging_config.setup_logging(log_path=log_file_path)
+        logging_config.setup_logging(
+            log_path=log_file_path, level=logging.DEBUG if args.debug else logging.INFO
+        )
     else:
-        logging_config.setup_logging()
+        logging_config.setup_logging(
+            level=logging.DEBUG if args.debug else logging.INFO
+        )
 
     if not args.overwrite and pathlib.Path(args.output_dir).exists():
         raise ValueError(f"Output path {args.output_dir} already exists")

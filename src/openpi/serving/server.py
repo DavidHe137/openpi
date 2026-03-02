@@ -25,6 +25,9 @@ from dataclasses import asdict
 from dataclasses import dataclass
 import logging
 import multiprocessing as mp
+from multiprocessing.synchronize import Event
+import os
+import signal
 import time
 import uuid
 
@@ -46,6 +49,7 @@ from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import _request_id_counter
 from openpi.serving.slots import RobotSlots
 
+MAX_ROBOTS = 100
 logger = logging.getLogger(__name__)
 
 _uid = uuid.uuid4().hex[:8]
@@ -71,33 +75,32 @@ async def _router_task(response_sock: zmq.asyncio.Socket, response_queues: dict[
         responses: list[InferResponse] = await response_sock.recv_pyobj()
         for response in responses:
             queue = response_queues.get(response.robot_id)
+            logger.debug("Dispatching response to robot %s", response.robot_id)
             if queue is not None:
                 await queue.put(response)
             else:
                 logger.debug("No active connection for robot %s, dropping response", response.robot_id)
 
 
+async def _watchdog_task(gpu_proc: mp.Process, scheduler_proc: mp.Process) -> None:
+    """Crashes the server if either backend process dies unexpectedly."""
+    while True:
+        await asyncio.sleep(1)
+        for proc in (gpu_proc, scheduler_proc):
+            if not proc.is_alive():
+                logger.critical("Backend process %s died (exit code %s), crashing server", proc.name, proc.exitcode)
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+
 def _start_backend(
     metadata: ServerMetadata, policy_factory: Callable, log_queue: mp.Queue | None
-) -> tuple[mp.Process, mp.Process, RobotSlots, mp.Event, mp.Event]:
-    slots = RobotSlots(max_robots=metadata.max_batch_size * 4)
-    batch_queue: mp.Queue = mp.Queue(maxsize=2)
-    sched_ready = mp.Event()
-    gpu_ready = mp.Event()
+) -> tuple[mp.Process, mp.Process, RobotSlots, Event, Event]:
+    slots = RobotSlots(max_robots=MAX_ROBOTS)
+    batch_queue: mp.Queue = mp.Queue()
 
-    scheduler_proc = mp.Process(
-        target=_run_scheduler,
-        args=(
-            socket_addresses["sched_in_ep"],
-            socket_addresses["result_ep"],
-            batch_queue,
-            metadata.max_batch_size,
-            metadata.scheduling_algorithm,
-            sched_ready,
-            log_queue,
-        ),
-        daemon=True,
-    )
+    gpu_ready = mp.Event()
+    sched_ready = mp.Event()
 
     gpu_proc = mp.Process(
         target=_run_gpu_worker,
@@ -114,10 +117,24 @@ def _start_backend(
         daemon=True,
     )
 
-    logger.info("Starting scheduler subprocess…")
-    scheduler_proc.start()
+    scheduler_proc = mp.Process(
+        target=_run_scheduler,
+        args=(
+            socket_addresses["sched_in_ep"],
+            socket_addresses["result_ep"],
+            batch_queue,
+            metadata.max_batch_size,
+            metadata.scheduling_algorithm,
+            sched_ready,
+            log_queue,
+        ),
+        daemon=True,
+    )
+
     logger.info("Starting GPU subprocess…")
     gpu_proc.start()
+    logger.info("Starting scheduler subprocess…")
+    scheduler_proc.start()
 
     return scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready
 
@@ -153,12 +170,23 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
         )
 
         router = asyncio.create_task(_router_task(response_sock, response_queues))
+        watchdog = asyncio.create_task(_watchdog_task(gpu_proc, scheduler_proc))
 
         yield
 
+        watchdog.cancel()
         router.cancel()
         gpu_proc.terminate()
         scheduler_proc.terminate()
+
+        loop = asyncio.get_event_loop()
+        for proc in (gpu_proc, scheduler_proc):
+            await loop.run_in_executor(None, proc.join, 5)
+            if proc.is_alive():
+                logger.warning("Process %s did not exit cleanly, killing", proc.name)
+                proc.kill()
+                await loop.run_in_executor(None, proc.join)
+
         scheduler_sock.close()
         response_sock.close()
         zmq_ctx.term()
@@ -202,7 +230,10 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
                         noise=req.noise,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
+                    logger.debug("Sent slot request to scheduler: %s", slot_req)
             except WebSocketDisconnect:
+                # FIXME: this is a hack to reset the robot when the websocket disconnects, should make a special message for removing the robot from the scheduler
+                await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
                 logger.debug("Robot %s disconnected", robot_id)
 
         async def send():
@@ -216,6 +247,8 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
             await recv_task
         finally:
             send_task.cancel()
+            # FIXME: this is a hack to reset the robot when the websocket disconnects
+            await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
             state.slots.free(robot_id)
             state.response_queues.pop(robot_id, None)
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import multiprocessing as mp
+from multiprocessing.synchronize import Event
+import signal
 
 from openpi_client.messages import ResetRequest
 import zmq
@@ -10,11 +12,26 @@ from openpi.scheduling import RequestScheduler
 from openpi.scheduling.baselines import GreedyScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
-from openpi.serving.schemas import CompletionNotification
+from openpi.serving.schemas import BatchProfile
 from openpi.serving.schemas import SlotRequest
 from openpi.shared import logging_config
 
 logger = logging.getLogger(__name__)
+
+
+def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
+    """Block until the GPU worker sends its BatchProfile over result_sock."""
+    logger.info("Waiting for batch profile from GPU worker...")
+    while True:
+        if result_sock.poll(timeout=100):
+            msg = result_sock.recv_pyobj()
+            if isinstance(msg, BatchProfile):
+                logger.info(
+                    "Received batch profile: {%s}",
+                    ", ".join(f"{k}: {v:.1f}ms" for k, v in sorted(msg.latency_ms.items())),
+                )
+                return msg.latency_ms
+            logger.warning("Unexpected message before batch profile: %s", type(msg).__name__)
 
 
 _SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
@@ -30,7 +47,7 @@ def _run_scheduler(
     batch_queue: mp.Queue,
     max_batch_size: int,
     algorithm: str,
-    ready_event: mp.Event,
+    ready_event: Event,
     log_queue: mp.Queue | None = None,
 ) -> None:
     """Owns all robot state; dispatches batches to GPU via mp.Queue.
@@ -39,6 +56,27 @@ def _run_scheduler(
     cannot delay client response delivery. This process only receives small CompletionNotifications
     from GPU for state bookkeeping.
     """
+
+    # NOTE: uncomment this to attach a debugger to the scheduler process
+    # import debugpy
+
+    # debugpy.listen(("0.0.0.0", 5679))  # different port from main process
+    # debugpy.wait_for_client()
+
+    # might need to run `ssh -NL 5679:localhost:5679 <server node>`
+    # also might need to add this to vscode launch.json:
+    # "configurations": [
+    #     {
+    #         "name": "Attach scheduler",
+    #         "type": "debugpy",
+    #         "request": "attach",
+    #         "connect": {"host": "localhost", "port": 5679}
+    #     }
+    # ]
+
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
     if log_queue is not None:
         logging_config.setup_worker_logging(log_queue, process_name="scheduler")
 
@@ -47,7 +85,6 @@ def _run_scheduler(
     cls = _SCHEDULER_REGISTRY.get(algorithm)
     if cls is None:
         raise ValueError(f"Unknown scheduling algorithm {algorithm!r}, expected one of: {list(_SCHEDULER_REGISTRY)}")
-    scheduler = cls(max_batch_size=max_batch_size)
 
     ctx = zmq.Context()
 
@@ -57,6 +94,10 @@ def _run_scheduler(
     result_sock = ctx.socket(zmq.PULL)
     result_sock.bind(result_ep)  # GPU connects
 
+    batch_profile = _recv_batch_profile(result_sock)
+
+    scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile)
+
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)
     poller.register(result_sock, zmq.POLLIN)
@@ -65,27 +106,23 @@ def _run_scheduler(
     logger.info("Scheduler ready")
 
     while True:
-        poller.poll(timeout=1)  # 1ms — ensures dispatch runs regularly
+        poller.poll(timeout=1)
 
-        # Phase 1: drain WS messages
         while req_sock.poll(0):
             msg = req_sock.recv_pyobj(zmq.NOBLOCK)
             if isinstance(msg, ResetRequest):
                 scheduler.reset_robot(msg.robot_id)
+                logger.debug("Received reset request: %s", msg)
             elif isinstance(msg, SlotRequest):
                 scheduler.update(msg)
+                logger.debug("Received slot request: %s", msg)
 
-        # Phase 2: drain GPU completion notifications (small — no arrays)
-        while result_sock.poll(0):
-            notifications: list[CompletionNotification] = result_sock.recv_pyobj(zmq.NOBLOCK)
-            for n in notifications:
-                scheduler.notify_complete(n)
+        # FIXME: put this here in case its needed for ILP, can remove if not
+        # while result_sock.poll(0):
+        #     msg = result_sock.recv_pyobj(zmq.NOBLOCK)
+        #     if isinstance(msg, list):
+        #         scheduler.process_notifications(msg)
+        # logger.debug("Received completion notifications: %s", msg)
 
-        # Phase 3: dispatch next batch (only if queue has room)
-        # NOTE: this is where ILP solving will go — it may block for a long time,
-        # but that's fine because response delivery to clients bypasses this process entirely.
         if not batch_queue.full():
-            batch = scheduler.schedule()
-            if batch:
-                scheduler.update_deadlines(batch)
-                batch_queue.put_nowait(batch)
+            scheduler.schedule()

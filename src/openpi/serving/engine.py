@@ -3,18 +3,40 @@ from __future__ import annotations
 from collections.abc import Callable
 import logging
 import multiprocessing as mp
+from multiprocessing.synchronize import Event
+import signal
 import time
 
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 import zmq
 
-from openpi.serving.schemas import CompletionNotification
+from openpi.serving.schemas import BatchProfile
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.slots import RobotSlots
 from openpi.shared import logging_config
 
 logger = logging.getLogger(__name__)
+
+
+def _profile_and_send(policy, max_batch_size: int, notify_sock: zmq.Socket) -> None:
+    """Profile inference latency for each batch size and send a BatchProfile to the scheduler."""
+    logger.info("Profiling batch latency for sizes 1..%d", max_batch_size)
+    profile: dict[int, float] = {}
+
+    request = policy.make_infer_request()
+    for batch_size in range(1, max_batch_size + 1):
+        latencies = []
+        for _ in range(5):
+            t0 = time.perf_counter()
+            policy.infer_batch([request] * batch_size)
+            t1 = time.perf_counter()
+            latency = (t1 - t0) * 1e3
+            latencies.append(latency)
+        profile[batch_size] = sum(latencies) / len(latencies)
+        logger.info("  batch_size=%d → %.1f ms", batch_size, profile[batch_size])
+    notify_sock.send_pyobj(BatchProfile(latency_ms=profile))
+    logger.info("Sent batch profile to scheduler")
 
 
 def _run_gpu_worker(
@@ -24,7 +46,7 @@ def _run_gpu_worker(
     batch_queue: mp.Queue,
     gpu_out_ep: str,
     result_ep: str,
-    ready_event: mp.Event,
+    ready_event: Event,
     log_queue: mp.Queue | None = None,
 ) -> None:
     """Loads model, then loops: recv batch → read obs from shared memory → infer → send results.
@@ -33,6 +55,9 @@ def _run_gpu_worker(
     to the scheduler (result_ep) for state updates. These are decoupled so ILP solving in the
     scheduler cannot delay response delivery to clients.
     """
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
     if log_queue is not None:
         logging_config.setup_worker_logging(log_queue, process_name="gpu-worker")
 
@@ -50,6 +75,8 @@ def _run_gpu_worker(
     # State-update path to scheduler (scheduler binds)
     notify_sock = ctx.socket(zmq.PUSH)
     notify_sock.connect(result_ep)
+
+    _profile_and_send(policy, max_batch_size, notify_sock)
 
     ready_event.set()
     logger.info("GPU worker ready")
@@ -71,7 +98,7 @@ def _run_gpu_worker(
             for sr in slot_reqs
         ]
 
-        logger.info("GPU worker inferring batch of %d", len(infer_requests))
+        logger.debug("Inferring batch of %d", len(infer_requests))
         t0 = time.perf_counter()
         actions = policy.infer_batch(infer_requests)
         t1 = time.perf_counter()
@@ -93,6 +120,7 @@ def _run_gpu_worker(
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
         response_sock.send_pyobj(responses)
 
+        # FIXME: might not be needed
         # Notify scheduler of completions for state updates (can be delayed by ILP, that's fine)
-        notifications = [CompletionNotification(robot_id=r.robot_id, start_step=r.start_step) for r in responses]
-        notify_sock.send_pyobj(notifications)
+        # notifications = [CompletionNotification(robot_id=r.robot_id, start_step=r.start_step) for r in responses]
+        # notify_sock.send_pyobj(notifications)

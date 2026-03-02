@@ -1,38 +1,52 @@
 from abc import ABC
 from abc import abstractmethod
+import multiprocessing as mp
 
-from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SlotRequest
 
 
 class RequestScheduler(ABC):
-    def __init__(self, max_batch_size: int = 1):
+    def __init__(
+        self,
+        batch_queue: mp.Queue,
+        max_batch_size: int = 1,
+        batch_profile: dict[int, float] | None = None,
+    ):
+        self._batch_queue = batch_queue
         self._max_batch_size = max_batch_size
-        self._deadlines: dict[str, float] = {}
-        # Only tracks last completed start_step per robot
-        self._last_start_step: dict[str, int] = {}
-        self._pending: dict[str, SlotRequest] = {}
+        self._batch_profile_ms: dict[int, float] = batch_profile or {}
 
-        # Round-robin state
-        self._rr_index: int = 0
-        self._rr_robot_order: list[str] = []
+        self._latest_requests: dict[str, SlotRequest] = {}
+        self._latest_scheduled_requests: dict[str, SlotRequest] = {}
+        self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
 
     def update(self, request: SlotRequest) -> None:
-        """Store the latest pending request for this robot."""
-        self._pending[request.robot_id] = request
-
-    @abstractmethod
-    def schedule(self) -> list[list[SlotRequest]]:
-        pass
-
-    def update_deadlines(self, batch: list[SlotRequest]) -> None:
-        for request in batch:
+        self._latest_requests[request.robot_id] = request
+        if request.deadline is not None and request.deadline > self._deadlines.get(request.robot_id, 0):
             self._deadlines[request.robot_id] = request.deadline
 
-    def notify_complete(self, notification: CompletionNotification) -> None:
-        self._last_start_step[notification.robot_id] = notification.start_step
+    def schedule(self) -> None:
+        """Return a list of batches of requests to be sent to the GPU."""
+        batches = self.get_next_batches()
+        for batch in batches:
+            for request in batch:
+                self._deadlines[request.robot_id] = request.deadline
+                self._latest_scheduled_requests[request.robot_id] = request
+            self._batch_queue.put_nowait(batch)
+
+    @abstractmethod
+    def get_next_batches(self) -> list[list[SlotRequest]]:
+        pass
 
     def reset_robot(self, robot_id: str) -> None:
-        self._last_start_step.pop(robot_id, None)
         self._deadlines.pop(robot_id, None)
-        self._pending.pop(robot_id, None)
+        self._latest_requests.pop(robot_id, None)
+
+    def _get_schedulable_requests(self) -> list[SlotRequest]:
+        """Get all requests that are not yet scheduled."""
+        # TODO: might add more logic here in the future
+        return [
+            req
+            for req in self._latest_requests.values()
+            if req is not self._latest_scheduled_requests.get(req.robot_id, None)
+        ]

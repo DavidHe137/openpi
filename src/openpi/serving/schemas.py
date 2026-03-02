@@ -47,3 +47,10 @@ class CompletionNotification:
 
     robot_id: str
     start_step: int
+
+
+@dataclass(frozen=True)
+class BatchProfile:
+    """Latency profile per batch size (ms). Sent once from GPU to scheduler after warmup."""
+
+    latency_ms: dict[int, float]

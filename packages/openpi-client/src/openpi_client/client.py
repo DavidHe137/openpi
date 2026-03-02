@@ -13,6 +13,8 @@ from openpi_client import msgpack_numpy
 from openpi_client import messages
 from openpi_client.schemas import ActionChunk, Observation, ServerMetadata
 
+logger = logging.getLogger(__name__)
+
 
 class BidirectionalWebsocket:
     """Implements the Policy interface by communicating with a server over websocket.
@@ -93,6 +95,7 @@ class BidirectionalWebsocket:
             noise=noise,
         )
         data = msgpack_numpy.packb(asdict(request))
+        logging.debug("Sending request: %s", request)
 
         self._ws.send(data)  # type: ignore
 
@@ -116,6 +119,7 @@ class BidirectionalWebsocket:
             execution_horizon=infer_response.execution_horizon,
             noise=infer_response.noise,
         )
+        logger.debug("Received response: %s", action_chunk)
         return action_chunk
 
     def reset(self) -> None:

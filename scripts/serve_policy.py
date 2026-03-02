@@ -66,6 +66,9 @@ class Args:
     # Scheduling algorithm for batching requests. # TODO: maybe should use enum?
     scheduling_algorithm: Literal["greedy", "round_robin", "random"] = "greedy"
 
+    # Logging level.
+    log_debug: bool = False
+
 
 def create_policy(args: Args) -> _policy.Policy:
     """Create a policy from the given arguments."""
@@ -95,7 +98,9 @@ def main(args: Args) -> None:
         / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_queue, log_listener = logging_config.setup_logging(log_path=log_path)
+    log_queue, log_listener = logging_config.setup_logging(
+        log_path=log_path, level=logging.DEBUG if args.log_debug else logging.INFO
+    )
 
     # Create policy factory to avoid CUDA context fork issues
     def policy_factory():
