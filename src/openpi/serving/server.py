@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import dataclasses
 from dataclasses import asdict
 from dataclasses import dataclass
 import logging
@@ -32,6 +33,8 @@ import time
 import uuid
 
 from fastapi import FastAPI
+from fastapi import Request
+from fastapi import Response
 from fastapi import WebSocket
 from fastapi.concurrency import asynccontextmanager
 from openpi_client import msgpack_numpy
@@ -44,6 +47,7 @@ import uvicorn
 import zmq.asyncio
 
 from openpi.serving.engine import _run_gpu_worker
+from openpi.serving.metrics import MetricsStore
 from openpi.serving.scheduler import _run_scheduler
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import _request_id_counter
@@ -67,12 +71,18 @@ class ServerState:
     slots: RobotSlots  # WS manages slot allocation
     gpu_proc: mp.Process
     scheduler_proc: mp.Process
+    metrics_store: MetricsStore
 
 
-async def _router_task(response_sock: zmq.asyncio.Socket, response_queues: dict[str, asyncio.Queue]) -> None:
+async def _router_task(
+    response_sock: zmq.asyncio.Socket,
+    response_queues: dict[str, asyncio.Queue],
+    metrics_store: MetricsStore,
+) -> None:
     """Reads batches of InferResponses directly from GPU and dispatches to per-robot queues."""
     while True:
         responses: list[InferResponse] = await response_sock.recv_pyobj()
+        metrics_store.record_batch(responses)
         for response in responses:
             queue = response_queues.get(response.robot_id)
             logger.debug("Dispatching response to robot %s", response.robot_id)
@@ -160,6 +170,7 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
         response_sock.bind(socket_addresses["gpu_out_ep"])
 
         response_queues: dict[str, asyncio.Queue] = {}
+        metrics_store = MetricsStore()
 
         app.state.server = ServerState(
             scheduler_sock=scheduler_sock,
@@ -167,9 +178,10 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
             slots=slots,
             gpu_proc=gpu_proc,
             scheduler_proc=scheduler_proc,
+            metrics_store=metrics_store,
         )
 
-        router = asyncio.create_task(_router_task(response_sock, response_queues))
+        router = asyncio.create_task(_router_task(response_sock, response_queues, metrics_store))
         watchdog = asyncio.create_task(_watchdog_task(gpu_proc, scheduler_proc))
 
         yield
@@ -212,6 +224,10 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
                         await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
                         continue
 
+                    if "receive_time" in msg:  # ResponseAck
+                        state.metrics_store.record_ack(robot_id, msg["request_id"], msg["receive_time"])
+                        continue
+
                     req = InferRequest(**msg)
 
                     # Write obs directly to shared memory - no ZMQ copy of image arrays
@@ -239,7 +255,10 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
         async def send():
             while True:
                 response: InferResponse = await response_queue.get()
-                await websocket.send_bytes(msgpack_numpy.packb(asdict(response)))
+                send_time = time.time()
+                stamped = dataclasses.replace(response, server_send_time=send_time)
+                state.metrics_store.record_send(robot_id, response.request_id, send_time)
+                await websocket.send_bytes(msgpack_numpy.packb(asdict(stamped)))
 
         recv_task = asyncio.create_task(recv())
         send_task = asyncio.create_task(send())
@@ -257,15 +276,22 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
     async def server_metadata() -> dict:
         return asdict(metadata)
 
-    @app.post("/reset-metrics")
-    async def reset_metrics() -> None:
-        # TODO:
-        pass
-
     @app.get("/metrics")
-    async def metrics() -> str:
-        # TODO: plot metrics and clear history
-        return "OK"
+    async def get_metrics(request: Request) -> dict:
+        state: ServerState = request.app.state.server
+        return state.metrics_store.snapshot()
+
+    @app.get("/metrics/gantt")
+    async def get_metrics_gantt(request: Request, window_s: float = 60.0) -> Response:
+        state: ServerState = request.app.state.server
+        png = state.metrics_store.gantt_png(window_s=window_s)
+        return Response(content=png, media_type="image/png")
+
+    @app.post("/reset-metrics")
+    async def reset_metrics(request: Request) -> dict:
+        state: ServerState = request.app.state.server
+        state.metrics_store.reset()
+        return {"status": "ok"}
 
     return app
 

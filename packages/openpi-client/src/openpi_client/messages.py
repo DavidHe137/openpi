@@ -59,4 +59,14 @@ class InferResponse:
     actions: Float[np.ndarray, "1 action_horizon action_dim"]  # TODO: check the type on this
     execution_horizon: int
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
-    server_compute_ms: float = 0.0  # server-side inference time; allows client to isolate network latency
+    # Lifecycle timestamps (filled by server, all time.time()):
+    server_arrival_time: float = 0.0  # WS: when observation arrived
+    inference_start_time: float = 0.0  # GPU: before infer_batch
+    inference_end_time: float = 0.0  # GPU: after infer_batch
+    server_send_time: float = 0.0  # WS: just before websocket.send_bytes()
+
+
+@dataclass(frozen=True)
+class ResponseAck:
+    request_id: int  # matches InferResponse.request_id
+    receive_time: float  # time.time() on client at receipt
