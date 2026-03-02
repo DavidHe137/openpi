@@ -120,9 +120,9 @@ def _run_gpu_worker(
         ]
 
         logger.debug("Inferring batch of %d", len(infer_requests))
-        t0 = time.perf_counter()
+        t0 = time.time()
         actions = policy.infer_batch(infer_requests)
-        t1 = time.perf_counter()
+        t1 = time.time()
 
         responses = [
             InferResponse(
@@ -133,7 +133,9 @@ def _run_gpu_worker(
                 execution_horizon=len(action_dict["actions"]),
                 actions=action_dict["actions"],
                 noise=action_dict["noise"],
-                server_compute_ms=(t1 - t0) * 1e3,
+                server_arrival_time=sr.arrival_timestamp,
+                inference_start_time=t0,
+                inference_end_time=t1,
             )
             for sr, action_dict in zip(slot_reqs, actions, strict=True)
         ]
