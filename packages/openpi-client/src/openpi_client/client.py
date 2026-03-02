@@ -30,9 +30,20 @@ class BidirectionalWebsocket:
         api_key: Optional[str] = None,
     ) -> None:
         self._robot_id = robot_id
-        base = f"{host}" if port is None else f"{host}:{port}"
-        self._ws_uri = f"ws://{base}/ws?robot_id={robot_id}"
-        self._http_base = f"http://{base}"
+        explicit_scheme = False
+        if host.startswith("https://"):
+            ws_scheme, http_scheme = "wss", "https"
+            host = host[len("https://") :]
+            explicit_scheme = True
+        elif host.startswith("http://"):
+            ws_scheme, http_scheme = "ws", "http"
+            host = host[len("http://") :]
+            explicit_scheme = True
+        else:
+            ws_scheme, http_scheme = "ws", "http"
+        base = host if (port is None or explicit_scheme) else f"{host}:{port}"
+        self._ws_uri = f"{ws_scheme}://{base}/ws?robot_id={robot_id}"
+        self._http_base = f"{http_scheme}://{base}"
         self._api_key = api_key
         self._server_metadata = self._wait_for_server()
         self._ws = self._connect_ws()

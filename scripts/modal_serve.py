@@ -4,10 +4,17 @@ Connect with:
   uv run scripts/infer.py --host https://....modal.run --num-iters 50 --verbose
 """
 
+import logging
 import pathlib
 import subprocess
+import threading
+import time
+import urllib.error
+import urllib.request
 
 import modal
+
+log = logging.getLogger(__name__)
 
 app = modal.App("openpi-serve")
 
@@ -16,6 +23,7 @@ MAX_NUM_ROBOTS = 10
 REGION = "us-east-1"
 ENV_MODE = "LIBERO"
 MAX_BATCH_SIZE = 4
+PORT = 8080
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 
@@ -70,7 +78,6 @@ _base = (
 image = (
     _base.pip_install("av==12.3.0", "pytest==8.3.4")
     .pip_install_from_requirements(str(REQUIREMENTS_FILE))
-    .add_local_python_source("openpi", "openpi_client")
     .env(
         {
             "OPENPI_DATA_HOME": CHECKPOINT_VOLUME_PATH,
@@ -84,6 +91,8 @@ image = (
             "ABSL_FLAGS_VERBOSITY": "0",
         }
     )
+    .add_local_python_source("openpi", "openpi_client")
+    .add_local_dir(str(REPO_ROOT / "scripts"), remote_path="/root/scripts")
 )
 
 
@@ -99,17 +108,45 @@ image = (
 class ModalPolicyServer:
     @modal.enter(snap=True)
     def startup(self) -> None:
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger(__name__)
+        logger.info("Starting server")
+
         cmd = [
-            "uv",
-            "run",
-            "scripts/serve_policy.py",
+            "python",
+            "/root/scripts/serve_policy.py",
             "--env",
             ENV_MODE,
             "--max-batch-size",
-            MAX_BATCH_SIZE,
+            str(MAX_BATCH_SIZE),
+            "--port",
+            str(PORT),
         ]
 
-        self.process = subprocess.Popen(cmd)
+        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+        def _stream_logs(proc: subprocess.Popen) -> None:
+            for line in proc.stdout:
+                logger.info(line.rstrip())
+
+        threading.Thread(target=_stream_logs, args=(self.process,), daemon=True).start()
+
+        # Block until server is ready so Modal snapshots a fully-loaded server.
+        logger.info("Waiting for server to be ready...")
+        while True:
+            try:
+                urllib.request.urlopen(f"http://localhost:{PORT}/metadata", timeout=5)
+                break
+            except (urllib.error.URLError, OSError):
+                time.sleep(1)
+        logger.info("Server ready, snapshot will be taken now.")
+
+    @modal.web_server(
+        port=PORT,  # wrapped code must listen on this port
+        startup_timeout=10 * 60,  # how long can server startup take?
+    )
+    def serve(self):
+        pass
 
     @modal.exit()
     def teardown(self) -> None:
