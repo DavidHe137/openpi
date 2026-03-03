@@ -41,7 +41,6 @@ class RobotState:
     last_execution_horizon: int = 0
     last_server_send_times: dict = field(default_factory=dict)  # request_id → server_send_time
     total_starvations: int = 0
-    total_wasted_actions: int = 0
     recent_network_delays_ms: deque = field(default_factory=lambda: deque(maxlen=500))
 
 
@@ -81,8 +80,6 @@ class MetricsStore:
                 actions_remaining = state.last_execution_horizon - actions_consumed
                 if actions_remaining < 0:
                     state.total_starvations += abs(actions_remaining)
-                elif actions_remaining > 0:
-                    state.total_wasted_actions += actions_remaining
 
             state.last_start_step = response.start_step
             state.last_execution_horizon = response.execution_horizon
@@ -113,6 +110,13 @@ class MetricsStore:
         gpu_times = [b.gpu_time_ms for b in batches]
         avg_gpu_time_ms = float(np.mean(gpu_times)) if gpu_times else 0.0
 
+        if len(batches) >= 2:
+            total_wall_ms = (batches[-1].inference_end_time - batches[0].inference_start_time) * 1000
+            total_busy_ms = sum(gpu_times)
+            gpu_busy_pct = min(100.0, total_busy_ms / total_wall_ms * 100) if total_wall_ms > 0 else 0.0
+        else:
+            gpu_busy_pct = 0.0
+
         latencies_ms = [(b.inference_end_time - req_ts) * 1000 for b in batches for req_ts in b.request_timestamps]
         p50_latency_ms = float(np.percentile(latencies_ms, 50)) if latencies_ms else 0.0
         p99_latency_ms = float(np.percentile(latencies_ms, 99)) if latencies_ms else 0.0
@@ -127,7 +131,6 @@ class MetricsStore:
             delays = list(state.recent_network_delays_ms)
             per_robot[robot_id] = {
                 "total_starvations": state.total_starvations,
-                "total_wasted_actions": state.total_wasted_actions,
                 "avg_network_delay_ms": float(np.mean(delays)) if delays else 0.0,
             }
 
@@ -136,6 +139,7 @@ class MetricsStore:
             "total_batches": self._batch_counter,
             "total_requests": total_requests,
             "avg_gpu_time_ms": avg_gpu_time_ms,
+            "gpu_busy_pct": round(gpu_busy_pct, 1),
             "p50_latency_ms": p50_latency_ms,
             "p99_latency_ms": p99_latency_ms,
             "avg_queue_delay_ms": avg_queue_delay_ms,
@@ -149,22 +153,26 @@ class MetricsStore:
         t0 = self.start_time
 
         batch_data = []
-        for b in batches:
+        for i, b in enumerate(batches):
             per_req = []
-            for i, rid in enumerate(b.robot_ids):
+            for j, rid in enumerate(b.robot_ids):
                 per_req.append(
                     {
                         "robot_id": rid,
-                        "inbound_ms": round((b.server_arrival_times[i] - b.request_timestamps[i]) * 1000, 2),
-                        "queue_ms": round((b.inference_start_time - b.server_arrival_times[i]) * 1000, 2),
+                        "inbound_ms": round((b.server_arrival_times[j] - b.request_timestamps[j]) * 1000, 2),
+                        "queue_ms": round((b.inference_start_time - b.server_arrival_times[j]) * 1000, 2),
                         "infer_ms": round(b.gpu_time_ms, 2),
                     }
                 )
+            idle_before_ms = (
+                round((b.inference_start_time - batches[i - 1].inference_end_time) * 1000, 2) if i > 0 else 0.0
+            )
             batch_data.append(
                 {
                     "t": round(b.inference_end_time - t0, 3),
                     "batch_size": len(b.robot_ids),
                     "gpu_time_ms": round(b.gpu_time_ms, 2),
+                    "idle_before_ms": idle_before_ms,
                     "inference_start_t": round(b.inference_start_time - t0, 3),
                     "inference_end_t": round(b.inference_end_time - t0, 3),
                     "robot_ids": b.robot_ids,

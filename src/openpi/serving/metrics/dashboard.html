@@ -76,6 +76,7 @@ tr:last-child td { border-bottom: none; }
     <div class="stat-card"><div class="stat-value" id="s-p50">—</div><div class="stat-label">p50 latency (ms)</div></div>
     <div class="stat-card"><div class="stat-value" id="s-p99">—</div><div class="stat-label">p99 latency (ms)</div></div>
     <div class="stat-card"><div class="stat-value" id="s-gpu">—</div><div class="stat-label">avg GPU time (ms)</div></div>
+    <div class="stat-card"><div class="stat-value" id="s-busy">—</div><div class="stat-label">GPU busy (%)</div></div>
     <div class="stat-card"><div class="stat-value" id="s-queue">—</div><div class="stat-label">avg queue delay (ms)</div></div>
     <div class="stat-card"><div class="stat-value" id="s-batches">—</div><div class="stat-label">total batches</div></div>
     <div class="stat-card"><div class="stat-value" id="s-uptime">—</div><div class="stat-label">uptime (s)</div></div>
@@ -85,8 +86,8 @@ tr:last-child td { border-bottom: none; }
 <div class="section">
   <div class="section-title">Per-Robot</div>
   <table>
-    <thead><tr><th>Robot</th><th>Starvations</th><th>Wasted Actions</th><th>Avg Net Delay (ms)</th></tr></thead>
-    <tbody id="robot-tbody"><tr><td colspan="4" style="color:#444;padding:12px">Refresh to load.</td></tr></tbody>
+    <thead><tr><th>Robot</th><th>Starvations</th><th>Avg Net Delay (ms)</th></tr></thead>
+    <tbody id="robot-tbody"><tr><td colspan="3" style="color:#444;padding:12px">Refresh to load.</td></tr></tbody>
   </table>
 </div>
 
@@ -117,6 +118,11 @@ tr:last-child td { border-bottom: none; }
       <div id="plot-infer" class="plot"></div>
       <div id="plot-outbound" class="plot"></div>
     </div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-header">GPU Busy Time (per second)</div>
+    <div id="plot-busy" class="plot"></div>
   </div>
 
   <div class="chart-card">
@@ -249,6 +255,41 @@ function renderStage(hist, robot) {
   }
 }
 
+function renderGpuBusy(hist) {
+  const bs = hist.batches;
+  if (bs.length < 2) { Plotly.react('plot-busy', [], L({ title: 'No data' }), CFG); return; }
+
+  const t0 = bs[0].inference_start_t;
+  const t1 = bs[bs.length - 1].inference_end_t;
+  const nBuckets = Math.ceil(t1 - t0) + 1;
+
+  // For each 1-second bucket, accumulate busy ms by intersecting each batch's
+  // [inference_start_t, inference_end_t] interval with [t0+k, t0+k+1].
+  const busyMs = new Array(nBuckets).fill(0);
+  for (const b of bs) {
+    const start = b.inference_start_t - t0;
+    const end   = b.inference_end_t   - t0;
+    const lo = Math.floor(start);
+    const hi = Math.min(Math.floor(end), nBuckets - 1);
+    for (let k = lo; k <= hi; k++) {
+      const overlap = Math.min(end, k + 1) - Math.max(start, k);
+      if (overlap > 0) busyMs[k] += overlap * 1000;
+    }
+  }
+
+  const times = busyMs.map((_, i) => t0 + i + 0.5);
+
+  Plotly.react('plot-busy', [
+    { type: 'scatter', x: times, y: busyMs, mode: 'lines', fill: 'tozeroy',
+      line: { color: '#4fc3f7', width: 1.5 },
+      fillcolor: 'rgba(79,195,247,0.12)',
+      name: 'busy ms/s' },
+  ], L({
+    xaxis: { title: 'Time since server start (s)' },
+    yaxis: { title: 'GPU busy (ms / s)', range: [0, 1000] },
+  }), CFG);
+}
+
 function renderGantt(hist, windowS) {
   if (!hist || !hist.batches.length) {
     Plotly.react('plot-gantt', [], L({ title: 'No data' }), CFG); return;
@@ -300,6 +341,7 @@ function renderStats(snap) {
   document.getElementById('s-p50').textContent     = f(snap.p50_latency_ms);
   document.getElementById('s-p99').textContent     = f(snap.p99_latency_ms);
   document.getElementById('s-gpu').textContent     = f(snap.avg_gpu_time_ms);
+  document.getElementById('s-busy').textContent    = f(snap.gpu_busy_pct) + '%';
   document.getElementById('s-queue').textContent   = f(snap.avg_queue_delay_ms);
   document.getElementById('s-batches').textContent = snap.total_batches.toLocaleString();
   document.getElementById('s-uptime').textContent  = f(snap.uptime_s);
@@ -315,7 +357,6 @@ function renderStats(snap) {
       <tr>
         <td style="color:#ccc">${id}</td>
         <td class="${r.total_starvations > 0 ? 'warn' : 'num'}">${r.total_starvations}</td>
-        <td class="${r.total_wasted_actions > 0 ? 'warn' : 'num'}">${r.total_wasted_actions}</td>
         <td class="num">${r.avg_network_delay_ms.toFixed(2)}</td>
       </tr>`).join('');
   }
@@ -342,6 +383,7 @@ async function doRefresh() {
     renderStats(snap);
     renderBatchSizes(hist);
     renderGpuDist(hist);
+    renderGpuBusy(hist);
     renderStage(hist, document.getElementById('robot-sel').value);
     renderGantt(hist, +document.getElementById('gantt-win').value || 60);
 
