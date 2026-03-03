@@ -47,6 +47,7 @@ def _run_scheduler(
     sched_in_ep: str,
     result_ep: str,
     batch_queue: mp.Queue,
+    scheduler_metrics_queue: mp.Queue | None,
     max_batch_size: int,
     algorithm: str,
     scheduler_kwargs: dict | None,
@@ -102,29 +103,6 @@ def _run_scheduler(
     extra_kwargs: dict = dict(scheduler_kwargs or {}) if cls is LookaheadScheduler else {}
     scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile, **extra_kwargs)
 
-    def _log_scheduler_timing_summary() -> None:
-        summary_fn = getattr(scheduler, "timing_summary", None)
-        if not callable(summary_fn):
-            return
-        summary = summary_fn()
-        if summary is None:
-            return
-        logger.info(
-            ("Scheduler timing summary: planning_calls=%d total=%.2fms mean=%.2fms p50=%.2fms p99=%.2fms max=%.2fms"),
-            int(summary["planning_calls"]),
-            summary["total_planning_time_ms"],
-            summary["mean_planning_time_ms"],
-            summary["p50_planning_time_ms"],
-            summary["p99_planning_time_ms"],
-            summary["max_planning_time_ms"],
-        )
-
-    def _handle_sigterm(signum, frame) -> None:
-        _log_scheduler_timing_summary()
-        raise SystemExit(0)
-
-    signal.signal(signal.SIGTERM, _handle_sigterm)
-
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)
     poller.register(result_sock, zmq.POLLIN)
@@ -153,3 +131,7 @@ def _run_scheduler(
 
         if not batch_queue.full():
             scheduler.schedule()
+            if scheduler_metrics_queue is not None:
+                samples = scheduler.flush_timing_samples()
+                if samples:
+                    scheduler_metrics_queue.put_nowait(samples)

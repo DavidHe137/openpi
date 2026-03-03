@@ -48,7 +48,6 @@ class LookaheadScheduler(RequestScheduler):
 
         self._server_available_at: float = 0.0
         self._predicted_valid_until: dict[str, float] = {}
-        self._planning_durations_ms: list[float] = []
 
     def schedule(self) -> None:
         """Dispatch the best batch and update predicted in-flight timing state."""
@@ -79,8 +78,7 @@ class LookaheadScheduler(RequestScheduler):
         if not schedulable:
             return []
 
-        planning_start = time.perf_counter_ns()
-        try:
+        with self.record_timing("schedule_decision"):
             request_by_robot = {request.robot_id: request for request in schedulable}
             active_robot_ids = sorted(
                 set(self._latest_requests) | set(self._deadlines) | set(self._predicted_valid_until)
@@ -132,9 +130,6 @@ class LookaheadScheduler(RequestScheduler):
                 return []
 
             return [[request_by_robot[active_robot_ids[index]] for index in best_candidate]]
-        finally:
-            planning_duration_ms = (time.perf_counter_ns() - planning_start) / 1e6
-            self._planning_durations_ms.append(planning_duration_ms)
 
     def reset_robot(self, robot_id: str) -> None:
         super().reset_robot(robot_id)
@@ -210,18 +205,3 @@ class LookaheadScheduler(RequestScheduler):
         candidate_robot_ids = tuple(robot_ids[index] for index in candidate)
         best_robot_ids = tuple(robot_ids[index] for index in best_candidate)
         return candidate_robot_ids < best_robot_ids
-
-    def timing_summary(self) -> dict[str, float] | None:
-        if not self._planning_durations_ms:
-            return None
-
-        durations_ms = sorted(self._planning_durations_ms)
-        count = len(durations_ms)
-        return {
-            "planning_calls": float(count),
-            "total_planning_time_ms": sum(durations_ms),
-            "mean_planning_time_ms": sum(durations_ms) / count,
-            "p50_planning_time_ms": durations_ms[min(count - 1, int(0.50 * (count - 1)))],
-            "p99_planning_time_ms": durations_ms[min(count - 1, int(0.99 * (count - 1)))],
-            "max_planning_time_ms": durations_ms[-1],
-        }

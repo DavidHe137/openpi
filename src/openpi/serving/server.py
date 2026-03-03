@@ -29,6 +29,7 @@ import multiprocessing as mp
 from multiprocessing.synchronize import Event
 import os
 from pathlib import Path
+import queue
 import signal
 import time
 import uuid
@@ -50,6 +51,7 @@ import zmq.asyncio
 from openpi.serving.engine import _run_gpu_worker
 from openpi.serving.metrics import MetricsStore
 from openpi.serving.scheduler import _run_scheduler
+from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import _request_id_counter
 from openpi.serving.slots import RobotSlots
@@ -105,14 +107,32 @@ async def _watchdog_task(gpu_proc: mp.Process, scheduler_proc: mp.Process) -> No
                 return
 
 
+async def _scheduler_metrics_task(
+    scheduler_metrics_queue: mp.Queue,
+    metrics_store: MetricsStore,
+) -> None:
+    """Drain scheduler timing samples from the scheduler subprocess into MetricsStore."""
+    while True:
+        drained = False
+        while True:
+            try:
+                samples: list[SchedulerTimingSample] = scheduler_metrics_queue.get_nowait()
+            except queue.Empty:
+                break
+            metrics_store.record_scheduler_timings(samples)
+            drained = True
+        await asyncio.sleep(0 if drained else 0.05)
+
+
 def _start_backend(
     metadata: ServerMetadata,
     policy_factory: Callable,
     scheduler_kwargs: dict[str, object] | None,
     log_queue: mp.Queue | None,
-) -> tuple[mp.Process, mp.Process, RobotSlots, Event, Event]:
+) -> tuple[mp.Process, mp.Process, RobotSlots, Event, Event, mp.Queue]:
     slots = RobotSlots(max_robots=MAX_ROBOTS)
     batch_queue: mp.Queue = mp.Queue()
+    scheduler_metrics_queue: mp.Queue = mp.Queue()
 
     gpu_ready = mp.Event()
     sched_ready = mp.Event()
@@ -138,6 +158,7 @@ def _start_backend(
             socket_addresses["sched_in_ep"],
             socket_addresses["result_ep"],
             batch_queue,
+            scheduler_metrics_queue,
             metadata.max_batch_size,
             metadata.scheduling_algorithm,
             scheduler_kwargs,
@@ -152,7 +173,7 @@ def _start_backend(
     logger.info("Starting scheduler subprocess…")
     scheduler_proc.start()
 
-    return scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready
+    return scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready, scheduler_metrics_queue
 
 
 def create_app(
@@ -163,7 +184,7 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready = _start_backend(
+        scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready, scheduler_metrics_queue = _start_backend(
             metadata,
             policy_factory,
             scheduler_kwargs,
@@ -198,11 +219,13 @@ def create_app(
         )
 
         router = asyncio.create_task(_router_task(response_sock, response_queues, metrics_store))
+        scheduler_metrics = asyncio.create_task(_scheduler_metrics_task(scheduler_metrics_queue, metrics_store))
         watchdog = asyncio.create_task(_watchdog_task(gpu_proc, scheduler_proc))
 
         yield
 
         watchdog.cancel()
+        scheduler_metrics.cancel()
         router.cancel()
         gpu_proc.terminate()
         scheduler_proc.terminate()
@@ -217,6 +240,7 @@ def create_app(
 
         scheduler_sock.close()
         response_sock.close()
+        scheduler_metrics_queue.close()
         zmq_ctx.term()
 
     app = FastAPI(lifespan=lifespan)

@@ -56,6 +56,9 @@ tr:last-child td { border-bottom: none; }
 .stage-grid { display: grid; grid-template-columns: repeat(4, 1fr); }
 .stage-grid .plot { border-right: 1px solid #222; }
 .stage-grid .plot:last-child { border-right: none; }
+.distribution-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.distribution-grid .plot { min-height: 260px; border-right: 1px solid #222; }
+.distribution-grid .plot:last-child { border-right: none; }
 </style>
 </head>
 <body>
@@ -129,6 +132,13 @@ tr:last-child td { border-bottom: none; }
       <div id="plot-queue" class="plot"></div>
       <div id="plot-infer" class="plot"></div>
       <div id="plot-outbound" class="plot"></div>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-header">Scheduler Timing Distributions</div>
+    <div id="scheduler-grid" class="distribution-grid">
+      <div style="color:#444;padding:12px 14px">Refresh to load.</div>
     </div>
   </div>
 
@@ -311,6 +321,42 @@ function renderStage(hist, robot) {
   }
 }
 
+function renderSchedulerTimings(hist) {
+  const container = document.getElementById('scheduler-grid');
+  const entries = Object.entries(hist.scheduler_timings_ms || {})
+    .filter(([, values]) => values.length)
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  if (!entries.length) {
+    container.innerHTML = '<div style="color:#444;padding:12px 14px">No scheduler timing samples yet.</div>';
+    return;
+  }
+
+  container.innerHTML = entries
+    .map((_, idx) => `<div id="plot-scheduler-${idx}" class="plot"></div>`)
+    .join('');
+
+  const small = { ...BASE_LAYOUT, margin: { t: 36, r: 8, b: 44, l: 48 } };
+  const colors = ['#64b5f6', '#81c784', '#ffb74d', '#ce93d8', '#f06292', '#4db6ac'];
+
+  entries.forEach(([name, values], idx) => {
+    Plotly.react(
+      `plot-scheduler-${idx}`,
+      [hist1d(values, colors[idx % colors.length], name, 'ms')],
+      {
+        ...small,
+        title: { text: name, font: { size: 12, color: '#888' } },
+        xaxis: { ...BASE_LAYOUT.xaxis, title: 'ms' },
+        yaxis: { ...BASE_LAYOUT.yaxis, title: 'count' },
+        paper_bgcolor: '#1a1a1a',
+        plot_bgcolor: '#111',
+        font: BASE_LAYOUT.font,
+      },
+      CFG,
+    );
+  });
+}
+
 function renderGantt(hist, windowS) {
   if (!hist || !hist.batches.length) {
     Plotly.react('plot-gantt', [], L({ title: 'No data' }), CFG); return;
@@ -406,6 +452,7 @@ async function doRefresh() {
     renderBatchSizes(hist);
     renderGpuDist(hist);
     renderStage(hist, document.getElementById('robot-sel').value);
+    renderSchedulerTimings(hist);
     renderGantt(hist, +document.getElementById('gantt-win').value || 60);
 
     document.getElementById('status').textContent =

@@ -43,3 +43,13 @@ class BatchProfile:
     """Latency profile per batch size (ms). Sent once from GPU to scheduler after warmup."""
 
     latency_ms: dict[int, float]
+
+
+@dataclass(frozen=True)
+class SchedulerTimingSample:
+    """A single scheduler timing sample emitted by the scheduler process."""
+
+    scheduler_name: str
+    metric_name: str
+    duration_ms: float
+    recorded_at: float
