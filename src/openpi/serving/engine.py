@@ -134,14 +134,14 @@ def _run_gpu_worker(
                 request_id=sd.request_id,
                 start_step=sd.start_step,
                 request_timestamp=sd.request_timestamp,
-                execution_horizon=len(result.actions),
-                actions=result.actions,
-                noise=result.noise,
+                execution_horizon=len(action_dict["actions"]),
+                actions=action_dict["actions"],
+                noise=action_dict["noise"],
                 server_arrival_time=sd.arrival_timestamp,
                 inference_start_time=t0,
                 inference_end_time=t1,
             )
-            for sr, sd, result in zip(slot_reqs, slot_datas, actions, strict=True)
+            for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True)
         ]
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients

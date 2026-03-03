@@ -1,5 +1,4 @@
-import abc
-import dataclasses
+from collections.abc import Sequence
 import enum
 import logging
 import pathlib
@@ -7,16 +6,24 @@ from typing import Any, TypeAlias
 
 import flax
 import flax.traverse_util
+import jax
+import jax.numpy as jnp
 import numpy as np
 from openpi_client import base_policy as _base_policy
 from openpi_client.messages import InferRequest
+from openpi_client.messages import InferResponse
 from openpi_client.messages import InferType
 from openpi_client.messages import RTCParams
+import torch
 from typing_extensions import override
 
+from openpi import transforms as _transforms
+from openpi.models import model as _model
 from openpi.policies.aloha_policy import make_aloha_example
 from openpi.policies.droid_policy import make_droid_example
 from openpi.policies.libero_policy import make_libero_example
+from openpi.shared import array_typing as at
+from openpi.shared import nnx_utils
 
 BasePolicy: TypeAlias = _base_policy.BasePolicy
 
@@ -35,78 +42,53 @@ class EnvMode(enum.Enum):
     LIBERO_REALTIME = "libero_realtime"
 
 
-@dataclasses.dataclass
-class InferResult:
-    actions: np.ndarray  # (action_horizon, action_dim), unnormalized
-    noise: np.ndarray  # (action_horizon, noise_dim)
-    state: np.ndarray  # (state_dim,), normalized
-
-
-class PolicyBackend(abc.ABC):
-    @abc.abstractmethod
-    def sample_noise(self, batch_size: int = 1) -> np.ndarray:
-        """Returns noise of shape (batch_size, action_horizon, noise_dim)."""
-        ...
-
-    @abc.abstractmethod
-    def infer(
-        self,
-        obs: dict,
-        noise: np.ndarray,
-        *,
-        use_rtc: bool = False,
-        prev_action: np.ndarray | None = None,
-        s: int = 5,
-        d: int = 4,
-    ) -> InferResult:
-        """Single-sample inference. noise shape: (action_horizon, noise_dim)."""
-        ...
-
-    @abc.abstractmethod
-    def infer_batch(self, observations: list[dict], batch_noise: np.ndarray) -> list[InferResult]:
-        """Batched inference. batch_noise shape: (batch_size, action_horizon, noise_dim)."""
-        ...
-
-    @abc.abstractmethod
-    def make_example_actions(self) -> np.ndarray:
-        """Returns example actions of shape (action_horizon, action_dim)."""
-        ...
-
-
-def _client_obs_to_policy_obs(obs: dict) -> dict:
-    """Convert client observation keys to policy observation keys."""
-    return {
-        "observation/state": obs["state"],
-        "observation/image": obs["image"],
-        "observation/wrist_image": obs["wrist_image"],
-        "prompt": obs["prompt"],
-    }
-
-
-def _stack_observations(observations: list[dict]) -> dict:
-    """Stack a list of observation dicts into a single batched dict."""
-    batched: dict = {}
-    for key in observations[0]:
-        values = [obs[key] for obs in observations]
-        if isinstance(values[0], np.ndarray):
-            batched[key] = np.stack(values, axis=0)
-        elif isinstance(values[0], dict):
-            batched[key] = {}
-            for subkey in values[0]:
-                subvalues = [v[subkey] for v in values]
-                if isinstance(subvalues[0], np.ndarray):
-                    batched[key][subkey] = np.stack(subvalues, axis=0)
-                else:
-                    batched[key][subkey] = subvalues
-        else:
-            batched[key] = values
-    return batched
-
-
 class Policy(BasePolicy):
-    def __init__(self, backend: PolicyBackend, *, metadata: dict[str, Any] | None = None):
-        self._backend = backend
+    def __init__(
+        self,
+        model: _model.BaseModel,
+        *,
+        rng: at.KeyArrayLike | None = None,
+        transforms: Sequence[_transforms.DataTransformFn] = (),
+        output_transforms: Sequence[_transforms.DataTransformFn] = (),
+        sample_kwargs: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        pytorch_device: str = "cpu",
+        is_pytorch: bool = False,
+        is_triton_optimized: bool = False,
+    ):
+        """Initialize the Policy.
+
+        Args:
+            model: The model to use for action sampling.
+            rng: Random number generator key for JAX models. Ignored for PyTorch models.
+            transforms: Input data transformations to apply before inference.
+            output_transforms: Output data transformations to apply after inference.
+            sample_kwargs: Additional keyword arguments to pass to model.sample_actions.
+            metadata: Additional metadata to store with the policy.
+            pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda:0").
+                          Only relevant when is_pytorch=True.
+            is_pytorch: Whether the model is a PyTorch model. If False, assumes JAX model.
+        """
+        self._model = model
+        self._input_transform = _transforms.compose(transforms)
+        self._output_transform = _transforms.compose(output_transforms)
+        self._sample_kwargs = sample_kwargs or {}
         self._metadata = metadata or {}
+        self._is_pytorch_model = is_pytorch
+        self._pytorch_device = pytorch_device
+        self._is_triton_optimized = is_triton_optimized
+
+        if self._is_pytorch_model:
+            # assert isinstance(self._model, torch.nn.Module), "Model must be a PyTorch model"
+            self._model = self._model.to(pytorch_device)
+            self._model.eval()
+        else:
+            self._rng = rng or jax.random.key(0)
+            self._model.sample_actions = nnx_utils.module_jit(
+                self._model.sample_actions,
+                static_argnames=["use_rtc"],
+            )
+        self._sample_actions = model.sample_actions
 
     @override
     def infer(
@@ -119,28 +101,295 @@ class Policy(BasePolicy):
         s_param: int = 5,
         d_param: int = 4,
     ) -> dict:  # type: ignore[misc]
-        if noise is None:
-            noise = self._backend.sample_noise(batch_size=1)[0]  # (ah, ad)
-        result = self._backend.infer(obs, noise, use_rtc=use_rtc, prev_action=prev_action, s=s_param, d=d_param)
-        return {"actions": result.actions, "noise": result.noise, "state": result.state}
+        # Use provided noise, or sample from model if not provided
+        if noise is not None:
+            noise_to_use = noise
+        # Sample noise from model
+        elif self._is_pytorch_model:
+            # PyTorch models don't use RNG, they use torch.randn internally
+            noise_to_use = self._model.sample_noise(self._pytorch_device, batch_size=1)
+        else:
+            self._rng, noise_rng = jax.random.split(self._rng)
+            noise_to_use = self._model.sample_noise(noise_rng, batch_size=1)[0]  # Remove batch dim
 
-    def infer_batch(self, requests: list[InferRequest]) -> list[InferResult]:
-        """Run inference on a batch of requests.
+        # Make a copy since transformations may modify the inputs in place.
+        inputs = jax.tree.map(lambda x: x, obs)
+        if self._is_triton_optimized:
+            # Triton policy expects already-repacked LIBERO dict keys (base_0_rgb, etc) and
+            # applies its own preprocessing/normalization internally.
+            triton_obs: dict[str, Any] = {
+                "state": np.asarray(inputs["observation/state"])[None, ...],
+                "base_0_rgb": np.asarray(inputs["observation/image"])[None, ...],
+                "left_wrist_0_rgb": np.asarray(inputs["observation/wrist_image"])[None, ...],
+                "right_wrist_0_rgb": np.asarray(inputs["observation/wrist_image"])[None, ...],
+                # Keep prompt as object array so downstream tokenization can `.item()` if needed.
+                "prompt": np.asarray([inputs.get("prompt", "")], dtype=object),
+            }
+
+            sample_kwargs = dict(self._sample_kwargs)
+            # Always pass noise to model (either provided or sampled)
+            sample_kwargs["noise"] = np.asarray(noise_to_use)
+
+            sample_rng_or_pytorch_device = self._pytorch_device
+            actions = self._sample_actions(sample_rng_or_pytorch_device, triton_obs, **sample_kwargs)
+
+            actions_np = np.asarray(actions)
+            if actions_np.ndim == 3 and actions_np.shape[0] == 1:
+                actions_np = actions_np[0]
+
+            # Build outputs in the same *normalized* space as the JAX model path:
+            # - `actions`: normalized (H, 32) from Triton model
+            # - `state`: normalized (32,) computed from raw state and checkpoint norm stats
+            # FIXME later: this should go inside the triton model
+            ns = getattr(self._model, "norm_stats", None)
+            raw_state = np.asarray(inputs["observation/state"], dtype=np.float32)
+            state_norm = np.pad(raw_state, (0, max(0, 32 - raw_state.shape[-1])), constant_values=0.0)
+            if ns is not None and "state" in ns:
+                mean = np.asarray(ns["state"]["mean"], dtype=np.float32)
+                std = np.asarray(ns["state"]["std"], dtype=np.float32)
+                mean = np.pad(mean, (0, max(0, 32 - mean.shape[-1])), constant_values=0.0)
+                std = np.pad(std, (0, max(0, 32 - std.shape[-1])), constant_values=1.0)
+                state_norm = (state_norm - mean) / (std + 1e-6)
+
+            outputs: dict[str, Any] = {"state": state_norm, "actions": actions_np}
+
+            # Apply the full output transform (including Unnormalize) to match the JAX policy.
+            outputs = self._output_transform(outputs)
+
+            # Return noise as numpy array
+            outputs["noise"] = np.asarray(noise_to_use)
+        else:
+            inputs = self._input_transform(inputs)
+            if not self._is_pytorch_model:
+                # Make a batch and convert to jax.Array.
+                inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+                self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+            else:
+                # Convert inputs to PyTorch tensors and move to correct device
+                inputs = jax.tree.map(
+                    lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...],
+                    inputs,
+                )
+                sample_rng_or_pytorch_device = self._pytorch_device
+
+            # Prepare kwargs for sample_actions
+            sample_kwargs = dict(self._sample_kwargs)
+            # Convert noise_to_use to appropriate format and add batch dimension
+            if self._is_pytorch_model:
+                if isinstance(noise_to_use, np.ndarray):
+                    noise_batched = torch.from_numpy(noise_to_use).to(self._pytorch_device)[None, ...]
+                else:
+                    noise_batched = noise_to_use[None, ...] if noise_to_use.ndim == 2 else noise_to_use
+            else:
+                noise_batched = jnp.asarray(noise_to_use)
+                if noise_batched.ndim == 2:
+                    noise_batched = noise_batched[None, ...]
+            sample_kwargs["noise"] = noise_batched
+
+            observation = _model.Observation.from_dict(inputs)
+
+            actions = self._sample_actions(
+                sample_rng_or_pytorch_device,
+                observation,
+                prev_action=prev_action,
+                use_rtc=use_rtc,
+                s=s_param,
+                d=d_param,
+                **sample_kwargs,
+            )
+            outputs = {
+                "state": observation.state,
+                "actions": actions,
+            }
+
+            # Collect data for JAX models (after JIT execution)
+            if not self._is_pytorch_model and hasattr(self._model, "output_actions_save"):
+                self._model.output_actions_save.append(actions)
+
+            if self._is_pytorch_model:
+                outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
+            else:
+                outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+
+            outputs = self._output_transform(outputs)
+
+            # Return noise as numpy array (unbatched)
+            if self._is_pytorch_model and hasattr(noise_to_use, "detach"):
+                outputs["noise"] = np.asarray(noise_to_use.detach().cpu())
+            else:
+                outputs["noise"] = np.asarray(noise_to_use)
+
+        return outputs
+
+    def create_batch_obs(self, observations: list[dict]) -> _model.Observation:
+        # Stack observations into batch format
+        batched_obs = {}
+
+        # FIXME: no idea how the typing here works
+        if self._is_triton_optimized:
+            return {
+                "state": np.stack([obs["observation/state"] for obs in observations], axis=0),
+                "base_0_rgb": np.stack([obs["observation/image"] for obs in observations], axis=0),
+                "left_wrist_0_rgb": np.stack([obs["observation/wrist_image"] for obs in observations], axis=0),
+                "right_wrist_0_rgb": np.stack([obs["observation/wrist_image"] for obs in observations], axis=0),
+                "prompt": np.stack([obs["prompt"] for obs in observations], axis=0),
+            }
+
+        # FIXME: don't hardcode these values
+        keys = (
+            "observation/state",
+            "observation/image",
+            "observation/wrist_image",
+            "prompt",
+        )
+        for key in keys:
+            # Stack all values for this key
+            values = [obs[key] for obs in observations]
+            if isinstance(values[0], np.ndarray):
+                batched_obs[key] = np.stack(values, axis=0)
+            elif isinstance(values[0], dict):
+                # Handle nested dictionaries (like images)
+                batched_obs[key] = {}
+                for subkey in values[0]:
+                    subvalues = [obs[key][subkey] for obs in observations]
+                    if isinstance(subvalues[0], np.ndarray):
+                        batched_obs[key][subkey] = np.stack(subvalues, axis=0)
+                    else:
+                        batched_obs[key][subkey] = subvalues
+            else:
+                batched_obs[key] = values
+
+        # Make a copy since transformations may modify the inputs in place.
+        inputs = jax.tree.map(lambda x: x, batched_obs)
+        # Apply transforms to batched observation
+        inputs = self._input_transform(inputs)
+
+        if not self._is_pytorch_model:
+            # Convert to jax.Array (already batched)
+            inputs = jax.tree.map(lambda x: jnp.asarray(x), inputs)
+        else:
+            # Convert inputs to PyTorch tensors and move to correct device
+            inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device), inputs)
+
+        return _model.Observation.from_dict(inputs)
+
+    def infer_batch(self, requests: list[InferRequest]) -> list[InferResponse]:  # FIXME: return type is wrong
+        """Run inference on a batch of request.
 
         Args:
-            requests: List of InferRequest objects.
+            obs_batch: List of InferRequest objects of the same infer_type.
+            noise: Optional noise tensor for batch (shape: batch_size, action_horizon, action_dim)
 
         Returns:
-            List of InferResult objects, one for each input request.
+            List of InferResponse objects, one for each input request.
         """
         if not requests:
             return []
-        batch_noise = self._backend.sample_noise(batch_size=len(requests))  # (B, ah, ad)
-        for i, req in enumerate(requests):
-            if req.noise is not None:
-                batch_noise[i] = req.noise
-        observations = [_client_obs_to_policy_obs(req.observation) for req in requests]
-        return self._backend.infer_batch(observations, batch_noise)
+
+        # TODO: really bad code here
+        batch_size = len(requests)
+        # Sample batched noise from model
+        if self._is_pytorch_model:
+            sample_rng_or_pytorch_device = self._pytorch_device
+            noise_to_use = self._model.sample_noise(self._pytorch_device, batch_size=batch_size)
+            for i, request in enumerate(requests):
+                noise_to_use[i] = request.noise if request.noise is not None else noise_to_use[i]
+        else:
+            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+            noise_to_use = self._model.sample_noise(sample_rng_or_pytorch_device, batch_size=batch_size)
+            for i, request in enumerate(requests):
+                noise_to_use = noise_to_use.at[i].set(request.noise if request.noise is not None else noise_to_use[i])
+
+        # FIXME: temporary hack
+        def rename_keys(obs: dict) -> dict:
+            return {
+                "observation/state": obs["state"],
+                "observation/image": obs["image"],
+                "observation/wrist_image": obs["wrist_image"],
+                "prompt": obs["prompt"],
+            }
+
+        # TODO: fix typing here, I think observation is sent over as a dict
+        observation = self.create_batch_obs([rename_keys(req.observation) for req in requests])
+
+        if self._is_triton_optimized:
+            # Batched Triton inference path - TODO Rohan: can be squashed into Jax batch path once below TODO is resolved
+
+            # Prepare kwargs for sample_actions
+            sample_kwargs = dict(self._sample_kwargs)
+
+            # Always pass noise to model (either provided or sampled)
+            sample_kwargs["noise"] = np.asarray(noise_to_use)
+
+            # TODO Rohan: return state_norm since Triton kernels bypass input_transform for internal method. Figure out why input_transform doesn't work
+            actions, state_norm = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+
+            # Convert actions to numpy
+            actions_np = np.asarray(actions)
+
+            # FIXME: I don't think the code below returns proper InferResponses?
+            # Process each batch element
+            results: list[InferResponse] = []
+            for i in range(len(requests)):
+                # Extract actions for this batch element
+                action_i = actions_np[i]
+
+                # Extract normalized state for this batch element
+                state_norm_i = state_norm[i]
+
+                result: dict[str, Any] = {"state": state_norm_i, "actions": action_i}
+
+                # Apply the full output transform (including Unnormalize)
+                result = self._output_transform(result)
+
+                # Extract noise for this batch element
+                noise_np = np.asarray(noise_to_use)
+                noise_i = noise_np[i] if noise_np.ndim == 3 else noise_np
+                result["noise"] = noise_i
+
+                results.append(result)
+
+            return results
+        # Prepare kwargs for sample_actions
+        sample_kwargs = dict(self._sample_kwargs)
+
+        # Always pass noise (either provided or sampled)
+        sample_kwargs["noise"] = noise_to_use
+
+        actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+        outputs = {
+            "state": observation.state,
+            "actions": actions,
+        }
+
+        if self._is_pytorch_model:
+            outputs = jax.tree.map(lambda x: np.asarray(x.detach().cpu()), outputs)
+        else:
+            outputs = jax.tree.map(lambda x: np.asarray(x), outputs)
+
+        outputs = self._output_transform(outputs)
+
+        # Split batch results back into individual results
+        results = []
+        for i in range(len(requests)):
+            result = {}
+            for key, value in outputs.items():
+                if isinstance(value, np.ndarray) and len(value.shape) > 0:
+                    result[key] = value[i]
+                else:
+                    result[key] = value
+
+            # Extract noise for this batch element
+            if self._is_pytorch_model and hasattr(noise_to_use, "detach"):
+                noise_batch = np.asarray(noise_to_use.detach().cpu())
+            else:
+                noise_batch = np.asarray(noise_to_use)
+            noise_i = noise_batch[i] if noise_batch.ndim == 3 else noise_batch
+            result["noise"] = noise_i
+
+            results.append(result)
+
+        return results
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -164,8 +413,9 @@ class Policy(BasePolicy):
         raise ValueError(f"Unknown environment: {env}")
 
     def make_example_actions(self) -> np.ndarray:
-        return self._backend.make_example_actions()
+        return self._model.make_example_actions()
 
+    # FIXME: reorganize warmup code later
     def make_infer_request(self) -> InferRequest:
         observation = self.make_example()
         return InferRequest(
@@ -211,7 +461,8 @@ class Policy(BasePolicy):
                 batch = [request] * batch_size
                 actions = self.infer_batch(batch)
 
-        logger.info(f"Output size: {actions[0].actions.shape}")
+        # FIXME: fix after fixing typing on infer_batch
+        logger.info(f"Output size: {actions[0]['actions'].shape}")
 
 
 class PolicyRecorder(_base_policy.BasePolicy):
