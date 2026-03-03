@@ -31,6 +31,8 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         self._delay_buffer_size = delay_buffer_size
         self._last_request_time = None
         self._delays = deque([4], maxlen=self._delay_buffer_size)
+
+        self.reset()
         self._background_thread.start()
 
     @override
