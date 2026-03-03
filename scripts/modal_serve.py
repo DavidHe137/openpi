@@ -92,6 +92,10 @@ image = (
         }
     )
     .add_local_python_source("openpi", "openpi_client")
+    .add_local_file(
+        str(REPO_ROOT / "src" / "openpi" / "serving" / "metrics" / "dashboard.html"),
+        remote_path="/root/openpi/serving/metrics/dashboard.html",
+    )
     .add_local_dir(str(REPO_ROOT / "scripts"), remote_path="/root/scripts")
 )
 
@@ -106,12 +110,7 @@ image = (
     scaledown_window=5 * 60,  # seconds, time to wait before scaling down
     timeout=2 * 60 * 60,  # 2 hours
 )
-@modal.experimental.http_server(
-    port=PORT,  # wrapped code must listen on this port
-    proxy_regions=[REGION],  # location of proxies, should be same as Cls region
-    startup_timeout=10 * 60,  # how long can server startup take?
-)
-@modal.concurrent(target_inputs=MAX_NUM_ROBOTS)
+@modal.concurrent(max_inputs=MAX_NUM_ROBOTS)
 class ModalPolicyServer:
     @modal.enter(snap=True)
     def startup(self) -> None:
@@ -148,7 +147,20 @@ class ModalPolicyServer:
             except (urllib.error.URLError, OSError):
                 time.sleep(1)
 
+    @modal.enter(snap=False)
+    def open_tunnel(self) -> None:
+        self._tunnel_ctx = modal.forward(PORT)
+        tunnel = self._tunnel_ctx.__enter__()
+        self._url = tunnel.url
+        logging.getLogger(__name__).info("Server URL: %s", tunnel.url)
+
+    @modal.web_endpoint(method="GET")
+    def get_url(self) -> dict:
+        """Wake the container and return the tunnel URL."""
+        return {"url": self._url}
+
     @modal.exit()
     def teardown(self) -> None:
         """Clean up subprocesses on container exit."""
+        self._tunnel_ctx.__exit__(None, None, None)
         self.process.terminate()
