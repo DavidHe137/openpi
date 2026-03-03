@@ -328,5 +328,15 @@ class PolicyServer:
         self._log_queue = log_queue
 
     def serve_forever(self, host="0.0.0.0", port=8000):
+        try:
+            import json
+            import urllib.request
+
+            with urllib.request.urlopen("https://ipinfo.io/json", timeout=3) as resp:
+                info = json.loads(resp.read())
+            location = f"{info.get('city', '?')}, {info.get('region', '?')}, {info.get('country', '?')}"
+        except Exception:
+            location = "unknown"
+        logger.info("Server location: %s", location)
         app = create_app(self._metadata, self._policy_factory, self._log_queue)
         uvicorn.run(app, host=host, port=port)

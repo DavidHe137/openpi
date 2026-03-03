@@ -123,6 +123,9 @@ class BidirectionalWebsocket:
 
         infer_response = messages.InferResponse(**response)
         response_timestamp = time.time()
+        ack = messages.ResponseAck(request_id=infer_response.request_id, receive_time=response_timestamp)
+        self._ws.send(msgpack_numpy.packb(asdict(ack)))
+
         action_chunk = ActionChunk(
             actions=infer_response.actions,
             request_timestamp=infer_response.request_timestamp,
