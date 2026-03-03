@@ -1,7 +1,8 @@
 """Serve the FastAPI policy server on Modal.
 
-Connect with:
-  uv run scripts/infer.py --host https://....modal.run --num-iters 50 --verbose
+uv run modal run scripts/modal_serve.py
+
+Be sure to connect to the tunnel URL printed to the terminal.
 """
 
 import logging
@@ -154,13 +155,17 @@ class ModalPolicyServer:
         self._url = tunnel.url
         logging.getLogger(__name__).info("Server URL: %s", tunnel.url)
 
-    @modal.web_endpoint(method="GET")
-    def get_url(self) -> dict:
-        """Wake the container and return the tunnel URL."""
-        return {"url": self._url}
+    @modal.method()
+    def run(self) -> None:
+        self.process.wait()
 
     @modal.exit()
     def teardown(self) -> None:
         """Clean up subprocesses on container exit."""
         self._tunnel_ctx.__exit__(None, None, None)
         self.process.terminate()
+
+
+@app.local_entrypoint()
+def main():
+    ModalPolicyServer().run.remote()
