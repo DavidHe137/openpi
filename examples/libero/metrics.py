@@ -38,8 +38,8 @@ def load_actions_left(output_path: pathlib.Path) -> Dict[str, List[np.ndarray]]:
     for f in files:
         # path: <out_dir>/<robot_idx>/<ep_idx>_<suite>_<task>_<result>/actions_left.npy
         parts = f.parts
-        robot_idx = parts[-3]   # e.g. "0"
-        ep_prefix = parts[-2]   # e.g. "0_libero_10_0_success"
+        robot_idx = parts[-3]  # e.g. "0"
+        ep_prefix = parts[-2]  # e.g. "0_libero_10_0_success"
         ep_idx = int(ep_prefix.split("_")[0])
         arr = np.load(f)
         by_robot.setdefault(robot_idx, []).append((ep_idx, arr))
@@ -552,7 +552,10 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
             offset = end
         episode_boundaries.append(boundaries)
 
-    fig, ax = plt.subplots(figsize=(max(12, max_len // 20), max(4, n_robots * 0.6)))
+    fig_width = min(
+        400, max(12, max_len // 20)
+    )  # cap at 400 inches (~60k px at 150 dpi)
+    fig, ax = plt.subplots(figsize=(fig_width, max(4, n_robots * 0.6)))
 
     im = ax.imshow(
         matrix,
@@ -565,15 +568,24 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
 
     # Episode boundary markers (thin white lines)
     for i, bounds in enumerate(episode_boundaries):
-        for b in bounds[1:]:   # skip step 0
-            ax.plot([b - 0.5, b - 0.5], [i - 0.4, i + 0.4], color="white", linewidth=0.8, alpha=0.7)
+        for b in bounds[1:]:  # skip step 0
+            ax.plot(
+                [b - 0.5, b - 0.5],
+                [i - 0.4, i + 0.4],
+                color="white",
+                linewidth=0.8,
+                alpha=0.7,
+            )
 
     cbar = fig.colorbar(im, ax=ax, pad=0.01)
     cbar.set_label("Actions left in queue", fontweight="bold")
 
     ax.set_yticks(range(n_robots))
     ax.set_yticklabels([f"robot_{r}" for r in robots], fontsize=8)
-    ax.set_xlabel("Step (episodes concatenated, white lines = episode boundaries)", fontweight="bold")
+    ax.set_xlabel(
+        "Step (episodes concatenated, white lines = episode boundaries)",
+        fontweight="bold",
+    )
     ax.set_ylabel("Robot", fontweight="bold")
     ax.set_title("Actions Left Per Robot Over Time", fontsize=14, fontweight="bold")
 
