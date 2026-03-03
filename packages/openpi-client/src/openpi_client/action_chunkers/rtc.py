@@ -46,6 +46,8 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         previous_step = self.current_action_chunk.start_step if self.current_action_chunk else None
         steps_since_last_response = current_step - previous_step if previous_step is not None else 0
 
+        chunk = self.current_action_chunk
+        min_horizon = chunk.execution_horizon // 2 if chunk else self._ws_client.server_metadata.action_horizon // 2
         self._ws_client.send(
             obs,
             deadline=deadline,
@@ -55,6 +57,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
             else np.zeros((50, 7)),  # FIXME: hardcoded
             s_param=steps_since_last_response,
             d_param=estimated_delay,
+            min_execution_horizon=min_horizon,
         )
 
     @override

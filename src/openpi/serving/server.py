@@ -245,6 +245,7 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
                         infer_type=req.infer_type,
                         params=req.params,
                         noise=req.noise,
+                        min_execution_horizon=req.min_execution_horizon,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
                     logger.debug("Sent slot request to scheduler: %s", slot_req)

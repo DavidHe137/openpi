@@ -41,12 +41,16 @@ class RequestScheduler(ABC):
     def reset_robot(self, robot_id: str) -> None:
         self._deadlines.pop(robot_id, None)
         self._latest_requests.pop(robot_id, None)
+        self._latest_scheduled_requests.pop(robot_id, None)
 
     def _get_schedulable_requests(self) -> list[SlotRequest]:
-        """Get all requests that are not yet scheduled."""
-        # TODO: might add more logic here in the future
-        return [
-            req
-            for req in self._latest_requests.values()
-            if req is not self._latest_scheduled_requests.get(req.robot_id, None)
-        ]
+        """Get all requests that are not yet scheduled and past the minimum execution horizon."""
+        result = []
+        for req in self._latest_requests.values():
+            last = self._latest_scheduled_requests.get(req.robot_id)
+            if last is req:
+                continue
+            if last is not None and req.start_step < last.start_step + last.min_execution_horizon:
+                continue
+            result.append(req)
+        return result
