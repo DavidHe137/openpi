@@ -86,6 +86,7 @@ class BidirectionalWebsocket:
         s_param: Optional[int] = None,
         d_param: Optional[int] = None,
         noise: Optional[np.ndarray] = None,
+        min_execution_horizon: int = 0,
     ) -> None:
         infer_type = messages.InferType.SYNC
         params = None
@@ -104,9 +105,9 @@ class BidirectionalWebsocket:
             infer_type=infer_type,
             params=params,
             noise=noise,
+            min_execution_horizon=min_execution_horizon,
         )
         data = msgpack_numpy.packb(asdict(request))
-        logging.debug("Sending request: %s", request)
 
         self._ws.send(data)  # type: ignore
 
@@ -130,7 +131,6 @@ class BidirectionalWebsocket:
             execution_horizon=infer_response.execution_horizon,
             noise=infer_response.noise,
         )
-        logger.debug("Received response: %s", action_chunk)
         return action_chunk
 
     def reset(self) -> None:

@@ -44,6 +44,7 @@ class InferRequest:
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
+    min_execution_horizon: int = 0  # minimum steps to execute before server will re-infer this robot
 
 
 @dataclass(frozen=True)
