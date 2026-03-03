@@ -155,6 +155,29 @@ class ModalPolicyServer:
         self._url = tunnel.url
         logging.getLogger(__name__).info("Server URL: %s", tunnel.url)
 
+    @modal.asgi_app()
+    def stable_endpoint(self):
+        import json
+        import urllib.request
+
+        from fastapi import FastAPI
+        from fastapi.responses import RedirectResponse
+
+        stable = FastAPI()
+
+        @stable.get("/metadata")
+        def metadata():
+            with urllib.request.urlopen(f"http://localhost:{PORT}/metadata") as resp:
+                meta = json.loads(resp.read())
+            meta["tunnel_url"] = self._url
+            return meta
+
+        @stable.get("/")
+        def dashboard():
+            return RedirectResponse(f"{self._url}/dashboard")
+
+        return stable
+
     @modal.method()
     def run(self) -> None:
         self.process.wait()

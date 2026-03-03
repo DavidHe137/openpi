@@ -229,6 +229,9 @@ class ServerMetadata(JSONDataclass):
     env: str  # environment mode (ALOHA, LIBERO, etc.)
     scheduling_algorithm: str  # TODO: maybe reference the enum from scheduler.py
 
+    # Set by Modal when running behind a tunnel; clients should use this for WebSocket
+    tunnel_url: Optional[str] = None
+
 
 @dataclass(frozen=True)
 class RuntimeMetadata(JSONDataclass):

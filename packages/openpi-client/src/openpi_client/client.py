@@ -46,6 +46,9 @@ class BidirectionalWebsocket:
         self._http_base = f"{http_scheme}://{base}"
         self._api_key = api_key
         self._server_metadata = self._wait_for_server()
+        if self._server_metadata.tunnel_url:
+            tunnel_host = self._server_metadata.tunnel_url.replace("https://", "", 1)
+            self._ws_uri = f"wss://{tunnel_host}/ws?robot_id={robot_id}"
         self._ws = self._connect_ws()
 
     @property
