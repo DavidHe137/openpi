@@ -1,11 +1,33 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import multiprocessing as mp
 import pickle
+from typing import Any
 
 import numpy as np
 
 MAX_OBS_BYTES = 10 * 1024 * 1024  # 10MB per slot, enough for a few 224x224 images
+
+
+@dataclass
+class SlotData:
+    """Observation and request metadata written together atomically into a slot.
+
+    This ensures that when the GPU worker reads a slot, the metadata (timestamps,
+    step, etc.) always corresponds to the observation being inferred, even if the
+    slot was overwritten by a newer request after the SlotRequest was enqueued.
+    """
+
+    obs: dict
+    request_id: int
+    arrival_timestamp: float
+    start_step: int
+    request_timestamp: float
+    deadline: float
+    infer_type: Any
+    params: Any
+    noise: Any  # np.ndarray | None
 
 
 class RobotSlot:
@@ -15,17 +37,17 @@ class RobotSlot:
         self._lock = mp.Lock()
         self._np_buf = np.frombuffer(self._buf, dtype=np.uint8)  # zero-copy view
 
-    def write_obs(self, obs: dict) -> None:
-        data = pickle.dumps(obs)
-        n = len(data)
+    def write(self, data: SlotData) -> None:
+        raw = pickle.dumps(data)
+        n = len(raw)
         with self._lock:
-            self._np_buf[:n] = np.frombuffer(data, dtype=np.uint8)
+            self._np_buf[:n] = np.frombuffer(raw, dtype=np.uint8)
             self._size.value = n
 
-    def read_obs(self) -> dict:
+    def read(self) -> SlotData:
         with self._lock:
-            data = bytes(self._np_buf[: self._size.value])  # copy under lock
-        return pickle.loads(data)  # unpickle outside lock
+            raw = bytes(self._np_buf[: self._size.value])  # copy under lock
+        return pickle.loads(raw)  # unpickle outside lock
 
 
 class RobotSlots:
@@ -48,11 +70,11 @@ class RobotSlots:
     def has_robot(self, robot_id: str) -> bool:
         return robot_id in self._robot_to_slot
 
-    def write_obs(self, slot_idx: int, obs: dict) -> None:
-        self._slots[slot_idx].write_obs(obs)
+    def write(self, slot_idx: int, data: SlotData) -> None:
+        self._slots[slot_idx].write(data)
 
-    def read_obs(self, slot_idx: int) -> dict:
-        return self._slots[slot_idx].read_obs()
+    def read(self, slot_idx: int) -> SlotData:
+        return self._slots[slot_idx].read()
 
     def free(self, robot_id: str) -> None:
         idx = self._robot_to_slot.pop(robot_id)

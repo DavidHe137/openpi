@@ -6,11 +6,11 @@
 
 ZMQ topology (all ipc://, unique per server instance):
     WS main  ──[PUSH: SlotRequest / ResetRequest]──► Scheduler [binds sched_in_ep]
-    WS main  ──write_obs()─────────────────────────► mp.RawArray shared memory
+    WS main  ──slots.write()───────────────────────► mp.RawArray shared memory
     GPU      ──[PUSH: list[InferResponse]]──────────► WS main   [binds gpu_out_ep]
     GPU      ──[PUSH: list[CompletionNotification]]► Scheduler [binds result_ep]
     Scheduler ──[mp.Queue: list[SlotRequest]]───────► GPU
-    GPU      ──read_obs()──────────────────────────► mp.RawArray shared memory
+    GPU      ──slots.read()──────────────────────────► mp.RawArray shared memory
 
     GPU responses bypass the scheduler entirely so ILP solving cannot delay client delivery.
     A single _router_task in WS main reads from gpu_out_ep and dispatches to per-robot queues.
@@ -53,6 +53,7 @@ from openpi.serving.scheduler import _run_scheduler
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import _request_id_counter
 from openpi.serving.slots import RobotSlots
+from openpi.serving.slots import SlotData
 
 MAX_ROBOTS = 100
 logger = logging.getLogger(__name__)
@@ -245,20 +246,37 @@ def create_app(
 
                     req = InferRequest(**msg)
 
-                    # Write obs directly to shared memory - no ZMQ copy of image arrays
-                    state.slots.write_obs(slot_index, req.observation)
+                    # Write obs + request metadata atomically to shared memory so the
+                    # GPU worker always reads metadata that matches the observation it infers.
+                    request_id = next(_request_id_counter)
+                    arrival_timestamp = time.time()
+                    state.slots.write(
+                        slot_index,
+                        SlotData(
+                            obs=req.observation,
+                            request_id=request_id,
+                            arrival_timestamp=arrival_timestamp,
+                            start_step=req.start_step,
+                            request_timestamp=req.request_timestamp,
+                            deadline=req.deadline,
+                            infer_type=req.infer_type,
+                            params=req.params,
+                            noise=req.noise,
+                        ),
+                    )
 
                     slot_req = SlotRequest(
                         slot_index=slot_index,
                         robot_id=robot_id,
-                        request_id=next(_request_id_counter),
-                        arrival_timestamp=time.time(),
+                        request_id=request_id,
+                        arrival_timestamp=arrival_timestamp,
                         start_step=req.start_step,
                         request_timestamp=req.request_timestamp,
                         deadline=req.deadline,
                         infer_type=req.infer_type,
                         params=req.params,
                         noise=req.noise,
+                        min_execution_horizon=req.min_execution_horizon,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
                     logger.debug("Sent slot request to scheduler: %s", slot_req)

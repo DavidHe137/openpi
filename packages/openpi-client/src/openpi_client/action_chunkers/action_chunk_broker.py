@@ -86,7 +86,7 @@ class ActionChunkBroker(ABC):
 
     def _infer(self, obs: Observation) -> None:
         deadline = time.time() + len(self._action_queue) * self._step_duration
-        self._ws_client.send(obs, deadline=deadline)
+        self._ws_client.send(obs, deadline=deadline, min_execution_horizon=0)
 
     def reset(self) -> None:
         with self._lock:

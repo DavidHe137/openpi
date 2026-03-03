@@ -599,7 +599,10 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
             offset = end
         episode_boundaries.append(boundaries)
 
-    fig, ax = plt.subplots(figsize=(max(12, max_len // 20), max(4, n_robots * 0.6)))
+    fig_width = min(
+        400, max(12, max_len // 20)
+    )  # cap at 400 inches (~60k px at 150 dpi)
+    fig, ax = plt.subplots(figsize=(fig_width, max(4, n_robots * 0.6)))
 
     im = ax.imshow(
         matrix,
