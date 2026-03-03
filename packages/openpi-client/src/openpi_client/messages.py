@@ -35,7 +35,6 @@ class TrainTimeRTCParams:
 # message types shared between client and server
 @dataclass(frozen=True)
 class InferRequest:
-    type: Literal["infer"] = "infer"
     robot_id: str
     observation: dict
     start_step: int  # TODO: can maybe fold into observation after typing
@@ -45,12 +44,13 @@ class InferRequest:
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
     min_execution_horizon: int = 0  # minimum steps to execute before server will re-infer this robot
+    type: Literal["infer"] = "infer"
 
 
 @dataclass(frozen=True)
 class ResetRequest:
-    type: Literal["reset"] = "reset"
     robot_id: str
+    type: Literal["reset"] = "reset"
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,6 @@ class InferResponse:
 
 @dataclass(frozen=True)
 class ResponseAck:
-    type: Literal["ack"] = "ack"
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt
+    type: Literal["ack"] = "ack"
