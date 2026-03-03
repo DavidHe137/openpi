@@ -86,9 +86,8 @@ def load_action_chunks(output_path: pathlib.Path) -> pd.DataFrame:
 def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
     """Load per-episode no-action metrics from saved cost histories.
 
-    A NaN in cost_history means the runtime executed a null action for that
-    control step, which is the closest observable analogue to the planner's
-    no-action starvation objective.
+    Uses obs cost: A NaN in cost_history means the runtime executed a null action for that
+    control step.
     """
     runtime_metadata_path = output_path / "runtime_metadata.json"
     control_hz: int | None = None

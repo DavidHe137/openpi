@@ -10,8 +10,6 @@ from openpi.serving.schemas import SlotRequest
 
 
 class LookaheadScheduler(RequestScheduler):
-    """Roll out deadline-aware batches over a discretized wall-clock horizon."""
-
     def __init__(
         self,
         batch_queue: mp.Queue,
