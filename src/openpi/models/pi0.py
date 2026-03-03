@@ -6,6 +6,7 @@ import flax.nnx as nnx
 import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
+import numpy as np
 from typing_extensions import override
 
 from openpi.models import model as _model
@@ -13,6 +14,7 @@ from openpi.models import pi0_config
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.shared import array_typing as at
+from openpi.shared import nnx_utils
 
 logger = logging.getLogger("openpi")
 
@@ -474,3 +476,80 @@ class Pi0(_model.BaseModel):
         # For Pi0, noise_dim is same as action_dim (usually 32 for latent space)
         noise_shape = (batch_size, self.action_horizon, self.action_dim)
         return jax.random.normal(rng, noise_shape)
+
+
+class JaxBackend:
+    """PolicyBackend implementation wrapping a JAX Pi0 model."""
+
+    def __init__(self, model: Pi0, *, input_transform, output_transform, sample_kwargs):
+        from openpi.policies import policy as _policy  # avoid circular at module level
+
+        self._model = model
+        self._rng = jax.random.key(0)
+        self._input_transform = input_transform
+        self._output_transform = output_transform
+        self._sample_kwargs = sample_kwargs
+        # JIT-compile sample_actions once at construction time
+        self._model.sample_actions = nnx_utils.module_jit(
+            self._model.sample_actions,
+            static_argnames=["use_rtc"],
+        )
+        self._policy = _policy
+
+    def sample_noise(self, batch_size: int = 1) -> np.ndarray:
+        self._rng, rng = jax.random.split(self._rng)
+        return np.asarray(self._model.sample_noise(rng, batch_size))
+
+    def infer(self, obs, noise, *, use_rtc=False, prev_action=None, s=5, d=4):
+        _policy = self._policy
+        inputs = jax.tree.map(lambda x: x, obs)
+        inputs = self._input_transform(inputs)
+        inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+        observation = _model.Observation.from_dict(inputs)
+
+        self._rng, rng = jax.random.split(self._rng)
+        noise_jnp = jnp.asarray(noise)[np.newaxis, ...]
+        actions = self._model.sample_actions(
+            rng, observation, noise=noise_jnp, use_rtc=use_rtc, prev_action=prev_action, s=s, d=d, **self._sample_kwargs
+        )
+
+        if hasattr(self._model, "output_actions_save"):
+            self._model.output_actions_save.append(actions)
+
+        outputs = {
+            "state": np.asarray(observation.state[0]),
+            "actions": np.asarray(actions[0]),
+        }
+        outputs = self._output_transform(outputs)
+        return _policy.InferResult(actions=outputs["actions"], noise=noise, state=outputs["state"])
+
+    def infer_batch(self, observations, batch_noise):
+        _policy = self._policy
+        batched = _policy._stack_observations(observations)  # noqa: SLF001
+        inputs = jax.tree.map(lambda x: x, batched)
+        inputs = self._input_transform(inputs)
+        inputs = jax.tree.map(lambda x: jnp.asarray(x), inputs)
+        observation = _model.Observation.from_dict(inputs)
+
+        self._rng, rng = jax.random.split(self._rng)
+        actions = self._model.sample_actions(rng, observation, noise=jnp.asarray(batch_noise), **self._sample_kwargs)
+
+        if hasattr(self._model, "output_actions_save"):
+            self._model.output_actions_save.append(actions)
+
+        outputs = {
+            "state": np.asarray(observation.state),
+            "actions": np.asarray(actions),
+        }
+        outputs = self._output_transform(outputs)
+        return [
+            _policy.InferResult(
+                actions=outputs["actions"][i],
+                noise=batch_noise[i],
+                state=outputs["state"][i],
+            )
+            for i in range(len(observations))
+        ]
+
+    def make_example_actions(self) -> np.ndarray:
+        return np.asarray(self._model.make_example_actions())

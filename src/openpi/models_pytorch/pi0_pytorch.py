@@ -483,3 +483,81 @@ class PI0Pytorch(nn.Module):
 
     def make_example_actions(self) -> Tensor:
         return torch.zeros((self.config.action_horizon, self.config.action_dim))
+
+
+class PytorchBackend:
+    """PolicyBackend implementation wrapping a PI0Pytorch model."""
+
+    def __init__(self, model: PI0Pytorch, *, device, input_transform, output_transform, sample_kwargs):
+        import jax
+        import numpy as np
+
+        from openpi.models import model as _model
+        from openpi.policies import policy as _policy
+
+        self._model = model.to(device).eval()
+        self._device = device
+        self._input_transform = input_transform
+        self._output_transform = output_transform
+        self._sample_kwargs = sample_kwargs
+        # Keep module-level references to avoid repeated local imports
+        self._jax = jax
+        self._np = np
+        self._model_module = _model
+        self._policy = _policy
+
+    def sample_noise(self, batch_size: int = 1):
+        return self._model.sample_noise(self._device, batch_size).cpu().numpy()
+
+    def infer(self, obs, noise, *, use_rtc=False, **_):
+        if use_rtc:
+            raise NotImplementedError("PytorchBackend does not support RTC inference")
+        jax = self._jax
+        np = self._np
+        _model = self._model_module
+        _policy = self._policy
+
+        inputs = jax.tree.map(lambda x: x, obs)
+        inputs = self._input_transform(inputs)
+        inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._device)[None, ...], inputs)
+        observation = _model.Observation.from_dict(inputs)
+        noise_t = torch.from_numpy(np.array(noise)).to(self._device)[None, ...]
+        actions = self._model.sample_actions(self._device, observation, noise=noise_t, **self._sample_kwargs)
+
+        outputs = {
+            "state": np.asarray(observation.state[0].detach().cpu()),
+            "actions": np.asarray(actions[0].detach().cpu()),
+        }
+        outputs = self._output_transform(outputs)
+        return _policy.InferResult(actions=outputs["actions"], noise=noise, state=outputs["state"])
+
+    def infer_batch(self, observations, batch_noise):
+        jax = self._jax
+        np = self._np
+        _model = self._model_module
+        _policy = self._policy
+
+        batched = _policy._stack_observations(observations)  # noqa: SLF001
+        inputs = jax.tree.map(lambda x: x, batched)
+        inputs = self._input_transform(inputs)
+        inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._device), inputs)
+        observation = _model.Observation.from_dict(inputs)
+        noise_t = torch.from_numpy(batch_noise).to(self._device)
+        actions = self._model.sample_actions(self._device, observation, noise=noise_t, **self._sample_kwargs)
+
+        outputs = {
+            "state": np.asarray(observation.state.detach().cpu()),
+            "actions": np.asarray(actions.detach().cpu()),
+        }
+        outputs = self._output_transform(outputs)
+        return [
+            _policy.InferResult(
+                actions=outputs["actions"][i],
+                noise=batch_noise[i],
+                state=outputs["state"][i],
+            )
+            for i in range(len(observations))
+        ]
+
+    def make_example_actions(self):
+        return self._model.make_example_actions().detach().cpu().numpy()

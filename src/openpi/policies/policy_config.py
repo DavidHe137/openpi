@@ -12,49 +12,7 @@ from openpi.training import checkpoints as _checkpoints
 from openpi.training import config as _config
 import openpi.transforms as transforms
 
-# def create_trained_policy(
-#     train_config: _config.TrainConfig,
-#     checkpoint_dir: pathlib.Path | str,
-#     *,
-#     repack_transforms: transforms.Group | None = None,
-#     sample_kwargs: dict[str, Any] | None = None,
-#     default_prompt: str | None = None,
-#     norm_stats: dict[str, transforms.NormStats] | None = None,
-#     pytorch_device: str | None = None,
-# ) -> _policy.Policy:
-#     """Create a policy from a trained checkpoint.
 
-#     Args:
-#         train_config: The training config to use to create the model.
-#         checkpoint_dir: The directory to load the model from.
-#         repack_transforms: Optional transforms that will be applied before any other transforms.
-#         sample_kwargs: The kwargs to pass to the `sample_actions` method. If not provided, the default
-#             kwargs will be used.
-#         default_prompt: The default prompt to use for the policy. Will inject the prompt into the input
-#             data if it doesn't already exist.
-#         norm_stats: The norm stats to use for the policy. If not provided, the norm stats will be loaded
-#             from the checkpoint directory.
-#         pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda", "cuda:0").
-#                       If None and is_pytorch=True, will use "cuda" if available, otherwise "cpu".
-
-#     Note:
-#         The function automatically detects whether the model is PyTorch-based by checking for the
-#         presence of "model.safensors" in the checkpoint directory.
-#     """
-#     repack_transforms = repack_transforms or transforms.Group()
-#     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
-
-#     # Check if this is a PyTorch model by looking for model.safetensors
-#     weight_path = os.path.join(checkpoint_dir, "model.safetensors")
-#     is_pytorch = os.path.exists(weight_path)
-
-
-#     logging.info("Loading model...")
-#     if is_pytorch:
-#         model = train_config.model.load_pytorch(train_config, weight_path)
-#         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
-#     else:
-#         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
 def create_trained_policy(
     train_config: _config.TrainConfig,
     checkpoint_dir: pathlib.Path | str,
@@ -64,24 +22,34 @@ def create_trained_policy(
     default_prompt: str | None = None,
     norm_stats: dict[str, transforms.NormStats] | None = None,
     pytorch_device: str | None = None,
-    use_triton_optimized: bool = False,  # NEW PARAMETER
-    num_views: int = 2,  # NEW PARAMETER
+    use_triton_optimized: bool = False,
+    num_views: int = 2,
     batch_size: int = 1,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
     Args:
-        ...existing args...
+        train_config: The training config to use to create the model.
+        checkpoint_dir: The directory to load the model from.
+        repack_transforms: Optional transforms that will be applied before any other transforms.
+        sample_kwargs: The kwargs to pass to the `sample_actions` method. If not provided, the default
+            kwargs will be used.
+        default_prompt: The default prompt to use for the policy. Will inject the prompt into the input
+            data if it doesn't already exist.
+        norm_stats: The norm stats to use for the policy. If not provided, the norm stats will be loaded
+            from the checkpoint directory.
+        pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda", "cuda:0").
+                      If None and is_pytorch=True, will use "cuda" if available, otherwise "cpu".
         use_triton_optimized: If True, uses the Triton-optimized Pi0Triton model
                              for faster inference. Requires a converted checkpoint.
         num_views: Number of camera views (only used with use_triton_optimized=True)
+        batch_size: Batch size for inference (only used with use_triton_optimized=True)
     """
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
 
     logging.info("Loading model...")
     if use_triton_optimized:
-        # Load the Triton-optimized model
         from openpi.models_pytorch import pi0_realtime_triton
 
         converted_checkpoint_path = os.path.join(checkpoint_dir, "converted_checkpoint.pkl")
@@ -92,20 +60,16 @@ def create_trained_policy(
         model = pi0_realtime_triton.Pi0TritonPytorch(train_config, converted_checkpoint_path, num_views, batch_size)
         is_pytorch = True
     elif os.path.exists(os.path.join(checkpoint_dir, "model.safetensors")):
-        # Standard PyTorch model
         weight_path = os.path.join(checkpoint_dir, "model.safetensors")
         model = train_config.model.load_pytorch(train_config, weight_path)
         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
         is_pytorch = True
     else:
-        # JAX model
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
         is_pytorch = False
 
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     if norm_stats is None:
-        # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
-        # that the policy is using the same normalization stats as the original training process.
         if data_config.asset_id is None:
             raise ValueError("Asset id is required to load norm stats.")
         norm_stats = _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
@@ -119,24 +83,50 @@ def create_trained_policy(
         except ImportError:
             pytorch_device = "cpu"
 
-    return _policy.Policy(
-        model,
-        transforms=[
+    input_transform = transforms.compose(
+        [
             *repack_transforms.inputs,
             transforms.InjectDefaultPrompt(default_prompt),
             *data_config.data_transforms.inputs,
             transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
             *data_config.model_transforms.inputs,
-        ],
-        output_transforms=[
+        ]
+    )
+    output_transform = transforms.compose(
+        [
             *data_config.model_transforms.outputs,
             transforms.Unnormalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
             *data_config.data_transforms.outputs,
             *repack_transforms.outputs,
-        ],
-        sample_kwargs=sample_kwargs,
-        metadata=train_config.policy_metadata,
-        is_pytorch=is_pytorch,
-        is_triton_optimized=use_triton_optimized,
-        pytorch_device=pytorch_device if is_pytorch else None,
+        ]
     )
+
+    if use_triton_optimized:
+        from openpi.models_pytorch.pi0_realtime_triton import TritonBackend
+
+        backend = TritonBackend(
+            model,
+            device=pytorch_device,
+            output_transform=output_transform,
+        )
+    elif is_pytorch:
+        from openpi.models_pytorch.pi0_pytorch import PytorchBackend
+
+        backend = PytorchBackend(
+            model,
+            device=pytorch_device,
+            input_transform=input_transform,
+            output_transform=output_transform,
+            sample_kwargs=sample_kwargs or {},
+        )
+    else:
+        from openpi.models.pi0 import JaxBackend
+
+        backend = JaxBackend(
+            model,
+            input_transform=input_transform,
+            output_transform=output_transform,
+            sample_kwargs=sample_kwargs or {},
+        )
+
+    return _policy.Policy(backend, metadata=train_config.policy_metadata)

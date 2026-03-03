@@ -276,3 +276,73 @@ class Pi0TritonPytorch(nn.Module):
 
         # FIXME: overrides superclass return type
         return actions, transformed_inputs["state"]
+
+
+class TritonBackend:
+    """PolicyBackend implementation wrapping a Pi0TritonPytorch model.
+
+    The Triton model performs its own preprocessing/normalization internally,
+    so no input_transform is needed — only output_transform for unnormalizing.
+    """
+
+    def __init__(self, model: Pi0TritonPytorch, *, device, output_transform):
+        from openpi.policies import policy as _policy
+
+        self._model = model
+        self._device = device
+        self._output_transform = output_transform
+        self._policy = _policy
+
+    def sample_noise(self, batch_size: int = 1) -> np.ndarray:
+        return self._model.sample_noise(self._device, batch_size).cpu().numpy()
+
+    def infer(self, obs, noise, *, use_rtc=False, **_):
+        if use_rtc:
+            raise NotImplementedError("TritonBackend does not support RTC inference")
+        _policy = self._policy
+
+        triton_obs = {
+            "state": np.asarray(obs["observation/state"])[None, ...],
+            "base_0_rgb": np.asarray(obs["observation/image"])[None, ...],
+            "left_wrist_0_rgb": np.asarray(obs["observation/wrist_image"])[None, ...],
+            "right_wrist_0_rgb": np.asarray(obs["observation/wrist_image"])[None, ...],
+            "prompt": np.asarray([obs.get("prompt", "")], dtype=object),
+        }
+        # model returns (actions, state_norm) — tuple absorbed here, does not leak up
+        actions, state_norm = self._model.sample_actions(self._device, triton_obs, noise=np.asarray(noise)[None, ...])
+        outputs = self._output_transform(
+            {
+                "state": np.asarray(state_norm[0]),
+                "actions": np.asarray(actions[0]),
+            }
+        )
+        return _policy.InferResult(actions=outputs["actions"], noise=noise, state=outputs["state"])
+
+    def infer_batch(self, observations, batch_noise):
+        _policy = self._policy
+
+        triton_obs = {
+            "state": np.stack([np.asarray(obs["observation/state"]) for obs in observations], axis=0),
+            "base_0_rgb": np.stack([np.asarray(obs["observation/image"]) for obs in observations], axis=0),
+            "left_wrist_0_rgb": np.stack([np.asarray(obs["observation/wrist_image"]) for obs in observations], axis=0),
+            "right_wrist_0_rgb": np.stack([np.asarray(obs["observation/wrist_image"]) for obs in observations], axis=0),
+            "prompt": np.array([obs.get("prompt", "") for obs in observations], dtype=object),
+        }
+        actions, state_norm = self._model.sample_actions(self._device, triton_obs, noise=batch_noise)
+        actions_np = np.asarray(actions)
+        state_norm_np = np.asarray(state_norm)
+
+        results = []
+        for i in range(len(observations)):
+            outputs = self._output_transform({"state": state_norm_np[i], "actions": actions_np[i]})
+            results.append(
+                _policy.InferResult(
+                    actions=outputs["actions"],
+                    noise=batch_noise[i],
+                    state=outputs["state"],
+                )
+            )
+        return results
+
+    def make_example_actions(self) -> np.ndarray:
+        return self._model.make_example_actions().numpy()
