@@ -105,18 +105,22 @@ def _run_gpu_worker(
     while True:
         slot_reqs: list[SlotRequest] = batch_queue.get()  # blocking
 
+        # Read obs and metadata together — guarantees they correspond to the same request,
+        # even if the slot was overwritten after the SlotRequest was enqueued.
+        slot_datas = [slots.read(sr.slot_index) for sr in slot_reqs]
+
         infer_requests = [
             InferRequest(
                 robot_id=sr.robot_id,
-                observation=slots.read_obs(sr.slot_index),
-                start_step=sr.start_step,
-                request_timestamp=sr.request_timestamp,
-                deadline=sr.deadline,
-                infer_type=sr.infer_type,
-                params=sr.params,
-                noise=sr.noise,
+                observation=sd.obs,
+                start_step=sd.start_step,
+                request_timestamp=sd.request_timestamp,
+                deadline=sd.deadline,
+                infer_type=sd.infer_type,
+                params=sd.params,
+                noise=sd.noise,
             )
-            for sr in slot_reqs
+            for sr, sd in zip(slot_reqs, slot_datas, strict=True)
         ]
 
         logger.debug("Inferring batch of %d", len(infer_requests))
@@ -127,17 +131,17 @@ def _run_gpu_worker(
         responses = [
             InferResponse(
                 robot_id=sr.robot_id,
-                request_id=sr.request_id,
-                start_step=sr.start_step,
-                request_timestamp=sr.request_timestamp,
+                request_id=sd.request_id,
+                start_step=sd.start_step,
+                request_timestamp=sd.request_timestamp,
                 execution_horizon=len(action_dict["actions"]),
                 actions=action_dict["actions"],
                 noise=action_dict["noise"],
-                server_arrival_time=sr.arrival_timestamp,
+                server_arrival_time=sd.arrival_timestamp,
                 inference_start_time=t0,
                 inference_end_time=t1,
             )
-            for sr, action_dict in zip(slot_reqs, actions, strict=True)
+            for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True)
         ]
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
