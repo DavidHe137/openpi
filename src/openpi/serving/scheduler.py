@@ -37,9 +37,9 @@ def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
 
 _SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
     "greedy": GreedyScheduler,
+    "lookahead": LookaheadScheduler,
     "round_robin": RoundRobinScheduler,
     "random": RandomBatchScheduler,
-    "lookahead": LookaheadScheduler,
 }
 
 
@@ -49,10 +49,9 @@ def _run_scheduler(
     batch_queue: mp.Queue,
     max_batch_size: int,
     algorithm: str,
+    scheduler_kwargs: dict | None,
     ready_event: Event,
     log_queue: mp.Queue | None = None,
-    lookahead_horizon: int = 5,
-    lookahead_execution_horizon_s: float = 0.5,
 ) -> None:
     """Owns all robot state; dispatches batches to GPU via mp.Queue.
 
@@ -100,13 +99,31 @@ def _run_scheduler(
 
     batch_profile = _recv_batch_profile(result_sock)
 
-    extra_kwargs: dict = {}
-    if algorithm == "lookahead":
-        extra_kwargs = {
-            "horizon": lookahead_horizon,
-            "execution_horizon_s": lookahead_execution_horizon_s,
-        }
+    extra_kwargs: dict = dict(scheduler_kwargs or {}) if cls is LookaheadScheduler else {}
     scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile, **extra_kwargs)
+
+    def _log_scheduler_timing_summary() -> None:
+        summary_fn = getattr(scheduler, "timing_summary", None)
+        if not callable(summary_fn):
+            return
+        summary = summary_fn()
+        if summary is None:
+            return
+        logger.info(
+            ("Scheduler timing summary: planning_calls=%d total=%.2fms mean=%.2fms p50=%.2fms p99=%.2fms max=%.2fms"),
+            int(summary["planning_calls"]),
+            summary["total_planning_time_ms"],
+            summary["mean_planning_time_ms"],
+            summary["p50_planning_time_ms"],
+            summary["p99_planning_time_ms"],
+            summary["max_planning_time_ms"],
+        )
+
+    def _handle_sigterm(signum, frame) -> None:
+        _log_scheduler_timing_summary()
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)

@@ -1,18 +1,7 @@
-"""Lookahead scheduler: DFS over H future inference rounds, minimising starvation.
-
-Translates the discrete-step LookaheadScheduler from action-chunk-scheduling to
-wall-clock time using the GPU batch-latency profile already available in openpi.
-
-Key mapping from discrete → wall-clock:
-  d_infer[k]          → batch_profile_ms[k] / 1000  (seconds)
-  execution_horizon   → execution_horizon_s           (seconds, configurable)
-  deadline            → SlotRequest.deadline          (wall-clock seconds)
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import field
+from functools import cache
+import math
 import multiprocessing as mp
 import time
 
@@ -20,106 +9,219 @@ from openpi.scheduling import RequestScheduler
 from openpi.serving.schemas import SlotRequest
 
 
-@dataclass
-class _SimState:
-    server_free_at: float  # wall-clock time when server next becomes available
-    robot_deadlines: dict[str, float] = field(default_factory=dict)  # robot_id -> deadline
-
-
 class LookaheadScheduler(RequestScheduler):
-    """MPC scheduler: DFS over H future rounds, picks the first action of the best trajectory.
-
-    Candidate generation (same as discrete-step original):
-      For each batch size k ∈ [1, max_batch_size], take the k robots with the
-      earliest deadlines.  This gives N+1 candidates per step rather than 2^N.
-
-    Cost: binary starvation — number of robots whose deadline has already passed
-          when the server starts the batch.
-    """
+    """Roll out deadline-aware batches over a discretized wall-clock horizon."""
 
     def __init__(
         self,
         batch_queue: mp.Queue,
         max_batch_size: int = 1,
         batch_profile: dict[int, float] | None = None,
-        horizon: int = 5,
-        execution_horizon_s: float = 0.5,
-    ):
+        *,
+        horizon_ms: int = 1000,
+        timestep_ms: int = 10,
+        action_horizon_steps: int = 10,
+        control_hz: int = 20,
+    ) -> None:
         super().__init__(batch_queue, max_batch_size, batch_profile)
-        self.horizon = horizon
-        self.execution_horizon_s = execution_horizon_s
-        self._server_free_at: float = 0.0
+        if timestep_ms <= 0:
+            raise ValueError("timestep_ms must be positive")
+        if horizon_ms <= 0:
+            raise ValueError("horizon_ms must be positive")
+        if action_horizon_steps <= 0:
+            raise ValueError("action_horizon_steps must be positive")
+        if control_hz <= 0:
+            raise ValueError("control_hz must be positive")
 
-    # ------------------------------------------------------------------
-    # Override schedule() to track when the server will next be free.
-    # ------------------------------------------------------------------
+        self._timestep_ms = float(timestep_ms)
+        self._horizon_ticks = self._to_ticks(horizon_ms)
+        self._chunk_duration_s = action_horizon_steps / control_hz
+        self._chunk_ticks = self._to_ticks(self._chunk_duration_s * 1000.0)
+        self._latency_ticks = {
+            batch_size: self._to_ticks(self._latency_ms(batch_size))
+            for batch_size in range(1, self._max_batch_size + 1)
+        }
+        self._latency_s = {
+            batch_size: latency_ticks * self._timestep_ms / 1000.0
+            for batch_size, latency_ticks in self._latency_ticks.items()
+        }
+
+        self._server_available_at: float = 0.0
+        self._predicted_valid_until: dict[str, float] = {}
+        self._planning_durations_ms: list[float] = []
+
     def schedule(self) -> None:
+        """Dispatch the best batch and update predicted in-flight timing state."""
         batches = self.get_next_batches()
+        now = time.time()
         for batch in batches:
+            batch_size = len(batch)
+            start_time = max(now, self._server_available_at)
+            finish_time = start_time + self._latency_s[batch_size]
+            self._server_available_at = finish_time
+
             for request in batch:
                 self._deadlines[request.robot_id] = request.deadline
                 self._latest_scheduled_requests[request.robot_id] = request
-            k = len(batch)
-            if k in self._batch_profile_ms:
-                self._server_free_at = time.time() + self._batch_profile_ms[k] / 1000.0
+                self._predicted_valid_until[request.robot_id] = finish_time + self._chunk_duration_s
+
             self._batch_queue.put_nowait(batch)
+            now = finish_time
 
-    # ------------------------------------------------------------------
-    # Core scheduling logic
-    # ------------------------------------------------------------------
     def get_next_batches(self) -> list[list[SlotRequest]]:
-        if self._batch_queue.qsize() > 0:
-            return []
-
-        candidates = self._get_schedulable_requests()
-        if not candidates:
-            return []
-
         now = time.time()
-        req_by_id = {req.robot_id: req for req in candidates}
-        initial_state = _SimState(
-            server_free_at=max(self._server_free_at, now),
-            robot_deadlines={req.robot_id: req.deadline for req in candidates},
+        self._prune_predictions(now)
+
+        if self._batch_queue.qsize() > 0 or now < self._server_available_at:
+            return []
+
+        schedulable = self._get_schedulable_requests()
+        if not schedulable:
+            return []
+
+        planning_start = time.perf_counter_ns()
+        try:
+            request_by_robot = {request.robot_id: request for request in schedulable}
+            active_robot_ids = sorted(
+                set(self._latest_requests) | set(self._deadlines) | set(self._predicted_valid_until)
+            )
+            if not active_robot_ids:
+                active_robot_ids = sorted(request_by_robot)
+
+            initial_state = tuple(self._remaining_ticks(robot_id, now) for robot_id in active_robot_ids)
+            initial_candidates = self._candidate_prefixes(
+                robot_ids=active_robot_ids,
+                valid_until=initial_state,
+                eligible_robot_ids=set(request_by_robot),
+            )
+            if not initial_candidates:
+                return []
+
+            @cache
+            def dfs(current_tick: int, valid_until: tuple[int, ...]) -> int:
+                if current_tick >= self._horizon_ticks:
+                    return 0
+
+                best_cost = math.inf
+                for candidate in self._candidate_prefixes(active_robot_ids, valid_until):
+                    arrival_tick = min(self._horizon_ticks, current_tick + self._latency_ticks[len(candidate)])
+                    interval_cost = self._interval_starvation_cost(valid_until, current_tick, arrival_tick)
+                    next_state = self._apply_batch(valid_until, candidate, arrival_tick)
+                    total_cost = interval_cost + dfs(arrival_tick, next_state)
+                    best_cost = min(best_cost, total_cost)
+
+                if best_cost is math.inf:
+                    return self._interval_starvation_cost(valid_until, current_tick, self._horizon_ticks)
+
+                return best_cost
+
+            best_candidate: tuple[int, ...] | None = None
+            best_cost = math.inf
+            for candidate in initial_candidates:
+                arrival_tick = min(self._horizon_ticks, self._latency_ticks[len(candidate)])
+                interval_cost = self._interval_starvation_cost(initial_state, 0, arrival_tick)
+                next_state = self._apply_batch(initial_state, candidate, arrival_tick)
+                total_cost = interval_cost + dfs(arrival_tick, next_state)
+                if total_cost < best_cost or (
+                    total_cost == best_cost and self._prefer_candidate(candidate, best_candidate, active_robot_ids)
+                ):
+                    best_cost = total_cost
+                    best_candidate = candidate
+
+            if best_candidate is None:
+                return []
+
+            return [[request_by_robot[active_robot_ids[index]] for index in best_candidate]]
+        finally:
+            planning_duration_ms = (time.perf_counter_ns() - planning_start) / 1e6
+            self._planning_durations_ms.append(planning_duration_ms)
+
+    def reset_robot(self, robot_id: str) -> None:
+        super().reset_robot(robot_id)
+        self._predicted_valid_until.pop(robot_id, None)
+
+    def _candidate_prefixes(
+        self,
+        robot_ids: list[str],
+        valid_until: tuple[int, ...],
+        eligible_robot_ids: set[str] | None = None,
+    ) -> list[tuple[int, ...]]:
+        eligible_indices = [
+            index
+            for index, robot_id in enumerate(robot_ids)
+            if eligible_robot_ids is None or robot_id in eligible_robot_ids
+        ]
+        ordered = sorted(eligible_indices, key=lambda index: (valid_until[index], robot_ids[index]))
+        max_size = min(self._max_batch_size, len(ordered))
+        return [tuple(ordered[:batch_size]) for batch_size in range(1, max_size + 1)]
+
+    def _apply_batch(
+        self,
+        valid_until: tuple[int, ...],
+        candidate: tuple[int, ...],
+        arrival_tick: int,
+    ) -> tuple[int, ...]:
+        updated = list(valid_until)
+        refreshed_until = min(self._horizon_ticks + self._chunk_ticks, arrival_tick + self._chunk_ticks)
+        for index in candidate:
+            updated[index] = refreshed_until
+        return tuple(updated)
+
+    def _interval_starvation_cost(self, valid_until: tuple[int, ...], start_tick: int, end_tick: int) -> int:
+        if end_tick <= start_tick:
+            return 0
+        return sum(max(0, end_tick - max(start_tick, expiry_tick)) for expiry_tick in valid_until)
+
+    def _remaining_ticks(self, robot_id: str, now: float) -> int:
+        valid_until = max(
+            self._deadlines.get(robot_id, 0.0),
+            self._predicted_valid_until.get(robot_id, 0.0),
+            self._latest_requests.get(robot_id, None).deadline if robot_id in self._latest_requests else 0.0,
         )
+        if valid_until <= now:
+            return 0
+        return min(self._horizon_ticks + self._chunk_ticks, self._to_ticks((valid_until - now) * 1000.0))
 
-        best_cost: list[float] = [float("inf")]
-        best_first_batch: list[list[SlotRequest] | None] = [None]
+    def _latency_ms(self, batch_size: int) -> float:
+        latency_ms = self._batch_profile_ms.get(batch_size)
+        if latency_ms is None:
+            raise ValueError(f"Missing batch profile entry for batch_size={batch_size}")
+        return latency_ms
 
-        def dfs(state: _SimState, depth: int, cost: float, first: list[SlotRequest] | None) -> None:
-            if depth == 0 or not state.robot_deadlines:
-                if cost < best_cost[0]:
-                    best_cost[0] = cost
-                    best_first_batch[0] = first
-                return
+    def _to_ticks(self, duration_ms: float) -> int:
+        return max(1, math.ceil(duration_ms / self._timestep_ms))
 
-            sorted_robots = sorted(state.robot_deadlines.items(), key=lambda x: x[1])
-            max_k = min(len(sorted_robots), self._max_batch_size)
+    def _prune_predictions(self, now: float) -> None:
+        self._predicted_valid_until = {
+            robot_id: valid_until for robot_id, valid_until in self._predicted_valid_until.items() if valid_until > now
+        }
+        self._server_available_at = max(now, self._server_available_at)
 
-            for k in range(1, max_k + 1):
-                if k not in self._batch_profile_ms:
-                    continue
+    def _prefer_candidate(
+        self,
+        candidate: tuple[int, ...],
+        best_candidate: tuple[int, ...] | None,
+        robot_ids: list[str],
+    ) -> bool:
+        if best_candidate is None:
+            return True
+        if len(candidate) != len(best_candidate):
+            return len(candidate) > len(best_candidate)
+        candidate_robot_ids = tuple(robot_ids[index] for index in candidate)
+        best_robot_ids = tuple(robot_ids[index] for index in best_candidate)
+        return candidate_robot_ids < best_robot_ids
 
-                batch_ids = [rid for rid, _ in sorted_robots[:k]]
-                latency_s = self._batch_profile_ms[k] / 1000.0
-                t_start = state.server_free_at
-                t_end = t_start + latency_s
+    def timing_summary(self) -> dict[str, float] | None:
+        if not self._planning_durations_ms:
+            return None
 
-                step_cost = sum(1 for _, dl in state.robot_deadlines.items() if dl < t_start)
-
-                new_deadlines = dict(state.robot_deadlines)
-                for rid in batch_ids:
-                    new_deadlines[rid] = t_end + self.execution_horizon_s
-
-                new_state = _SimState(server_free_at=t_end, robot_deadlines=new_deadlines)
-
-                first_batch = [req_by_id[rid] for rid in batch_ids if rid in req_by_id] if first is None else first
-                dfs(new_state, depth - 1, cost + step_cost, first_batch)
-
-        dfs(initial_state, self.horizon, 0.0, None)
-
-        if best_first_batch[0] is None:
-            # Fallback: greedy (earliest deadline, batch size 1)
-            fallback = sorted(candidates, key=lambda r: r.deadline)
-            return [fallback[:1]]
-
-        return [best_first_batch[0]]
+        durations_ms = sorted(self._planning_durations_ms)
+        count = len(durations_ms)
+        return {
+            "planning_calls": float(count),
+            "total_planning_time_ms": sum(durations_ms),
+            "mean_planning_time_ms": sum(durations_ms) / count,
+            "p50_planning_time_ms": durations_ms[min(count - 1, int(0.50 * (count - 1)))],
+            "p99_planning_time_ms": durations_ms[min(count - 1, int(0.99 * (count - 1)))],
+            "max_planning_time_ms": durations_ms[-1],
+        }

@@ -65,6 +65,14 @@ tr:last-child td { border-bottom: none; }
 
 <div class="toolbar">
   <button class="btn-primary" onclick="doRefresh()">&#8635; Refresh</button>
+  <button id="auto-btn" onclick="toggleAuto()">&#9654; Auto</button>
+  <select id="auto-interval" style="background:#1e1e1e;border:1px solid #333;color:#ccc;padding:5px 8px;border-radius:4px;font-family:inherit;font-size:0.85em">
+    <option value="1">1 s</option>
+    <option value="2">2 s</option>
+    <option value="5" selected>5 s</option>
+    <option value="10">10 s</option>
+    <option value="30">30 s</option>
+  </select>
   <span class="status" id="status">not yet refreshed</span>
 </div>
 
@@ -104,6 +112,11 @@ tr:last-child td { border-bottom: none; }
   </div>
 
   <div class="chart-card">
+    <div class="chart-header">Starvations &amp; Wasted Actions per Robot</div>
+    <div id="plot-starvations" class="plot"></div>
+  </div>
+
+  <div class="chart-card">
     <div class="chart-header">
       Stage Latency Distributions
       <label for="robot-sel">Robot:</label>
@@ -135,6 +148,7 @@ tr:last-child td { border-bottom: none; }
 // Global state
 // ---------------------------------------------------------------------------
 let _hist = null;
+let _autoTimer = null;
 
 // ---------------------------------------------------------------------------
 // Plotly theme
@@ -175,8 +189,56 @@ function hist1d(data, color, title, xTitle) {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-refresh
+// ---------------------------------------------------------------------------
+function toggleAuto() {
+  const btn = document.getElementById('auto-btn');
+  if (_autoTimer) {
+    clearInterval(_autoTimer);
+    _autoTimer = null;
+    btn.textContent = '\u25b6 Auto';
+    btn.classList.remove('btn-primary');
+  } else {
+    const secs = +document.getElementById('auto-interval').value;
+    _autoTimer = setInterval(doRefresh, secs * 1000);
+    btn.textContent = '\u23f9 Auto: ' + secs + 's';
+    btn.classList.add('btn-primary');
+    doRefresh();
+  }
+}
+
+// Restart timer when interval changes while auto is active.
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('auto-interval').addEventListener('change', () => {
+    if (_autoTimer) { toggleAuto(); toggleAuto(); }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Chart renderers
 // ---------------------------------------------------------------------------
+function renderStarvations(snap) {
+  const robots = Object.entries(snap.per_robot || {});
+  if (!robots.length) {
+    Plotly.react('plot-starvations', [], L({ title: 'No data' }), CFG);
+    return;
+  }
+  const ids = robots.map(([id]) => id);
+  const starvations = robots.map(([, r]) => r.total_starvations);
+  const wasted = robots.map(([, r]) => r.total_wasted_actions);
+  Plotly.react('plot-starvations', [
+    { type: 'bar', x: ids, y: starvations, name: 'Starvations',
+      marker: { color: '#ff8a65' } },
+    { type: 'bar', x: ids, y: wasted, name: 'Wasted Actions',
+      marker: { color: '#4fc3f7', opacity: 0.7 } },
+  ], L({
+    barmode: 'group',
+    xaxis: { title: 'Robot' },
+    yaxis: { title: 'Count' },
+    height: 260,
+  }), CFG);
+}
+
 function renderBatchSizes(hist) {
   const bs = hist.batches;
   if (!bs.length) { Plotly.react('plot-batch', [], L({ title: 'No data' }), CFG); return; }
@@ -340,6 +402,7 @@ async function doRefresh() {
     _hist = hist;
 
     renderStats(snap);
+    renderStarvations(snap);
     renderBatchSizes(hist);
     renderGpuDist(hist);
     renderStage(hist, document.getElementById('robot-sel').value);

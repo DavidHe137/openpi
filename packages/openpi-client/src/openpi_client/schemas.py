@@ -229,10 +229,6 @@ class ServerMetadata(JSONDataclass):
     env: str  # environment mode (ALOHA, LIBERO, etc.)
     scheduling_algorithm: str  # TODO: maybe reference the enum from scheduler.py
 
-    # Lookahead scheduler parameters (only used when scheduling_algorithm == "lookahead")
-    lookahead_horizon: int = 5
-    lookahead_execution_horizon_s: float = 0.5
-
 
 @dataclass(frozen=True)
 class RuntimeMetadata(JSONDataclass):

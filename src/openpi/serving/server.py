@@ -105,7 +105,10 @@ async def _watchdog_task(gpu_proc: mp.Process, scheduler_proc: mp.Process) -> No
 
 
 def _start_backend(
-    metadata: ServerMetadata, policy_factory: Callable, log_queue: mp.Queue | None
+    metadata: ServerMetadata,
+    policy_factory: Callable,
+    scheduler_kwargs: dict[str, object] | None,
+    log_queue: mp.Queue | None,
 ) -> tuple[mp.Process, mp.Process, RobotSlots, Event, Event]:
     slots = RobotSlots(max_robots=MAX_ROBOTS)
     batch_queue: mp.Queue = mp.Queue()
@@ -136,10 +139,9 @@ def _start_backend(
             batch_queue,
             metadata.max_batch_size,
             metadata.scheduling_algorithm,
+            scheduler_kwargs,
             sched_ready,
             log_queue,
-            metadata.lookahead_horizon,
-            metadata.lookahead_execution_horizon_s,
         ),
         daemon=True,
     )
@@ -152,10 +154,20 @@ def _start_backend(
     return scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready
 
 
-def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp.Queue | None = None) -> FastAPI:
+def create_app(
+    metadata: ServerMetadata,
+    policy_factory: Callable,
+    scheduler_kwargs: dict[str, object] | None = None,
+    log_queue: mp.Queue | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready = _start_backend(metadata, policy_factory, log_queue)
+        scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready = _start_backend(
+            metadata,
+            policy_factory,
+            scheduler_kwargs,
+            log_queue,
+        )
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, sched_ready.wait)
@@ -302,11 +314,18 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
 
 
 class PolicyServer:
-    def __init__(self, metadata: ServerMetadata, policy_factory: Callable, log_queue: mp.Queue | None = None):
+    def __init__(
+        self,
+        metadata: ServerMetadata,
+        policy_factory: Callable,
+        scheduler_kwargs: dict[str, object] | None = None,
+        log_queue: mp.Queue | None = None,
+    ):
         self._metadata = metadata
         self._policy_factory = policy_factory
+        self._scheduler_kwargs = scheduler_kwargs
         self._log_queue = log_queue
 
     def serve_forever(self, host="0.0.0.0", port=8000):
-        app = create_app(self._metadata, self._policy_factory, self._log_queue)
+        app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue)
         uvicorn.run(app, host=host, port=port)

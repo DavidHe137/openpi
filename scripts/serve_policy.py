@@ -64,7 +64,16 @@ class Args:
     log_dir: str = "logs/server"
 
     # Scheduling algorithm for batching requests. # TODO: maybe should use enum?
-    scheduling_algorithm: Literal["greedy", "round_robin", "random", "lookahead"] = "greedy"
+    scheduling_algorithm: Literal["greedy", "lookahead", "round_robin", "random"] = "greedy"
+
+    # Lookahead rollout horizon in milliseconds.
+    lookahead_horizon_ms: int = 600
+
+    # Lookahead time discretization in milliseconds.
+    lookahead_timestep_ms: int = 50
+
+    # Control frequency used to convert action chunks to wall-clock duration.
+    lookahead_control_hz: int = 20
 
     # Logging level.
     log_debug: bool = False
@@ -148,9 +157,19 @@ def main(args: Args) -> None:
     local_ip = socket.gethostbyname(hostname)
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
+    scheduler_kwargs: dict[str, object] | None = None
+    if args.scheduling_algorithm == "lookahead":
+        scheduler_kwargs = {
+            "horizon_ms": args.lookahead_horizon_ms,
+            "timestep_ms": args.lookahead_timestep_ms,
+            "action_horizon_steps": server_metadata.action_horizon,
+            "control_hz": args.lookahead_control_hz,
+        }
+
     server = PolicyServer(
         metadata=server_metadata,
         policy_factory=policy_factory,
+        scheduler_kwargs=scheduler_kwargs,
         log_queue=log_queue,
     )
     try:

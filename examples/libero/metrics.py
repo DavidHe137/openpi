@@ -1,20 +1,24 @@
 """Metrics and plotting utilities for LIBERO experiments."""
 
+import json
 from typing import List, Dict, Callable, Optional, Tuple
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
-from dataclasses import asdict
 from rich.console import Console
 from rich.table import Table
-from examples.libero.subscribers.saver import Result
-from openpi_client.schemas import pathlib, ActionChunk
+from openpi_client.schemas import RuntimeMetadata, pathlib, ActionChunk
 
 
 # =============================================================================
 # Data Loading
 # =============================================================================
+
+
+def _load_episode_metadata(metadata_file: pathlib.Path) -> dict:
+    with open(metadata_file, "r") as f:
+        return json.load(f)
 
 
 def load_episodes(output_path: pathlib.Path) -> pd.DataFrame:
@@ -23,8 +27,7 @@ def load_episodes(output_path: pathlib.Path) -> pd.DataFrame:
     if not metadata_files:
         return pd.DataFrame()
 
-    results: List[Result] = [Result.from_json(f) for f in metadata_files]
-    return pd.DataFrame([asdict(result) for result in results])
+    return pd.DataFrame([_load_episode_metadata(f) for f in metadata_files])
 
 
 def load_actions_left(output_path: pathlib.Path) -> Dict[str, List[np.ndarray]]:
@@ -38,8 +41,8 @@ def load_actions_left(output_path: pathlib.Path) -> Dict[str, List[np.ndarray]]:
     for f in files:
         # path: <out_dir>/<robot_idx>/<ep_idx>_<suite>_<task>_<result>/actions_left.npy
         parts = f.parts
-        robot_idx = parts[-3]   # e.g. "0"
-        ep_prefix = parts[-2]   # e.g. "0_libero_10_0_success"
+        robot_idx = parts[-3]  # e.g. "0"
+        ep_prefix = parts[-2]  # e.g. "0_libero_10_0_success"
         ep_idx = int(ep_prefix.split("_")[0])
         arr = np.load(f)
         by_robot.setdefault(robot_idx, []).append((ep_idx, arr))
@@ -63,19 +66,63 @@ def load_action_chunks(output_path: pathlib.Path) -> pd.DataFrame:
             print(f"Warning: metadata.json not found in {episode_dir}, skipping")
             continue
 
-        result = Result.from_json(metadata_file)
+        result = _load_episode_metadata(metadata_file)
         chunks = ActionChunk.from_parquet(action_chunk_file)
 
         for chunk in chunks:
             rows.append(
                 {
-                    "task_suite_name": result.task_suite_name,
-                    "task_id": result.task_id,
-                    "task_language": result.task_language,
+                    "task_suite_name": result["task_suite_name"],
+                    "task_id": result["task_id"],
+                    "task_language": result["task_language"],
                     "latency": chunk.latency,
                     "execution_horizon": chunk.execution_horizon,
                 }
             )
+
+    return pd.DataFrame(rows)
+
+
+def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
+    """Load per-episode no-action metrics from saved cost histories.
+
+    A NaN in cost_history means the runtime executed a null action for that
+    control step, which is the closest observable analogue to the planner's
+    no-action starvation objective.
+    """
+    runtime_metadata_path = output_path / "runtime_metadata.json"
+    control_hz: int | None = None
+    if runtime_metadata_path.exists():
+        control_hz = RuntimeMetadata.from_json(runtime_metadata_path).control_hz
+
+    rows = []
+    for cost_history_file in sorted(output_path.glob("**/cost_history.npy")):
+        episode_dir = cost_history_file.parent
+        metadata_file = episode_dir / "metadata.json"
+        if not metadata_file.exists():
+            print(f"Warning: metadata.json not found in {episode_dir}, skipping")
+            continue
+
+        result = _load_episode_metadata(metadata_file)
+        costs = np.load(cost_history_file)
+        planner_starvation_steps = int(np.isnan(costs).sum())
+        total_steps = int(costs.shape[0])
+        planner_starvation_rate = (
+            planner_starvation_steps / total_steps if total_steps > 0 else 0.0
+        )
+
+        row = {
+            "robot_idx": result["robot_idx"],
+            "episode_idx": result["episode_idx"],
+            "task_suite_name": result["task_suite_name"],
+            "task_id": result["task_id"],
+            "planner_starvation_steps": planner_starvation_steps,
+            "planner_starvation_rate": planner_starvation_rate,
+        }
+        if control_hz is not None and control_hz > 0:
+            row["planner_starvation_seconds"] = planner_starvation_steps / control_hz
+
+        rows.append(row)
 
     return pd.DataFrame(rows)
 
@@ -565,15 +612,24 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
 
     # Episode boundary markers (thin white lines)
     for i, bounds in enumerate(episode_boundaries):
-        for b in bounds[1:]:   # skip step 0
-            ax.plot([b - 0.5, b - 0.5], [i - 0.4, i + 0.4], color="white", linewidth=0.8, alpha=0.7)
+        for b in bounds[1:]:  # skip step 0
+            ax.plot(
+                [b - 0.5, b - 0.5],
+                [i - 0.4, i + 0.4],
+                color="white",
+                linewidth=0.8,
+                alpha=0.7,
+            )
 
     cbar = fig.colorbar(im, ax=ax, pad=0.01)
     cbar.set_label("Actions left in queue", fontweight="bold")
 
     ax.set_yticks(range(n_robots))
     ax.set_yticklabels([f"robot_{r}" for r in robots], fontsize=8)
-    ax.set_xlabel("Step (episodes concatenated, white lines = episode boundaries)", fontweight="bold")
+    ax.set_xlabel(
+        "Step (episodes concatenated, white lines = episode boundaries)",
+        fontweight="bold",
+    )
     ax.set_ylabel("Robot", fontweight="bold")
     ax.set_title("Actions Left Per Robot Over Time", fontsize=14, fontweight="bold")
 
@@ -695,9 +751,25 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
         print("No results found")
         return
 
+    planner_starvation_df = load_planner_starvation_metrics(output_path)
+    if not planner_starvation_df.empty:
+        df = df.merge(
+            planner_starvation_df,
+            on=["robot_idx", "episode_idx", "task_suite_name", "task_id"],
+            how="left",
+        )
+
     df.to_csv(output_path / "results.csv", index=False)
 
-    summary = df.groupby(["task_suite_name", "task_id"]).agg({"success": "mean"})
+    aggregation_spec: dict[str, str] = {"success": "mean"}
+    if "planner_starvation_steps" in df.columns:
+        aggregation_spec["planner_starvation_steps"] = "mean"
+    if "planner_starvation_rate" in df.columns:
+        aggregation_spec["planner_starvation_rate"] = "mean"
+    if "planner_starvation_seconds" in df.columns:
+        aggregation_spec["planner_starvation_seconds"] = "mean"
+
+    summary = df.groupby(["task_suite_name", "task_id"]).agg(aggregation_spec)
     summary.reset_index().to_csv(output_path / "summary.csv", index=False)
 
     # Display with rich
@@ -706,15 +778,37 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     table.add_column("Task Suite", style="cyan")
     table.add_column("Task ID", style="magenta")
     table.add_column("Success Rate", style="green")
+    if "planner_starvation_steps" in summary.columns:
+        table.add_column("Planner Starv.", style="yellow")
+    if "planner_starvation_rate" in summary.columns:
+        table.add_column("Planner Starv. Rate", style="yellow")
 
     for _, row in summary.reset_index().iterrows():
-        table.add_row(
+        row_values = [
             str(row["task_suite_name"]),
             str(row["task_id"]),
             f"{row['success']:.2%}",
-        )
+        ]
+        if "planner_starvation_steps" in summary.columns:
+            row_values.append(f"{row['planner_starvation_steps']:.2f}")
+        if "planner_starvation_rate" in summary.columns:
+            row_values.append(f"{row['planner_starvation_rate']:.2%}")
+        table.add_row(*row_values)
 
     console.print(table)
     console.print(
         f"\n[bold green]Total success rate: {summary['success'].mean():.2%}[/bold green]"
     )
+    if "planner_starvation_steps" in df.columns:
+        total_starvation_steps = int(df["planner_starvation_steps"].sum())
+        console.print(
+            f"[bold yellow]Planner starvation total: {total_starvation_steps} control steps[/bold yellow]"
+        )
+    if "planner_starvation_rate" in df.columns:
+        console.print(
+            f"[bold yellow]Planner starvation rate: {df['planner_starvation_rate'].mean():.2%}[/bold yellow]"
+        )
+    if "planner_starvation_seconds" in df.columns:
+        console.print(
+            f"[bold yellow]Planner starvation time: {df['planner_starvation_seconds'].sum():.2f}s[/bold yellow]"
+        )
