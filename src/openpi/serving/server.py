@@ -274,8 +274,6 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
                     await state.scheduler_sock.send_pyobj(slot_req)
                     logger.debug("Sent slot request to scheduler: %s", slot_req)
             except WebSocketDisconnect:
-                # FIXME: this is a hack to reset the robot when the websocket disconnects, should make a special message for removing the robot from the scheduler
-                await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
                 logger.debug("Robot %s disconnected", robot_id)
 
         async def send():
@@ -292,7 +290,6 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
             await recv_task
         finally:
             send_task.cancel()
-            # FIXME: this is a hack to reset the robot when the websocket disconnects
             await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
             state.slots.free(robot_id)
             state.response_queues.pop(robot_id, None)

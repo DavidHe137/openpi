@@ -80,10 +80,3 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
                             index_in_chunk=step - action_chunk.start_step if step >= action_chunk.start_step else None,
                         )
                     )
-
-    @override
-    def reset(self) -> None:
-        with self._lock:
-            self._action_queue.clear()
-            self._action_chunks = []
-            self._ws_client.reset()

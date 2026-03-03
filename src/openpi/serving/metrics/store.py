@@ -39,17 +39,17 @@ class RobotState:
 
     last_start_step: int = 0
     last_execution_horizon: int = 0
-    last_server_send_times: dict = field(default_factory=dict)  # request_id → server_send_time
+    last_server_send_times: dict[int, float] = field(default_factory=dict)  # request_id → server_send_time
     total_starvations: int = 0
-    recent_network_delays_ms: deque = field(default_factory=lambda: deque(maxlen=500))
+    recent_network_delays_ms: deque[float] = field(default_factory=lambda: deque(maxlen=500))
 
 
 @dataclass
 class MetricsStore:
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
-    recent_batches: deque = field(default_factory=lambda: deque(maxlen=500))
-    robot_states: dict = field(default_factory=dict)
+    recent_batches: deque[BatchSummary] = field(default_factory=lambda: deque(maxlen=500))
+    robot_states: dict[str, RobotState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
     _batch_counter: int = field(default=0, init=False)
 

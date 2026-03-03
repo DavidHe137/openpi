@@ -29,9 +29,8 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         """
         super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
         self._delay_buffer_size = delay_buffer_size
-        self._last_request_time = None  # Track when we sent the last request
-
-        self.reset()
+        self._last_request_time = None
+        self._delays = deque([4], maxlen=self._delay_buffer_size)
         self._background_thread.start()
 
     @override
@@ -81,10 +80,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
 
     @override
     def reset(self) -> None:
-        with self._lock:
-            self._action_queue.clear()
-            self._action_chunks = []
-            # Initialize per Algorithm 1: d_init = 4 steps (~200ms at 20Hz)
-            self._delays = deque([4], maxlen=self._delay_buffer_size)
-            self._last_request_time = None
-            self._ws_client.reset()
+        super().reset()
+        # Initialize per Algorithm 1: d_init = 4 steps (~200ms at 20Hz)
+        self._delays = deque([4], maxlen=self._delay_buffer_size)
+        self._last_request_time = None
