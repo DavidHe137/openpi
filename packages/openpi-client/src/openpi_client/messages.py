@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 import numpy as np
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 from jaxtyping import Float
 
 
@@ -35,6 +35,7 @@ class TrainTimeRTCParams:
 # message types shared between client and server
 @dataclass(frozen=True)
 class InferRequest:
+    type: Literal["infer"] = "infer"
     robot_id: str
     observation: dict
     start_step: int  # TODO: can maybe fold into observation after typing
@@ -47,6 +48,7 @@ class InferRequest:
 
 @dataclass(frozen=True)
 class ResetRequest:
+    type: Literal["reset"] = "reset"
     robot_id: str
 
 
@@ -68,5 +70,6 @@ class InferResponse:
 
 @dataclass(frozen=True)
 class ResponseAck:
+    type: Literal["ack"] = "ack"
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt

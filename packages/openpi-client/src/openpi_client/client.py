@@ -134,5 +134,5 @@ class BidirectionalWebsocket:
         return action_chunk
 
     def reset(self) -> None:
-        data = msgpack_numpy.packb({"reset": True, "robot_id": self._robot_id})
+        data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))
         self._ws.send(data)

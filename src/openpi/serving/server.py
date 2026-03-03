@@ -42,6 +42,7 @@ from openpi_client import msgpack_numpy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
+from openpi_client.messages import ResponseAck
 from openpi_client.schemas import ServerMetadata
 from starlette.websockets import WebSocketDisconnect
 import uvicorn
@@ -222,13 +223,19 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
                     raw = await websocket.receive_bytes()
                     msg = msgpack_numpy.unpackb(raw)
 
-                    if "reset" in msg:
-                        await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
-                        continue
-
-                    if "receive_time" in msg:  # ResponseAck
-                        state.metrics_store.record_ack(robot_id, msg["request_id"], msg["receive_time"])
-                        continue
+                    match msg.get("type"):
+                        case "reset":
+                            await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
+                            continue
+                        case "ack":
+                            ack = ResponseAck(**msg)
+                            state.metrics_store.record_ack(robot_id, ack.request_id, ack.receive_time)
+                            continue
+                        case "infer":
+                            pass
+                        case unknown:
+                            logger.warning("Unknown message type %r, dropping", unknown)
+                            continue
 
                     req = InferRequest(**msg)
 
