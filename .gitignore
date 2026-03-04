@@ -182,5 +182,3 @@ log/
 benchmarks/
 *.lprof
 jax_cache/
-
-requirements-modal.txt
