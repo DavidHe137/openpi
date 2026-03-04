@@ -1,7 +1,11 @@
 from abc import ABC
 from abc import abstractmethod
+from collections.abc import Generator
+from contextlib import contextmanager
 import multiprocessing as mp
+import time
 
+from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
 
 
@@ -19,6 +23,7 @@ class RequestScheduler(ABC):
         self._latest_requests: dict[str, SlotRequest] = {}
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
+        self._timing_samples: list[SchedulerTimingSample] = []
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
@@ -42,6 +47,27 @@ class RequestScheduler(ABC):
         self._deadlines.pop(robot_id, None)
         self._latest_requests.pop(robot_id, None)
         self._latest_scheduled_requests.pop(robot_id, None)
+
+    @contextmanager
+    def record_timing(self, metric_name: str) -> Generator[None, None, None]:
+        start_ns = time.perf_counter_ns()
+        try:
+            yield
+        finally:
+            duration_ms = (time.perf_counter_ns() - start_ns) / 1e6
+            self._timing_samples.append(
+                SchedulerTimingSample(
+                    scheduler_name=self.__class__.__name__,
+                    metric_name=metric_name,
+                    duration_ms=duration_ms,
+                    recorded_at=time.time(),
+                )
+            )
+
+    def flush_timing_samples(self) -> list[SchedulerTimingSample]:
+        samples = self._timing_samples
+        self._timing_samples = []
+        return samples
 
     def _get_schedulable_requests(self) -> list[SlotRequest]:
         """Get all requests that are not yet scheduled and past the minimum execution horizon."""

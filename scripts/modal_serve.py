@@ -1,10 +1,3 @@
-"""Serve the FastAPI policy server on Modal.
-
-uv run modal run scripts/modal_serve.py
-
-Be sure to connect to the tunnel URL printed to the terminal.
-"""
-
 import logging
 import pathlib
 import subprocess

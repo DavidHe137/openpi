@@ -18,4 +18,5 @@
     "cursorpyright.analysis.extraPaths": [
         "${workspaceFolder}/third_party/libero"
     ]
+    "workbench.activityBar.orientation": "vertical",
 }

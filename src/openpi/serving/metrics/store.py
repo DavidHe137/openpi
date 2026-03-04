@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 from openpi_client.messages import InferResponse
 
+from openpi.serving.schemas import SchedulerTimingSample
+
 
 @dataclass
 class BatchSummary:
@@ -48,6 +50,7 @@ class MetricsStore:
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
     batches: list[BatchSummary] = field(default_factory=list)
+    scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
     robot_states: dict[str, RobotState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
     _batch_counter: int = field(default=0, init=False)
@@ -98,6 +101,10 @@ class MetricsStore:
         if server_send_time is not None:
             delay_ms = (receive_time - server_send_time) * 1000
             state.network_delays_ms.append(delay_ms)
+
+    def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
+        """Called from the server process when the scheduler publishes timing samples."""
+        self.scheduler_timings.extend(samples)
 
     def snapshot(self, window_s: float | None = None) -> dict[str, Any]:
         """JSON-serializable summary of current metrics."""
@@ -197,16 +204,22 @@ class MetricsStore:
             for robot_id, state in self.robot_states.items()
             if state.network_delays_ms
         }
+        scheduler_timings: dict[str, list[float]] = {}
+        for sample in self.scheduler_timings:
+            metric_key = f"{sample.scheduler_name}.{sample.metric_name}"
+            scheduler_timings.setdefault(metric_key, []).append(round(sample.duration_ms, 3))
 
         return {
             "server_start_time": t0,
             "batches": batch_data,
             "outbound_delays_ms": outbound,
+            "scheduler_timings_ms": scheduler_timings,
         }
 
     def reset(self) -> None:
         """Clear all accumulated metrics and reset counters."""
         self.batches.clear()
+        self.scheduler_timings.clear()
         self.robot_states.clear()
         self.start_time = time.time()
         self._batch_counter = 0

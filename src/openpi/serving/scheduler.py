@@ -12,6 +12,7 @@ from openpi.scheduling import RequestScheduler
 from openpi.scheduling.baselines import GreedyScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
+from openpi.scheduling.lookahead import LookaheadScheduler
 from openpi.serving.schemas import BatchProfile
 from openpi.serving.schemas import SlotRequest
 from openpi.shared import logging_config
@@ -36,6 +37,7 @@ def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
 
 _SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
     "greedy": GreedyScheduler,
+    "lookahead": LookaheadScheduler,
     "round_robin": RoundRobinScheduler,
     "random": RandomBatchScheduler,
 }
@@ -45,8 +47,10 @@ def _run_scheduler(
     sched_in_ep: str,
     result_ep: str,
     batch_queue: mp.Queue,
+    scheduler_metrics_queue: mp.Queue | None,
     max_batch_size: int,
     algorithm: str,
+    scheduler_kwargs: dict | None,
     ready_event: Event,
     log_queue: mp.Queue | None = None,
 ) -> None:
@@ -96,7 +100,8 @@ def _run_scheduler(
 
     batch_profile = _recv_batch_profile(result_sock)
 
-    scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile)
+    extra_kwargs: dict = dict(scheduler_kwargs or {}) if cls is LookaheadScheduler else {}
+    scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile, **extra_kwargs)
 
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)
@@ -118,3 +123,7 @@ def _run_scheduler(
 
         if not batch_queue.full():
             scheduler.schedule()
+            if scheduler_metrics_queue is not None:
+                samples = scheduler.flush_timing_samples()
+                if samples:
+                    scheduler_metrics_queue.put_nowait(samples)
