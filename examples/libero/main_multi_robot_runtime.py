@@ -58,8 +58,8 @@ class Args:
     #################################################################################################################
     task_suite_name: str = "libero_10"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
-    num_trials_per_robot: int = 10  # Number of rollouts per robot per task
-    max_steps: int = 500  # Maximum number of control steps per episode
+    num_trials_per_task: int = 10  # Number of rollouts per task
+    max_steps: int = 1000  # Maximum number of control steps per episode
 
     #################################################################################################################
     # Multi-robot / threading parameters
@@ -198,8 +198,12 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
         for job in jobs:
             _robot_worker((args, job, server_metadata))
     else:
+        total_episodes = sum(len(job.initial_states) for job in jobs)
         with get_progress_manager(
-            args.progress_type, max_steps=args.max_steps
+            args.progress_type,
+            total_jobs=len(jobs),
+            total_episodes=total_episodes,
+            max_steps=args.max_steps,
         ) as progress_manager:
             # Pass queue to worker initializer
             with multiprocessing.Pool(
@@ -235,7 +239,7 @@ def create_jobs(args: Args) -> List[Job]:
         args.task_suite_name,
         num_tasks_in_suite,
         args.num_robots,
-        args.num_trials_per_robot,
+        args.num_trials_per_task,
         args.control_hz,
     )
 
@@ -246,14 +250,14 @@ def create_jobs(args: Args) -> List[Job]:
             task_suite.get_task_init_states(task_id)
         )
 
-        if len(all_initial_states) < args.num_trials_per_robot:
+        if len(all_initial_states) < args.num_trials_per_task:
             logging.error(
                 "Task %d has less initial states than trials per robot; skipping",
                 task_id,
             )
             continue
 
-        initial_states = all_initial_states[: args.num_trials_per_robot]
+        initial_states = all_initial_states[: args.num_trials_per_task]
         job = Job(
             task=task,
             task_suite_name=args.task_suite_name,
@@ -311,7 +315,7 @@ def main(args: Args) -> None:
     runtime_metadata = RuntimeMetadata(
         task_suite_name=args.task_suite_name,
         num_steps_wait=args.num_steps_wait,
-        num_trials_per_robot=args.num_trials_per_robot,
+        num_trials_per_task=args.num_trials_per_task,
         max_steps=args.max_steps,
         num_robots=args.num_robots,
         control_hz=args.control_hz,

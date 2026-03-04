@@ -125,6 +125,9 @@ class LiberoSimEnvironment(_environment.Environment):
 
         # Always execute at least one step with the new action
         obs, _, done, info = self._env.step(act.tolist())
+        # LIBERO overrides `done` with _check_success(), losing horizon-based termination.
+        # Also check the underlying robosuite env's done flag to catch that case.
+        done = done or self._env.env.done
         self._last_obs = obs
         self._step_counter += 1
 
