@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 import numpy as np
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 from jaxtyping import Float
 
 
@@ -44,11 +44,13 @@ class InferRequest:
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
     min_execution_horizon: int = 0  # minimum steps to execute before server will re-infer this robot
+    type: Literal["infer"] = "infer"
 
 
 @dataclass(frozen=True)
 class ResetRequest:
     robot_id: str
+    type: Literal["reset"] = "reset"
 
 
 @dataclass(frozen=True)
@@ -71,3 +73,4 @@ class InferResponse:
 class ResponseAck:
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt
+    type: Literal["ack"] = "ack"

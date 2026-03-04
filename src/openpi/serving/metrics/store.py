@@ -1,6 +1,5 @@
 """MetricsStore: in-memory metrics state for the websocket policy server."""
 
-from collections import deque
 from dataclasses import dataclass
 from dataclasses import field
 import time
@@ -39,18 +38,17 @@ class RobotState:
 
     last_start_step: int = 0
     last_execution_horizon: int = 0
-    last_server_send_times: dict = field(default_factory=dict)  # request_id → server_send_time
+    last_server_send_times: dict[int, float] = field(default_factory=dict)  # request_id → server_send_time
     total_starvations: int = 0
-    total_wasted_actions: int = 0
-    recent_network_delays_ms: deque = field(default_factory=lambda: deque(maxlen=500))
+    network_delays_ms: list[float] = field(default_factory=list)  # (delay_ms,) unbounded
 
 
 @dataclass
 class MetricsStore:
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
-    recent_batches: deque = field(default_factory=lambda: deque(maxlen=500))
-    robot_states: dict = field(default_factory=dict)
+    batches: list[BatchSummary] = field(default_factory=list)
+    robot_states: dict[str, RobotState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
     _batch_counter: int = field(default=0, init=False)
 
@@ -71,7 +69,7 @@ class MetricsStore:
             execution_horizons=[r.execution_horizon for r in responses],
             start_steps=[r.start_step for r in responses],
         )
-        self.recent_batches.append(batch)
+        self.batches.append(batch)
 
         for response in responses:
             state = self.robot_states.setdefault(response.robot_id, RobotState())
@@ -81,8 +79,6 @@ class MetricsStore:
                 actions_remaining = state.last_execution_horizon - actions_consumed
                 if actions_remaining < 0:
                     state.total_starvations += abs(actions_remaining)
-                elif actions_remaining > 0:
-                    state.total_wasted_actions += actions_remaining
 
             state.last_start_step = response.start_step
             state.last_execution_horizon = response.execution_horizon
@@ -101,17 +97,32 @@ class MetricsStore:
         server_send_time = state.last_server_send_times.pop(request_id, None)
         if server_send_time is not None:
             delay_ms = (receive_time - server_send_time) * 1000
-            state.recent_network_delays_ms.append(delay_ms)
+            state.network_delays_ms.append(delay_ms)
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, window_s: float | None = None) -> dict[str, Any]:
         """JSON-serializable summary of current metrics."""
         now = time.time()
-        batches = list(self.recent_batches)
         uptime_s = now - self.start_time
+
+        if window_s is not None:
+            cutoff = now - window_s
+            batches = [b for b in self.batches if b.inference_end_time >= cutoff]
+        else:
+            batches = self.batches
+
         total_requests = sum(len(b.robot_ids) for b in batches)
 
         gpu_times = [b.gpu_time_ms for b in batches]
         avg_gpu_time_ms = float(np.mean(gpu_times)) if gpu_times else 0.0
+
+        if len(batches) >= 2:
+            wall_s = (
+                window_s if window_s is not None else (batches[-1].inference_end_time - batches[0].inference_start_time)
+            )
+            total_busy_ms = sum(gpu_times)
+            gpu_busy_pct = min(100.0, total_busy_ms / (wall_s * 1000) * 100) if wall_s > 0 else 0.0
+        else:
+            gpu_busy_pct = 0.0
 
         latencies_ms = [(b.inference_end_time - req_ts) * 1000 for b in batches for req_ts in b.request_timestamps]
         p50_latency_ms = float(np.percentile(latencies_ms, 50)) if latencies_ms else 0.0
@@ -120,15 +131,14 @@ class MetricsStore:
         queue_delays: list[float] = [d for b in batches for d in b.queue_delays_ms]
         avg_queue_delay_ms = float(np.mean(queue_delays)) if queue_delays else 0.0
 
-        requests_per_second = total_requests / uptime_s if uptime_s > 0 else 0.0
+        span_s = window_s if window_s is not None else uptime_s
+        requests_per_second = total_requests / span_s if span_s > 0 else 0.0
 
         per_robot: dict[str, Any] = {}
         for robot_id, state in self.robot_states.items():
-            delays = list(state.recent_network_delays_ms)
             per_robot[robot_id] = {
                 "total_starvations": state.total_starvations,
-                "total_wasted_actions": state.total_wasted_actions,
-                "avg_network_delay_ms": float(np.mean(delays)) if delays else 0.0,
+                "avg_network_delay_ms": float(np.mean(state.network_delays_ms)) if state.network_delays_ms else 0.0,
             }
 
         return {
@@ -136,6 +146,7 @@ class MetricsStore:
             "total_batches": self._batch_counter,
             "total_requests": total_requests,
             "avg_gpu_time_ms": avg_gpu_time_ms,
+            "gpu_busy_pct": round(gpu_busy_pct, 1),
             "p50_latency_ms": p50_latency_ms,
             "p99_latency_ms": p99_latency_ms,
             "avg_queue_delay_ms": avg_queue_delay_ms,
@@ -143,28 +154,37 @@ class MetricsStore:
             "per_robot": per_robot,
         }
 
-    def history(self) -> dict[str, Any]:
+    def history(self, window_s: float | None = None) -> dict[str, Any]:
         """Per-batch time-series data for Plotly charts in the dashboard."""
-        batches = list(self.recent_batches)
+        now = time.time()
+        if window_s is not None:
+            cutoff = now - window_s
+            batches = [b for b in self.batches if b.inference_end_time >= cutoff]
+        else:
+            batches = self.batches
         t0 = self.start_time
 
         batch_data = []
-        for b in batches:
+        for i, b in enumerate(batches):
             per_req = []
-            for i, rid in enumerate(b.robot_ids):
+            for j, rid in enumerate(b.robot_ids):
                 per_req.append(
                     {
                         "robot_id": rid,
-                        "inbound_ms": round((b.server_arrival_times[i] - b.request_timestamps[i]) * 1000, 2),
-                        "queue_ms": round((b.inference_start_time - b.server_arrival_times[i]) * 1000, 2),
+                        "inbound_ms": round((b.server_arrival_times[j] - b.request_timestamps[j]) * 1000, 2),
+                        "queue_ms": round((b.inference_start_time - b.server_arrival_times[j]) * 1000, 2),
                         "infer_ms": round(b.gpu_time_ms, 2),
                     }
                 )
+            idle_before_ms = (
+                round((b.inference_start_time - batches[i - 1].inference_end_time) * 1000, 2) if i > 0 else 0.0
+            )
             batch_data.append(
                 {
                     "t": round(b.inference_end_time - t0, 3),
                     "batch_size": len(b.robot_ids),
                     "gpu_time_ms": round(b.gpu_time_ms, 2),
+                    "idle_before_ms": idle_before_ms,
                     "inference_start_t": round(b.inference_start_time - t0, 3),
                     "inference_end_t": round(b.inference_end_time - t0, 3),
                     "robot_ids": b.robot_ids,
@@ -173,9 +193,9 @@ class MetricsStore:
             )
 
         outbound: dict[str, list[float]] = {
-            robot_id: [round(d, 2) for d in state.recent_network_delays_ms]
+            robot_id: [round(d, 2) for d in state.network_delays_ms]
             for robot_id, state in self.robot_states.items()
-            if state.recent_network_delays_ms
+            if state.network_delays_ms
         }
 
         return {
@@ -186,7 +206,7 @@ class MetricsStore:
 
     def reset(self) -> None:
         """Clear all accumulated metrics and reset counters."""
-        self.recent_batches.clear()
+        self.batches.clear()
         self.robot_states.clear()
         self.start_time = time.time()
         self._batch_counter = 0

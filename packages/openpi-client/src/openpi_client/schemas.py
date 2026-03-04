@@ -15,7 +15,6 @@ J = TypeVar("J", bound="JSONDataclass")
 P = TypeVar("P", bound="ParquetDataclass")
 
 
-@dataclass(frozen=True)
 class CSVDataclass:
     """Mixin class that adds CSV serialization to dataclasses."""
 
@@ -58,7 +57,6 @@ class CSVDataclass:
         return instances
 
 
-@dataclass(frozen=True)
 class JSONDataclass:
     """Mixin class that adds JSON serialization to dataclasses."""
 
@@ -75,7 +73,6 @@ class JSONDataclass:
             return cls(**data)
 
 
-@dataclass(frozen=True)
 class ParquetDataclass:
     """Mixin class that adds Parquet serialization to dataclasses."""
 
@@ -208,7 +205,7 @@ class LiberoObservation(Observation):
     prompt: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class ServerMetadata(JSONDataclass):
     """Metadata about the policy server and model configuration.
 
@@ -228,6 +225,10 @@ class ServerMetadata(JSONDataclass):
     max_batch_size: int
     env: str  # environment mode (ALOHA, LIBERO, etc.)
     scheduling_algorithm: str  # TODO: maybe reference the enum from scheduler.py
+
+    # Set by Modal when running behind a tunnel; clients should use this for WebSocket
+    tunnel_url: Optional[str] = None
+    location: Optional[str] = None
 
 
 @dataclass(frozen=True)

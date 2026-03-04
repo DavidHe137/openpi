@@ -1,7 +1,8 @@
 """Serve the FastAPI policy server on Modal.
 
-Connect with:
-  uv run scripts/infer.py --host https://....modal.run --num-iters 50 --verbose
+uv run modal run scripts/modal_serve.py
+
+Be sure to connect to the tunnel URL printed to the terminal.
 """
 
 import logging
@@ -106,12 +107,7 @@ image = (
     scaledown_window=5 * 60,  # seconds, time to wait before scaling down
     timeout=2 * 60 * 60,  # 2 hours
 )
-@modal.experimental.http_server(
-    port=PORT,  # wrapped code must listen on this port
-    proxy_regions=[REGION],  # location of proxies, should be same as Cls region
-    startup_timeout=10 * 60,  # how long can server startup take?
-)
-@modal.concurrent(target_inputs=MAX_NUM_ROBOTS)
+@modal.concurrent(max_inputs=MAX_NUM_ROBOTS)
 class ModalPolicyServer:
     @modal.enter(snap=True)
     def startup(self) -> None:
@@ -148,7 +144,47 @@ class ModalPolicyServer:
             except (urllib.error.URLError, OSError):
                 time.sleep(1)
 
+    @modal.enter(snap=False)
+    def open_tunnel(self) -> None:
+        self._tunnel_ctx = modal.forward(PORT)
+        tunnel = self._tunnel_ctx.__enter__()
+        self._url = tunnel.url
+        logging.getLogger(__name__).info("Server URL: %s", tunnel.url)
+
+    @modal.asgi_app()
+    def stable_endpoint(self):
+        import json
+        import urllib.request
+
+        from fastapi import FastAPI
+        from fastapi.responses import RedirectResponse
+
+        stable = FastAPI()
+
+        @stable.get("/metadata")
+        def metadata():
+            with urllib.request.urlopen(f"http://localhost:{PORT}/metadata") as resp:
+                meta = json.loads(resp.read())
+            meta["tunnel_url"] = self._url
+            return meta
+
+        @stable.get("/")
+        def dashboard():
+            return RedirectResponse(f"{self._url}/")
+
+        return stable
+
+    @modal.method()
+    def run(self) -> None:
+        self.process.wait()
+
     @modal.exit()
     def teardown(self) -> None:
         """Clean up subprocesses on container exit."""
+        self._tunnel_ctx.__exit__(None, None, None)
         self.process.terminate()
+
+
+@app.local_entrypoint()
+def main():
+    ModalPolicyServer().run.remote()

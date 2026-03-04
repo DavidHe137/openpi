@@ -120,6 +120,10 @@ crc32c==2.7.1
     # via numcodecs
 cycler==0.12.1
     # via matplotlib
+dash==4.0.0
+    # via
+    #   openpi
+    #   plotly-resampler
 datasets==3.6.0
     # via lerobot
 debugpy==1.8.14
@@ -195,7 +199,9 @@ filelock==3.18.0
     #   torch
     #   transformers
 flask==3.1.1
-    # via lerobot
+    # via
+    #   dash
+    #   lerobot
 flatbuffers==25.2.10
     # via openpi
 flax==0.10.2
@@ -317,7 +323,9 @@ imageio==2.37.0
 imageio-ffmpeg==0.6.0
     # via imageio
 importlib-metadata==8.7.0
-    # via diffusers
+    # via
+    #   dash
+    #   diffusers
 importlib-resources==6.5.2
     # via etils
 inquirerpy==0.3.4
@@ -478,6 +486,7 @@ nbformat==5.10.4
     #   nbconvert
 nest-asyncio==1.6.0
     # via
+    #   dash
     #   ipykernel
     #   orbax-checkpoint
 networkx==3.5
@@ -522,6 +531,7 @@ numpy==1.26.4
     #   optax
     #   orbax-checkpoint
     #   pandas
+    #   plotly-resampler
     #   rerun-sdk
     #   scipy
     #   seaborn
@@ -530,6 +540,7 @@ numpy==1.26.4
     #   torchvision
     #   transformers
     #   treescope
+    #   tsdownsample
     #   zarr
 numpydantic==1.6.9
     # via openpi
@@ -634,6 +645,8 @@ orbax-checkpoint==0.11.13
     #   openpi
 orderly-set==5.4.1
     # via deepdiff
+orjson==3.11.7
+    # via plotly-resampler
 overrides==7.7.0 ; python_full_version < '3.12'
     # via jupyter-server
 packaging==25.0
@@ -648,12 +661,14 @@ packaging==25.0
     #   lerobot
     #   matplotlib
     #   nbconvert
+    #   plotly
     #   transformers
     #   zarr
 pandas==2.2.3
     # via
     #   datasets
     #   openpi
+    #   plotly-resampler
     #   seaborn
 pandocfilters==1.5.1
     # via nbconvert
@@ -677,6 +692,12 @@ platformdirs==4.3.8
     # via
     #   jupyter-core
     #   wandb
+plotly==5.24.1
+    # via
+    #   dash
+    #   plotly-resampler
+plotly-resampler==0.10.0
+    # via openpi
 polars==1.30.0
     # via openpi
 prometheus-client==0.23.1
@@ -827,6 +848,7 @@ regex==2024.11.6
     #   transformers
 requests==2.32.3
     # via
+    #   dash
     #   datasets
     #   diffusers
     #   dm-control
@@ -844,6 +866,8 @@ requests-oauthlib==2.0.0
     # via google-auth-oauthlib
 rerun-sdk==0.23.1
     # via lerobot
+retrying==1.4.2
+    # via dash
 rfc3339-validator==0.1.4
     # via
     #   jsonschema
@@ -889,6 +913,7 @@ setproctitle==1.3.6
 setuptools==80.9.0
     # via
     #   chex
+    #   dash
     #   dm-control
     #   jupyterlab
     #   labmaze
@@ -931,6 +956,8 @@ sympy==1.14.0
     # via torch
 synchronicity==0.11.1
     # via modal
+tenacity==9.1.4
+    # via plotly
 tensorboard==2.15.2
     # via openpi
 tensorboard-data-server==0.7.2
@@ -979,6 +1006,8 @@ tqdm==4.67.1
     #   transformers
 tqdm-loggable==0.2
     # via openpi
+trace-updater==0.0.9.1
+    # via openpi
 traitlets==5.14.3
     # via
     #   comm
@@ -1001,6 +1030,8 @@ treescope==0.1.9
     # via openpi
 triton==3.3.1 ; platform_machine == 'x86_64' and sys_platform == 'linux'
     # via torch
+tsdownsample==0.1.4.1
+    # via plotly-resampler
 typeguard==4.4.2
     # via tyro
 typer==0.24.0
@@ -1016,6 +1047,7 @@ typing-extensions==4.13.2
     #   anyio
     #   beautifulsoup4
     #   chex
+    #   dash
     #   equinox
     #   etils
     #   fastapi
@@ -1086,6 +1118,7 @@ websockets==15.0.1
     #   uvicorn
 werkzeug==3.1.3
     # via
+    #   dash
     #   flask
     #   tensorboard
     #   xprof
