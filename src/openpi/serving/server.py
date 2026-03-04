@@ -28,7 +28,6 @@ import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event
 import os
-from pathlib import Path
 import queue
 import signal
 import time
@@ -38,18 +37,20 @@ from fastapi import FastAPI
 from fastapi import Request
 from fastapi import WebSocket
 from fastapi.concurrency import asynccontextmanager
-from fastapi.responses import HTMLResponse
 from openpi_client import msgpack_numpy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
+from openpi_client.messages import ResponseAck
 from openpi_client.schemas import ServerMetadata
+from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.websockets import WebSocketDisconnect
 import uvicorn
 import zmq.asyncio
 
 from openpi.serving.engine import _run_gpu_worker
 from openpi.serving.metrics import MetricsStore
+from openpi.serving.metrics.dash_app import create_dash_app
 from openpi.serving.scheduler import _run_scheduler
 from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
@@ -182,6 +183,8 @@ def create_app(
     scheduler_kwargs: dict[str, object] | None = None,
     log_queue: mp.Queue | None = None,
 ) -> FastAPI:
+    metrics_store = MetricsStore()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready, scheduler_metrics_queue = _start_backend(
@@ -207,7 +210,6 @@ def create_app(
         response_sock.bind(socket_addresses["gpu_out_ep"])
 
         response_queues: dict[str, asyncio.Queue] = {}
-        metrics_store = MetricsStore()
 
         app.state.server = ServerState(
             scheduler_sock=scheduler_sock,
@@ -260,13 +262,19 @@ def create_app(
                     raw = await websocket.receive_bytes()
                     msg = msgpack_numpy.unpackb(raw)
 
-                    if "reset" in msg:
-                        await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
-                        continue
-
-                    if "receive_time" in msg:  # ResponseAck
-                        state.metrics_store.record_ack(robot_id, msg["request_id"], msg["receive_time"])
-                        continue
+                    match msg.get("type"):
+                        case "reset":
+                            await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
+                            continue
+                        case "ack":
+                            ack = ResponseAck(**msg)
+                            state.metrics_store.record_ack(robot_id, ack.request_id, ack.receive_time)
+                            continue
+                        case "infer":
+                            pass
+                        case unknown:
+                            logger.warning("Unknown message type %r, dropping", unknown)
+                            continue
 
                     req = InferRequest(**msg)
 
@@ -305,8 +313,6 @@ def create_app(
                     await state.scheduler_sock.send_pyobj(slot_req)
                     logger.debug("Sent slot request to scheduler: %s", slot_req)
             except WebSocketDisconnect:
-                # FIXME: this is a hack to reset the robot when the websocket disconnects, should make a special message for removing the robot from the scheduler
-                await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
                 logger.debug("Robot %s disconnected", robot_id)
 
         async def send():
@@ -323,34 +329,32 @@ def create_app(
             await recv_task
         finally:
             send_task.cancel()
-            # FIXME: this is a hack to reset the robot when the websocket disconnects
             await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
             state.slots.free(robot_id)
             state.response_queues.pop(robot_id, None)
-
-    _dashboard_html = (Path(__file__).parent / "metrics" / "dashboard.html").read_text()
 
     # can also be used for health check
     @app.get("/metadata")
     async def server_metadata() -> dict:
         return asdict(metadata)
 
-    @app.get("/dashboard", response_class=HTMLResponse)
-    async def dashboard():
-        return _dashboard_html
-
     @app.get("/metrics")
     async def get_metrics(request: Request) -> dict:
-        return request.app.state.server.metrics_store.snapshot()
+        window_s = request.query_params.get("window_s")
+        return request.app.state.server.metrics_store.snapshot(float(window_s) if window_s else None)
 
     @app.get("/metrics/history")
     async def get_metrics_history(request: Request) -> dict:
-        return request.app.state.server.metrics_store.history()
+        window_s = request.query_params.get("window_s")
+        return request.app.state.server.metrics_store.history(float(window_s) if window_s else None)
 
     @app.post("/reset-metrics")
     async def reset_metrics(request: Request) -> dict:
         request.app.state.server.metrics_store.reset()
         return {"status": "ok"}
+
+    dash_app = create_dash_app(metadata, metrics_store)
+    app.mount("/", WSGIMiddleware(dash_app.server))
 
     return app
 
@@ -369,5 +373,16 @@ class PolicyServer:
         self._log_queue = log_queue
 
     def serve_forever(self, host="0.0.0.0", port=8000):
-        app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue)
+        try:
+            import json
+            import urllib.request
+
+            with urllib.request.urlopen("https://ipinfo.io/json", timeout=3) as resp:
+                info = json.loads(resp.read())
+            location = f"{info.get('city', '?')}, {info.get('region', '?')}, {info.get('country', '?')}"
+        except Exception:
+            location = "unknown"
+        logger.info("Server location: %s", location)
+        self._metadata.location = location
+        app = create_app(self._metadata, self._policy_factory, self._log_queue)
         uvicorn.run(app, host=host, port=port)

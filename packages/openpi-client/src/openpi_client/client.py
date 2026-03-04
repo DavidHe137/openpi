@@ -46,6 +46,9 @@ class BidirectionalWebsocket:
         self._http_base = f"{http_scheme}://{base}"
         self._api_key = api_key
         self._server_metadata = self._wait_for_server()
+        if self._server_metadata.tunnel_url:
+            tunnel_host = self._server_metadata.tunnel_url.replace("https://", "", 1)
+            self._ws_uri = f"wss://{tunnel_host}/ws?robot_id={robot_id}"
         self._ws = self._connect_ws()
 
     @property
@@ -123,6 +126,9 @@ class BidirectionalWebsocket:
 
         infer_response = messages.InferResponse(**response)
         response_timestamp = time.time()
+        ack = messages.ResponseAck(request_id=infer_response.request_id, receive_time=response_timestamp)
+        self._ws.send(msgpack_numpy.packb(asdict(ack)))
+
         action_chunk = ActionChunk(
             actions=infer_response.actions,
             request_timestamp=infer_response.request_timestamp,
@@ -134,5 +140,5 @@ class BidirectionalWebsocket:
         return action_chunk
 
     def reset(self) -> None:
-        data = msgpack_numpy.packb({"reset": True, "robot_id": self._robot_id})
+        data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))
         self._ws.send(data)

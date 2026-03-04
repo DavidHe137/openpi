@@ -105,7 +105,6 @@ def _run_scheduler(
 
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)
-    poller.register(result_sock, zmq.POLLIN)
 
     ready_event.set()
     logger.info("Scheduler ready")
@@ -121,13 +120,6 @@ def _run_scheduler(
             elif isinstance(msg, SlotRequest):
                 scheduler.update(msg)
                 logger.debug("Received slot request: %s", msg)
-
-        # FIXME: put this here in case its needed for ILP, can remove if not
-        # while result_sock.poll(0):
-        #     msg = result_sock.recv_pyobj(zmq.NOBLOCK)
-        #     if isinstance(msg, list):
-        #         scheduler.process_notifications(msg)
-        # logger.debug("Received completion notifications: %s", msg)
 
         if not batch_queue.full():
             scheduler.schedule()

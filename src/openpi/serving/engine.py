@@ -146,8 +146,3 @@ def _run_gpu_worker(
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
         response_sock.send_pyobj(responses)
-
-        # FIXME: might not be needed
-        # Notify scheduler of completions for state updates (can be delayed by ILP, that's fine)
-        # notifications = [CompletionNotification(robot_id=r.robot_id, start_step=r.start_step) for r in responses]
-        # notify_sock.send_pyobj(notifications)
