@@ -93,10 +93,6 @@ image = (
         }
     )
     .add_local_python_source("openpi", "openpi_client")
-    .add_local_file(
-        str(REPO_ROOT / "src" / "openpi" / "serving" / "metrics" / "dashboard.html"),
-        remote_path="/root/openpi/serving/metrics/dashboard.html",
-    )
     .add_local_dir(str(REPO_ROOT / "scripts"), remote_path="/root/scripts")
 )
 
@@ -174,7 +170,7 @@ class ModalPolicyServer:
 
         @stable.get("/")
         def dashboard():
-            return RedirectResponse(f"{self._url}/dashboard")
+            return RedirectResponse(f"{self._url}/")
 
         return stable
 

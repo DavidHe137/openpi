@@ -28,7 +28,6 @@ import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event
 import os
-from pathlib import Path
 import signal
 import time
 import uuid
@@ -37,19 +36,20 @@ from fastapi import FastAPI
 from fastapi import Request
 from fastapi import WebSocket
 from fastapi.concurrency import asynccontextmanager
-from fastapi.responses import HTMLResponse
 from openpi_client import msgpack_numpy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
 from openpi_client.messages import ResponseAck
 from openpi_client.schemas import ServerMetadata
+from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.websockets import WebSocketDisconnect
 import uvicorn
 import zmq.asyncio
 
 from openpi.serving.engine import _run_gpu_worker
 from openpi.serving.metrics import MetricsStore
+from openpi.serving.metrics.dash_app import create_dash_app
 from openpi.serving.scheduler import _run_scheduler
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import _request_id_counter
@@ -153,6 +153,9 @@ def _start_backend(
 
 
 def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp.Queue | None = None) -> FastAPI:
+    # Create MetricsStore before lifespan so the Dash app can hold a reference to it.
+    metrics_store = MetricsStore()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         scheduler_proc, gpu_proc, slots, sched_ready, gpu_ready = _start_backend(metadata, policy_factory, log_queue)
@@ -173,7 +176,6 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
         response_sock.bind(socket_addresses["gpu_out_ep"])
 
         response_queues: dict[str, asyncio.Queue] = {}
-        metrics_store = MetricsStore()
 
         app.state.server = ServerState(
             scheduler_sock=scheduler_sock,
@@ -294,29 +296,28 @@ def create_app(metadata: ServerMetadata, policy_factory: Callable, log_queue: mp
             state.slots.free(robot_id)
             state.response_queues.pop(robot_id, None)
 
-    _dashboard_html = (Path(__file__).parent / "metrics" / "dashboard.html").read_text()
-
     # can also be used for health check
     @app.get("/metadata")
     async def server_metadata() -> dict:
         return asdict(metadata)
 
-    @app.get("/dashboard", response_class=HTMLResponse)
-    async def dashboard():
-        return _dashboard_html
-
     @app.get("/metrics")
     async def get_metrics(request: Request) -> dict:
-        return request.app.state.server.metrics_store.snapshot()
+        window_s = request.query_params.get("window_s")
+        return request.app.state.server.metrics_store.snapshot(float(window_s) if window_s else None)
 
     @app.get("/metrics/history")
     async def get_metrics_history(request: Request) -> dict:
-        return request.app.state.server.metrics_store.history()
+        window_s = request.query_params.get("window_s")
+        return request.app.state.server.metrics_store.history(float(window_s) if window_s else None)
 
     @app.post("/reset-metrics")
     async def reset_metrics(request: Request) -> dict:
         request.app.state.server.metrics_store.reset()
         return {"status": "ok"}
+
+    dash_app = create_dash_app(metadata, metrics_store)
+    app.mount("/", WSGIMiddleware(dash_app.server))
 
     return app
 
@@ -338,5 +339,6 @@ class PolicyServer:
         except Exception:
             location = "unknown"
         logger.info("Server location: %s", location)
+        self._metadata.location = location
         app = create_app(self._metadata, self._policy_factory, self._log_queue)
         uvicorn.run(app, host=host, port=port)
