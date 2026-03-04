@@ -2,7 +2,7 @@
 
 FigureResampler is used for time-series scatter charts (batch sizes, GPU busy) so that
 the browser only receives ~2000 points on load, and re-samples to full resolution on zoom.
-TraceUpdater handles the efficient partial trace update without re-sending the whole figure.
+Uses plotly-resampler 0.10+ API: construct_update_data_patch returns a Patch directly.
 """
 
 from __future__ import annotations
@@ -13,14 +13,15 @@ import uuid
 import dash
 from dash import Input
 from dash import Output
+from dash import Patch
 from dash import State
+from dash import ctx
 from dash import dcc
 from dash import html
 import numpy as np
 from openpi_client.schemas import ServerMetadata
 import plotly.graph_objects as go
 from plotly_resampler import FigureResampler
-from trace_updater import TraceUpdater
 
 from openpi.serving.metrics.store import MetricsStore
 
@@ -210,39 +211,6 @@ def _gpu_dist_fig(batches: list[dict]) -> go.Figure:
     return fig
 
 
-def _busy_fig(batches: list[dict]) -> go.Figure:
-    fig = go.Figure()
-    if len(batches) >= 2:
-        t0 = batches[0]["inference_start_t"]
-        t1 = batches[-1]["inference_end_t"]
-        n = int(t1 - t0) + 1
-        pct = [0.0] * n
-        for b in batches:
-            s = b["inference_start_t"] - t0
-            e = b["inference_end_t"] - t0
-            lo, hi = int(s), min(int(e), n - 1)
-            for k in range(lo, hi + 1):
-                ov = min(e, k + 1) - max(s, k)
-                if ov > 0:
-                    pct[k] += ov * 100
-        times = [t0 + i + 0.5 for i in range(n)]
-        fig.add_trace(
-            go.Scatter(
-                x=times,
-                y=pct,
-                mode="lines",
-                fill="tozeroy",
-                line={"color": "#4fc3f7", "width": 1.5},
-                fillcolor="rgba(79,195,247,0.12)",
-                name="busy %",
-            )
-        )
-    fig.update_layout(
-        **_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "GPU busy (%)", "range": [0, 100]})
-    )
-    return fig
-
-
 def _gantt_fig(batches: list[dict], window_s: float) -> go.Figure:
     fig = go.Figure()
     if not batches:
@@ -310,7 +278,7 @@ def _stage_figs(hist: dict, robot: str) -> tuple[go.Figure, go.Figure, go.Figure
     ]:
         f = go.Figure()
         if data:
-            f.add_trace(go.Histogram(x=data, nbinsx=40, marker_color=color, marker_opacity=0.85, name=title))
+            f.add_trace(go.Histogram(x=data, nbinsx=100, marker_color=color, marker_opacity=0.85, name=title))
         f.update_layout(
             **{
                 **small,
@@ -345,6 +313,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         style=_BODY,
         children=[
             dcc.Store(id="store-session", storage_type="session"),
+            dcc.Store(id="store-xrange"),
             # Header
             html.H1(
                 "openpi · metrics",
@@ -376,7 +345,6 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         style={**_INPUT, "width": "80px", "padding": "5px 8px"},
                     ),
                     html.Label("seconds", style={"color": "#555", "fontSize": "0.85em"}),
-                    dcc.Interval(id="interval-auto", interval=10_000, n_intervals=0),
                     html.Span(id="span-status", style={"color": "#555", "fontSize": "0.8em", "marginLeft": "4px"}),
                 ],
             ),
@@ -397,15 +365,6 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             # Charts
             _section(
                 "Charts",
-                # Batch sizes (resampled)
-                html.Div(
-                    style=_CARD,
-                    children=[
-                        html.Div("Batch Sizes Over Time", style=_CARD_HDR),
-                        dcc.Graph(id="graph-batch", config=_CFG),
-                        TraceUpdater(id="tu-batch", gdID="graph-batch"),
-                    ],
-                ),
                 # GPU inference dist
                 html.Div(
                     style=_CARD,
@@ -443,35 +402,27 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         ),
                     ],
                 ),
+                # Batch sizes (resampled)
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Batch Sizes Over Time", style=_CARD_HDR),
+                        dcc.Graph(id="graph-batch", config=_CFG),
+                    ],
+                ),
                 # GPU busy (resampled)
                 html.Div(
                     style=_CARD,
                     children=[
                         html.Div("GPU Busy (%)", style=_CARD_HDR),
                         dcc.Graph(id="graph-busy", config=_CFG),
-                        TraceUpdater(id="tu-busy", gdID="graph-busy"),
                     ],
                 ),
                 # Gantt
                 html.Div(
                     style=_CARD,
                     children=[
-                        html.Div(
-                            style=_CARD_HDR,
-                            children=[
-                                html.Span("GPU Gantt"),
-                                html.Label("Window (s):", style={"color": "#555"}),
-                                dcc.Input(
-                                    id="input-gantt-win",
-                                    type="number",
-                                    value=60,
-                                    min=5,
-                                    max=3600,
-                                    debounce=True,
-                                    style={**_INPUT, "width": "70px"},
-                                ),
-                            ],
-                        ),
+                        html.Div("GPU Gantt", style=_CARD_HDR),
                         dcc.Graph(id="graph-gantt", config=_CFG),
                     ],
                 ),
@@ -487,7 +438,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         return data if data else {"id": str(uuid.uuid4())}
 
     # -------------------------------------------------------------------------
-    # Main refresh: stats, robots, GPU dist, GPU busy, Gantt
+    # Main refresh: stats, robots, GPU dist, Gantt
     # -------------------------------------------------------------------------
     @app.callback(
         Output("div-subtitle", "children"),
@@ -498,14 +449,10 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("dd-robot", "options"),
         Output("span-status", "children"),
         Input("btn-refresh", "n_clicks"),
-        Input("interval-auto", "n_intervals"),
-        Input("input-gantt-win", "value"),
         State("input-window", "value"),
     )
     def _refresh_main(
         n_clicks: int,
-        n_intervals: int,
-        gantt_win: int | None,
         window_s: float | None,
     ) -> tuple:
         snap = metrics_store.snapshot(window_s)
@@ -528,7 +475,6 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             ("GPU busy (%)", f"{snap['gpu_busy_pct']:.1f}%"),
             ("avg queue delay (ms)", f(snap["avg_queue_delay_ms"])),
             ("total batches", f"{snap['total_batches']:,}"),
-            ("uptime (s)", f(snap["uptime_s"])),
         ]
         stat_cards = [_stat_card(v, lbl) for lbl, v in stats]
 
@@ -536,7 +482,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         robot_el = _robot_table(robots)
 
         gpu_fig = _gpu_dist_fig(batches)
-        gantt = _gantt_fig(batches, float(gantt_win or 60))
+        gantt = _gantt_fig(batches, float(window_s) if window_s else float("inf"))
 
         robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in robots]
         status = "last refresh: " + datetime.datetime.now(datetime.UTC).astimezone().strftime("%H:%M:%S")
@@ -549,13 +495,10 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     @app.callback(
         Output("graph-batch", "figure"),
         Input("btn-refresh", "n_clicks"),
-        Input("interval-auto", "n_intervals"),
         State("input-window", "value"),
         State("store-session", "data"),
     )
-    def _load_batch(
-        n_clicks: int, n_intervals: int, window_s: float | None, session_data: dict | None
-    ) -> FigureResampler:
+    def _load_batch(n_clicks: int, window_s: float | None, session_data: dict | None) -> FigureResampler:
         sid = (session_data or {}).get("id", "default")
         hist = metrics_store.history(window_s)
         batches = hist["batches"]
@@ -565,16 +508,9 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             times = np.array([b["t"] for b in batches], dtype=float)
             sizes = np.array([b["batch_size"] for b in batches], dtype=float)
             fr.add_trace(
-                go.Scatter(mode="markers", name="raw", marker={"size": 3, "color": "#ce93d8", "opacity": 0.35}),
+                go.Scatter(mode="markers", name="batch size", marker={"size": 4, "color": "#ce93d8", "opacity": 0.6}),
                 hf_x=times,
                 hf_y=sizes,
-            )
-            w = min(20, len(sizes))
-            smoothed = np.convolve(sizes, np.ones(w) / w, mode="same")
-            fr.add_trace(
-                go.Scatter(mode="lines", name=f"avg (w={w})", line={"color": "#ce93d8", "width": 2}),
-                hf_x=times,
-                hf_y=smoothed,
             )
         fr.update_layout(**_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Batch size"}))
         _resamplers.setdefault(sid, {})["batch"] = fr
@@ -582,17 +518,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
 
     # Batch sizes: zoom/pan update
     @app.callback(
-        Output("tu-batch", "updateData"),
+        Output("graph-batch", "figure", allow_duplicate=True),
         Input("graph-batch", "relayoutData"),
         State("store-session", "data"),
         prevent_initial_call=True,
     )
-    def _resample_batch(relayout_data: dict | None, session_data: dict | None) -> list:
+    def _resample_batch(relayout_data: dict | None, session_data: dict | None) -> Patch:
         sid = (session_data or {}).get("id", "default")
         fr = _resamplers.get(sid, {}).get("batch")
         if fr is None or not relayout_data:
             raise dash.exceptions.PreventUpdate
-        return fr.construct_update_data(relayout_data)
+        return fr.construct_update_data_patch(relayout_data)
 
     # -------------------------------------------------------------------------
     # GPU busy: initial load (resampled)
@@ -600,13 +536,10 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     @app.callback(
         Output("graph-busy", "figure"),
         Input("btn-refresh", "n_clicks"),
-        Input("interval-auto", "n_intervals"),
         State("input-window", "value"),
         State("store-session", "data"),
     )
-    def _load_busy(
-        n_clicks: int, n_intervals: int, window_s: float | None, session_data: dict | None
-    ) -> FigureResampler:
+    def _load_busy(n_clicks: int, window_s: float | None, session_data: dict | None) -> FigureResampler:
         sid = (session_data or {}).get("id", "default")
         hist = metrics_store.history(window_s)
         batches = hist["batches"]
@@ -647,17 +580,52 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
 
     # GPU busy: zoom/pan update
     @app.callback(
-        Output("tu-busy", "updateData"),
+        Output("graph-busy", "figure", allow_duplicate=True),
         Input("graph-busy", "relayoutData"),
         State("store-session", "data"),
         prevent_initial_call=True,
     )
-    def _resample_busy(relayout_data: dict | None, session_data: dict | None) -> list:
+    def _resample_busy(relayout_data: dict | None, session_data: dict | None) -> Patch:
         sid = (session_data or {}).get("id", "default")
         fr = _resamplers.get(sid, {}).get("busy")
         if fr is None or not relayout_data:
             raise dash.exceptions.PreventUpdate
-        return fr.construct_update_data(relayout_data)
+        return fr.construct_update_data_patch(relayout_data)
+
+    # -------------------------------------------------------------------------
+    # X-axis sync: batch / busy / gantt share the same time axis
+    # -------------------------------------------------------------------------
+    @app.callback(
+        Output("store-xrange", "data"),
+        Input("graph-batch", "relayoutData"),
+        Input("graph-busy", "relayoutData"),
+        Input("graph-gantt", "relayoutData"),
+        prevent_initial_call=True,
+    )
+    def _capture_xrange(batch_relay: dict | None, busy_relay: dict | None, gantt_relay: dict | None) -> list | None:
+        relay_map = {
+            "graph-batch": batch_relay,
+            "graph-busy": busy_relay,
+            "graph-gantt": gantt_relay,
+        }
+        relay = relay_map.get(ctx.triggered_id)
+        if relay and "xaxis.range[0]" in relay:
+            return [relay["xaxis.range[0]"], relay["xaxis.range[1]"]]
+        raise dash.exceptions.PreventUpdate
+
+    @app.callback(
+        Output("graph-batch", "figure", allow_duplicate=True),
+        Output("graph-busy", "figure", allow_duplicate=True),
+        Output("graph-gantt", "figure", allow_duplicate=True),
+        Input("store-xrange", "data"),
+        prevent_initial_call=True,
+    )
+    def _apply_xrange(xrange: list | None) -> tuple:
+        if not xrange:
+            raise dash.exceptions.PreventUpdate
+        p = Patch()
+        p["layout"]["xaxis"]["range"] = xrange
+        return p, p, p
 
     # -------------------------------------------------------------------------
     # Stage latency distributions
@@ -668,17 +636,36 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("graph-infer", "figure"),
         Output("graph-outbound", "figure"),
         Input("btn-refresh", "n_clicks"),
-        Input("interval-auto", "n_intervals"),
         Input("dd-robot", "value"),
         State("input-window", "value"),
     )
     def _update_stage(
         n_clicks: int,
-        n_intervals: int,
         robot: str,
         window_s: float | None,
     ) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
         hist = metrics_store.history(window_s)
         return _stage_figs(hist, robot or "all")
+
+    # Histogram zoom: refine bin size when user zooms in
+    def _register_histogram_zoom(gid: str) -> None:
+        @app.callback(
+            Output(gid, "figure", allow_duplicate=True),
+            Input(gid, "relayoutData"),
+            prevent_initial_call=True,
+        )
+        def _zoom_histogram(relay: dict | None) -> Patch:
+            if not relay or "xaxis.range[0]" not in relay:
+                raise dash.exceptions.PreventUpdate
+            x0 = float(relay["xaxis.range[0]"])
+            x1 = float(relay["xaxis.range[1]"])
+            if x1 <= x0:
+                raise dash.exceptions.PreventUpdate
+            p = Patch()
+            p["data"][0]["xbins"]["size"] = (x1 - x0) / 150
+            return p
+
+    for _gid in ["graph-inbound", "graph-queue", "graph-infer", "graph-outbound"]:
+        _register_histogram_zoom(_gid)
 
     return app
