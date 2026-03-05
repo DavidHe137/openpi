@@ -84,21 +84,10 @@ class BidirectionalWebsocket:
         self,
         obs: Observation,
         deadline: float,
-        use_rtc: bool = False,
-        prev_action: Optional[np.ndarray] = None,
-        s_param: Optional[int] = None,
-        d_param: Optional[int] = None,
+        infer_type: messages.InferType = messages.InferType.SYNC,
         noise: Optional[np.ndarray] = None,
         min_execution_horizon: int = 0,
     ) -> None:
-        infer_type = messages.InferType.SYNC
-        params = None
-        if use_rtc:
-            assert s_param is not None
-            assert d_param is not None
-            assert prev_action is not None
-            infer_type = messages.InferType.INFERENCE_TIME_RTC
-            params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)
         request = messages.InferRequest(
             request_timestamp=time.time(),
             start_step=obs.step,
@@ -106,12 +95,10 @@ class BidirectionalWebsocket:
             observation=asdict(obs),
             deadline=deadline,
             infer_type=infer_type,
-            params=params,
             noise=noise,
             min_execution_horizon=min_execution_horizon,
         )
         data = msgpack_numpy.packb(asdict(request))
-
         self._ws.send(data)  # type: ignore
 
     def receive(
