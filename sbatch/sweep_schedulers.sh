@@ -7,7 +7,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=22
 #SBATCH --gpus-per-node="l40s:2"
-#SBATCH --nodelist=dynamics
 #SBATCH --mem-per-gpu=128
 #SBATCH --array=0-3
 
@@ -15,7 +14,7 @@ set -e
 
 SCHEDULERS=(greedy round_robin lookahead ilp)
 SCHEDULER=${SCHEDULERS[$SLURM_ARRAY_TASK_ID]}
-NUM_ROBOTS_LIST=(1 5 10 20)
+NUM_ROBOTS_LIST=(20 15 10 5)
 NUM_TRIALS_PER_TASK=10
 PORT=$((8080 + ${SLURM_ARRAY_TASK_ID:-0}))
 
@@ -49,7 +48,7 @@ srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=2 --overlap --exact -w 
     source .venv/bin/activate
     uv run scripts/serve_policy.py \
         --env LIBERO \
-        --max-batch-size 10 \
+        --max-batch-size 5 \
         --port $PORT \
         --scheduling-algorithm $SCHEDULER \
         --log-dir logs/server
