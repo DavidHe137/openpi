@@ -49,6 +49,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "dash>=2.14.0",
     "plotly-resampler>=0.10.0",
+    "pulp>=2.8.0",
     "trace-updater>=0.0.8",
 ]
 
