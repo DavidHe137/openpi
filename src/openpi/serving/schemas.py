@@ -36,6 +36,19 @@ class CompletionNotification:
 
     robot_id: str
     start_step: int
+    request_id: int
+    batch_size: int
+    inference_duration_ms: float
+
+
+@dataclass(frozen=True)
+class AckNotification:
+    """Sent from WS to scheduler when a client acks receipt of an InferResponse."""
+
+    robot_id: str
+    request_id: int
+    receive_time: float
+    server_send_time: float
 
 
 @dataclass(frozen=True)

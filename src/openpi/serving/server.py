@@ -52,6 +52,7 @@ from openpi.serving.engine import _run_gpu_worker
 from openpi.serving.metrics import MetricsStore
 from openpi.serving.metrics.dash_app import create_dash_app
 from openpi.serving.scheduler import _run_scheduler
+from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import _request_id_counter
@@ -255,6 +256,7 @@ def create_app(
 
         slot_index = state.slots.register(robot_id)
         state.response_queues[robot_id] = response_queue
+        send_times: dict[int, float] = {}  # request_id → server_send_time
 
         async def recv():
             try:
@@ -269,6 +271,16 @@ def create_app(
                         case "ack":
                             ack = ResponseAck(**msg)
                             state.metrics_store.record_ack(robot_id, ack.request_id, ack.receive_time)
+                            server_send_time = send_times.pop(ack.request_id, None)
+                            if server_send_time is not None:
+                                await state.scheduler_sock.send_pyobj(
+                                    AckNotification(
+                                        robot_id=robot_id,
+                                        request_id=ack.request_id,
+                                        receive_time=ack.receive_time,
+                                        server_send_time=server_send_time,
+                                    )
+                                )
                             continue
                         case "infer":
                             pass
@@ -319,6 +331,7 @@ def create_app(
             while True:
                 response: InferResponse = await response_queue.get()
                 send_time = time.time()
+                send_times[response.request_id] = send_time
                 stamped = dataclasses.replace(response, server_send_time=send_time)
                 state.metrics_store.record_send(robot_id, response.request_id, send_time)
                 await websocket.send_bytes(msgpack_numpy.packb(asdict(stamped)))

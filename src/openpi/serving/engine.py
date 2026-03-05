@@ -12,6 +12,7 @@ from openpi_client.messages import InferResponse
 import zmq
 
 from openpi.serving.schemas import BatchProfile
+from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.slots import RobotSlots
 from openpi.shared import logging_config
@@ -146,3 +147,18 @@ def _run_gpu_worker(
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
         response_sock.send_pyobj(responses)
+
+        # Notify scheduler of completion so it can update latency estimates
+        inference_duration_ms = (t1 - t0) * 1e3
+        notify_sock.send_pyobj(
+            [
+                CompletionNotification(
+                    robot_id=sr.robot_id,
+                    start_step=sd.start_step,
+                    request_id=sd.request_id,
+                    batch_size=len(slot_reqs),
+                    inference_duration_ms=inference_duration_ms,
+                )
+                for sr, sd in zip(slot_reqs, slot_datas, strict=True)
+            ]
+        )

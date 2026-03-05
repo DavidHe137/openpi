@@ -13,7 +13,9 @@ from openpi.scheduling.baselines import GreedyScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
 from openpi.scheduling.lookahead import LookaheadScheduler
+from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import BatchProfile
+from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SlotRequest
 from openpi.shared import logging_config
 
@@ -105,6 +107,7 @@ def _run_scheduler(
 
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)
+    poller.register(result_sock, zmq.POLLIN)
 
     ready_event.set()
     logger.info("Scheduler ready")
@@ -120,6 +123,16 @@ def _run_scheduler(
             elif isinstance(msg, SlotRequest):
                 scheduler.update(msg)
                 logger.debug("Received slot request: %s", msg)
+            elif isinstance(msg, AckNotification):
+                scheduler.update_ack(msg)
+                logger.debug("Received ack notification: %s", msg)
+
+        while result_sock.poll(0):
+            msg = result_sock.recv_pyobj(zmq.NOBLOCK)
+            if isinstance(msg, list):
+                for item in msg:
+                    if isinstance(item, CompletionNotification):
+                        scheduler.update_completion(item)
 
         if not batch_queue.full():
             scheduler.schedule()

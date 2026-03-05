@@ -5,6 +5,9 @@ from contextlib import contextmanager
 import multiprocessing as mp
 import time
 
+from openpi.scheduling.latency import LatencyTracker
+from openpi.serving.schemas import AckNotification
+from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
 
@@ -24,11 +27,21 @@ class RequestScheduler(ABC):
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
         self._timing_samples: list[SchedulerTimingSample] = []
+        self.latency = LatencyTracker()
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
         if request.deadline is not None and request.deadline > self._deadlines.get(request.robot_id, 0):
             self._deadlines[request.robot_id] = request.deadline
+        self.latency.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
+
+    def update_completion(self, notification: CompletionNotification) -> None:
+        self.latency.update_infer(notification.batch_size, notification.inference_duration_ms)
+
+    def update_ack(self, notification: AckNotification) -> None:
+        self.latency.update_action_delivery(
+            notification.robot_id, notification.receive_time, notification.server_send_time
+        )
 
     def schedule(self) -> None:
         """Return a list of batches of requests to be sent to the GPU."""
@@ -47,6 +60,7 @@ class RequestScheduler(ABC):
         self._deadlines.pop(robot_id, None)
         self._latest_requests.pop(robot_id, None)
         self._latest_scheduled_requests.pop(robot_id, None)
+        self.latency.reset_robot(robot_id)
 
     @contextmanager
     def record_timing(self, metric_name: str) -> Generator[None, None, None]:
