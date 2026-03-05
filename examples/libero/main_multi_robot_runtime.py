@@ -1,3 +1,4 @@
+import json
 import logging
 import pathlib
 import multiprocessing
@@ -5,6 +6,8 @@ import shutil
 from typing import List, Literal, Optional, Dict, Type
 import datetime
 import time
+
+import httpx
 
 import numpy as np
 from jaxtyping import Float
@@ -243,7 +246,7 @@ def create_jobs(args: Args) -> List[Job]:
         args.control_hz,
     )
 
-    jobs: List[Job] = []
+    base_jobs: List[Job] = []
     for task_id in range(num_tasks_in_suite):
         task: benchmark.Task = task_suite.get_task(task_id)
         all_initial_states: Float[np.ndarray, "n_initial_states state_dim"] = (
@@ -264,7 +267,20 @@ def create_jobs(args: Args) -> List[Job]:
             task_id=task_id,
             initial_states=initial_states,
         )
-        jobs.append(job)
+        base_jobs.append(job)
+
+    # If num_robots > num_tasks, repeat tasks cyclically so every robot gets a job.
+    if args.num_robots > len(base_jobs):
+        logging.warning(
+            "num_robots (%d) > num_tasks (%d); repeating tasks cyclically to fill all robots",
+            args.num_robots,
+            len(base_jobs),
+        )
+        jobs: List[Job] = [
+            base_jobs[i % len(base_jobs)] for i in range(args.num_robots)
+        ]
+    else:
+        jobs = base_jobs
 
     logging.info("Created %d jobs", len(jobs))
 
@@ -288,7 +304,7 @@ def main(args: Args) -> None:
         raise ValueError(f"Output path {args.output_dir} already exists")
     if args.overwrite:
         if pathlib.Path(args.output_dir).exists():
-            shutil.rmtree(args.output_dir)
+            shutil.rmtree(args.output_dir, ignore_errors=True)
         pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     # Validate latency specification
@@ -334,8 +350,26 @@ def main(args: Args) -> None:
     server_metadata.to_json(output_path / "server_metadata.json")
     logging.info(f"Saved server metadata to {output_path / 'server_metadata.json'}")
 
+    # Reset server-side metrics so this experiment gets a clean slate
+    server_base = f"http://{args.host}:{args.port}"
+    try:
+        httpx.post(f"{server_base}/reset-metrics", timeout=5.0)
+        logging.info("Reset server metrics")
+    except Exception as e:
+        logging.warning(f"Could not reset server metrics: {e}")
+
     # Run robots
     run_robots(args, jobs, server_metadata)
+
+    # Dump server-side metrics history for offline analysis
+    try:
+        history = httpx.get(f"{server_base}/metrics/history", timeout=10.0).json()
+        hist_path = output_path / "server_metrics_history.json"
+        hist_path.write_text(json.dumps(history, indent=2))
+        logging.info(f"Saved server metrics history to {hist_path}")
+    except Exception as e:
+        logging.warning(f"Could not fetch server metrics history: {e}")
+
     calculate_metrics(pathlib.Path(args.output_dir))
     generate_all_plots(pathlib.Path(args.output_dir))
 
