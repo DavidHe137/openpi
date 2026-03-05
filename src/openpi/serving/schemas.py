@@ -28,6 +28,7 @@ class SlotRequest:
     params: RTCParams | VlashParams | TrainTimeRTCParams | None
     noise: np.ndarray | None
     min_execution_horizon: int = 0  # minimum steps to execute before server will re-infer this robot
+    estimated_d_param: int = 0  # filled by scheduler before batching
 
 
 @dataclass(frozen=True)

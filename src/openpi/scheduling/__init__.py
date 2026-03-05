@@ -2,6 +2,7 @@ from abc import ABC
 from abc import abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
+import dataclasses
 import multiprocessing as mp
 import time
 
@@ -10,6 +11,9 @@ from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
+
+# FIXME: Robots should send control frequency to the server
+_STEP_MS = 50.0
 
 
 class RequestScheduler(ABC):
@@ -47,10 +51,15 @@ class RequestScheduler(ABC):
         """Return a list of batches of requests to be sent to the GPU."""
         batches = self.get_next_batches()
         for batch in batches:
+            batch_size = len(batch)
+            annotated = []
             for request in batch:
                 self._deadlines[request.robot_id] = request.deadline
                 self._latest_scheduled_requests[request.robot_id] = request
-            self._batch_queue.put_nowait(batch)
+                d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
+                d_steps = round(d_ms / _STEP_MS) if d_ms is not None else 0
+                annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
+            self._batch_queue.put_nowait(annotated)
 
     @abstractmethod
     def get_next_batches(self) -> list[list[SlotRequest]]:

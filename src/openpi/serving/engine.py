@@ -7,8 +7,11 @@ from multiprocessing.synchronize import Event
 import signal
 import time
 
+import numpy as np
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
+from openpi_client.messages import InferType
+from openpi_client.messages import RTCParams
 import zmq
 
 from openpi.serving.schemas import BatchProfile
@@ -103,6 +106,25 @@ def _run_gpu_worker(
     ready_event.set()
     logger.info("GPU worker ready")
 
+    _last_infer_step: dict[str, int] = {}
+    _prev_actions: dict[str, np.ndarray] = {}
+    _action_shape: tuple[int, int] | None = None
+
+    def _make_rtc_params(robot_id: str, start_step: int, d_param: int) -> RTCParams | None:
+        nonlocal _action_shape
+        last = _last_infer_step.get(robot_id)
+        if last is not None and start_step < last:
+            _last_infer_step.pop(robot_id, None)
+            _prev_actions.pop(robot_id, None)
+            last = None
+        s = start_step - last if last is not None else 0
+        prev = _prev_actions.get(robot_id)
+        if prev is None and _action_shape is not None:
+            prev = np.zeros(_action_shape, dtype=np.float32)
+        if prev is None:
+            return None
+        return RTCParams(prev_action=prev, s_param=s, d_param=d_param)
+
     while True:
         slot_reqs: list[SlotRequest] = batch_queue.get()  # blocking
 
@@ -118,7 +140,9 @@ def _run_gpu_worker(
                 request_timestamp=sd.request_timestamp,
                 deadline=sd.deadline,
                 infer_type=sd.infer_type,
-                params=sd.params,
+                params=_make_rtc_params(sr.robot_id, sd.start_step, sr.estimated_d_param)
+                if sd.infer_type == InferType.INFERENCE_TIME_RTC
+                else sd.params,
                 noise=sd.noise,
             )
             for sr, sd in zip(slot_reqs, slot_datas, strict=True)
@@ -144,6 +168,15 @@ def _run_gpu_worker(
             )
             for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True)
         ]
+
+        # Update per-robot RTC state
+        for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True):
+            if sd.infer_type == InferType.INFERENCE_TIME_RTC:
+                prev_action = action_dict["actions"][0]  # shape (ah, ad)
+                if _action_shape is None:
+                    _action_shape = prev_action.shape
+                _last_infer_step[sr.robot_id] = sd.start_step
+                _prev_actions[sr.robot_id] = prev_action
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
         response_sock.send_pyobj(responses)
