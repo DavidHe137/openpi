@@ -67,7 +67,7 @@ class Args:
     scheduling_algorithm: Literal["greedy", "lookahead", "round_robin", "random"] = "greedy"
 
     # Lookahead rollout horizon in milliseconds.
-    lookahead_horizon_ms: int = 600
+    lookahead_horizon_ms: int = 500
 
     # Lookahead time discretization in milliseconds.
     lookahead_timestep_ms: int = 50

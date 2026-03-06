@@ -384,5 +384,5 @@ class PolicyServer:
             location = "unknown"
         logger.info("Server location: %s", location)
         self._metadata.location = location
-        app = create_app(self._metadata, self._policy_factory, self._log_queue)
+        app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue)
         uvicorn.run(app, host=host, port=port)
