@@ -53,16 +53,16 @@ class MetricsStore:
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
     robot_states: dict[str, RobotState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
-    _batch_counter: int = field(default=0, init=False)
+    batch_counter: int = field(default=0, init=False)
 
     def record_batch(self, responses: list[InferResponse]) -> None:
         """Called once per batch by _router_task."""
         if not responses:
             return
 
-        self._batch_counter += 1
+        self.batch_counter += 1
         batch = BatchSummary(
-            batch_id=self._batch_counter,
+            batch_id=self.batch_counter,
             robot_ids=[r.robot_id for r in responses],
             request_ids=[r.request_id for r in responses],
             request_timestamps=[r.request_timestamp for r in responses],
@@ -150,7 +150,7 @@ class MetricsStore:
 
         return {
             "uptime_s": uptime_s,
-            "total_batches": self._batch_counter,
+            "total_batches": self.batch_counter,
             "total_requests": total_requests,
             "avg_gpu_time_ms": avg_gpu_time_ms,
             "gpu_busy_pct": round(gpu_busy_pct, 1),
@@ -222,4 +222,47 @@ class MetricsStore:
         self.scheduler_timings.clear()
         self.robot_states.clear()
         self.start_time = time.time()
-        self._batch_counter = 0
+        self.batch_counter = 0
+
+    @classmethod
+    def from_dump(cls, hist: dict) -> "MetricsStore":
+        """Reconstruct a MetricsStore from a history dump produced by history()."""
+        t0: float = hist["server_start_time"]
+        store = cls()
+        store.start_time = t0
+
+        for batch_id, b in enumerate(hist.get("batches", []), 1):
+            inference_start_time = t0 + b["inference_start_t"]
+            inference_end_time = t0 + b["inference_end_t"]
+            robot_ids = b["robot_ids"]
+            per_req = b["per_request"]
+            server_arrival_times = [inference_start_time - r["queue_ms"] / 1000 for r in per_req]
+            request_timestamps = [
+                arr - r["inbound_ms"] / 1000 for arr, r in zip(server_arrival_times, per_req, strict=True)
+            ]
+            store.batches.append(
+                BatchSummary(
+                    batch_id=batch_id,
+                    robot_ids=robot_ids,
+                    request_ids=list(range(len(robot_ids))),
+                    request_timestamps=request_timestamps,
+                    server_arrival_times=server_arrival_times,
+                    inference_start_time=inference_start_time,
+                    inference_end_time=inference_end_time,
+                    execution_horizons=[0] * len(robot_ids),
+                    start_steps=[0] * len(robot_ids),
+                )
+            )
+
+        for robot_id, delays in hist.get("outbound_delays_ms", {}).items():
+            store.robot_states[robot_id] = RobotState(network_delays_ms=delays)
+
+        for metric_key, durations in hist.get("scheduler_timings_ms", {}).items():
+            scheduler_name, metric_name = metric_key.split(".", 1)
+            store.scheduler_timings.extend(
+                SchedulerTimingSample(scheduler_name=scheduler_name, metric_name=metric_name, duration_ms=d)
+                for d in durations
+            )
+
+        store.batch_counter = len(store.batches)
+        return store
