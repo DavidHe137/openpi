@@ -7,7 +7,6 @@ from typing import List, Literal, Optional, Dict, Type
 import datetime
 import time
 
-import httpx
 
 import numpy as np
 from jaxtyping import Float
@@ -17,6 +16,7 @@ from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import ActionChunkBrokerType, BrokerConfig
 from openpi_client.schemas import RuntimeMetadata, ServerMetadata
+import requests
 import tyro
 from dataclasses import dataclass, field
 
@@ -354,7 +354,7 @@ def main(args: Args) -> None:
     # Reset server-side metrics so this experiment gets a clean slate
     server_base = f"http://{args.host}:{args.port}"
     try:
-        httpx.post(f"{server_base}/reset-metrics", timeout=5.0)
+        requests.post(f"{server_base}/reset-metrics", timeout=5.0)
         logging.info("Reset server metrics")
     except Exception as e:
         logging.warning(f"Could not reset server metrics: {e}")
@@ -364,7 +364,7 @@ def main(args: Args) -> None:
 
     # Dump server-side metrics history for offline analysis
     try:
-        history = httpx.get(f"{server_base}/metrics/history", timeout=10.0).json()
+        history = requests.get(f"{server_base}/metrics/history", timeout=10.0).json()
         hist_path = output_path / "server_metrics_history.json"
         hist_path.write_text(json.dumps(history, indent=2))
         logging.info(f"Saved server metrics history to {hist_path}")
