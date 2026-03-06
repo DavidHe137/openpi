@@ -8,12 +8,30 @@ from typing import Optional
 import numpy as np
 from dataclasses import asdict
 import websockets.sync.client
+from functools import cache
 
 from openpi_client import msgpack_numpy
 from openpi_client import messages
 from openpi_client.schemas import ActionChunk, Observation, ServerMetadata
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_urls(host: str, port: Optional[int], robot_id: str) -> tuple[str, str]:
+    """Parse host/port into (ws_uri, http_base) tuple."""
+    explicit_scheme = False
+    if host.startswith("https://"):
+        ws_scheme, http_scheme = "wss", "https"
+        host = host[len("https://") :]
+        explicit_scheme = True
+    elif host.startswith("http://"):
+        ws_scheme, http_scheme = "ws", "http"
+        host = host[len("http://") :]
+        explicit_scheme = True
+    else:
+        ws_scheme, http_scheme = "ws", "http"
+    base = host if (port is None or explicit_scheme) else f"{host}:{port}"
+    return f"{ws_scheme}://{base}/ws?robot_id={robot_id}", f"{http_scheme}://{base}"
 
 
 class BidirectionalWebsocket:
@@ -30,20 +48,7 @@ class BidirectionalWebsocket:
         api_key: Optional[str] = None,
     ) -> None:
         self._robot_id = robot_id
-        explicit_scheme = False
-        if host.startswith("https://"):
-            ws_scheme, http_scheme = "wss", "https"
-            host = host[len("https://") :]
-            explicit_scheme = True
-        elif host.startswith("http://"):
-            ws_scheme, http_scheme = "ws", "http"
-            host = host[len("http://") :]
-            explicit_scheme = True
-        else:
-            ws_scheme, http_scheme = "ws", "http"
-        base = host if (port is None or explicit_scheme) else f"{host}:{port}"
-        self._ws_uri = f"{ws_scheme}://{base}/ws?robot_id={robot_id}"
-        self._http_base = f"{http_scheme}://{base}"
+        self._ws_uri, self._http_base = _parse_urls(host, port, robot_id)
         self._api_key = api_key
         self._server_metadata = self._wait_for_server()
         if self._server_metadata.tunnel_url:
@@ -129,3 +134,11 @@ class BidirectionalWebsocket:
     def reset(self) -> None:
         data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))
         self._ws.send(data)
+
+    @cache
+    def get_null_action(self) -> np.ndarray:
+        req = urllib.request.Request(f"{self._http_base}/null_action")
+        if self._api_key:
+            req.add_header("Authorization", f"Api-Key {self._api_key}")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return msgpack_numpy.unpackb(resp.read())

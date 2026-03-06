@@ -49,15 +49,9 @@ class ActionChunkBroker(ABC):
         return action
 
     def _create_null_action(self, obs: Observation) -> Action:
-        # FIXME: hardcoded, should move this outside of this class
-        import numpy as np
-
-        action = np.zeros(7)
-        action[-1] = self.current_action_chunk.get_action(-1)[-1] if self.current_action_chunk is not None else 0.0
-
         return Action(
             step=obs.step,
-            action=action,
+            action=self._ws_client.get_null_action(),
             action_chunk_index=None,
             index_in_chunk=None,
         )

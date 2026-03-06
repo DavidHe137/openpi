@@ -44,7 +44,9 @@ class RequestScheduler(ABC):
 
     def update_ack(self, notification: AckNotification) -> None:
         self.latency.update_action_delivery(
-            notification.robot_id, notification.receive_time, notification.server_send_time
+            notification.robot_id,
+            notification.receive_time,
+            notification.server_send_time,
         )
 
     def schedule(self) -> None:

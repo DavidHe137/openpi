@@ -35,8 +35,10 @@ import uuid
 
 from fastapi import FastAPI
 from fastapi import Request
+from fastapi import Response
 from fastapi import WebSocket
 from fastapi.concurrency import asynccontextmanager
+import numpy as np
 from openpi_client import msgpack_numpy
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
@@ -350,6 +352,11 @@ def create_app(
     @app.get("/metadata")
     async def server_metadata() -> dict:
         return asdict(metadata)
+
+    @app.get("/null_action")
+    async def null_action() -> Response:
+        data = msgpack_numpy.packb(np.zeros(metadata.action_dim, dtype=np.float32))
+        return Response(content=data, media_type="application/octet-stream")
 
     @app.get("/metrics")
     async def get_metrics(request: Request) -> dict:
