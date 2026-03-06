@@ -74,3 +74,38 @@ class ResponseAck:
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt
     type: Literal["ack"] = "ack"
+
+
+@dataclass(frozen=True)
+class ConnectRequest:
+    control_hz: float
+    type: Literal["connect"] = "connect"
+
+
+@dataclass(frozen=True)
+class ConnectResponse:
+    robot_id: str
+    type: Literal["connect_response"] = "connect_response"
+
+
+@dataclass(frozen=True)
+class WarmupPing:
+    client_timestamp: float
+    payload: bytes  # dummy bytes, same size as a typical packed InferRequest
+    type: Literal["warmup_ping"] = "warmup_ping"
+
+
+@dataclass(frozen=True)
+class WarmupPong:
+    client_timestamp: float  # echoed from WarmupPing
+    server_receive_time: float
+    server_send_time: float
+    payload: bytes  # dummy bytes, same size as a typical packed InferResponse
+    type: Literal["warmup_pong"] = "warmup_pong"
+
+
+@dataclass(frozen=True)
+class WarmupAck:
+    server_send_time: float  # echoed from WarmupPong, so server can compute delivery latency
+    client_receive_time: float
+    type: Literal["warmup_ack"] = "warmup_ack"

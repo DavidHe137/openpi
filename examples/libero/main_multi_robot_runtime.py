@@ -108,9 +108,9 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     _progress_queue = progress_queue
 
     ws_client = BidirectionalWebsocket(
-        robot_id=f"robot_{robot_idx}",
         host=args.host,
         port=args.port,
+        control_hz=args.control_hz,
     )
 
     # Create broker config and instantiate
@@ -320,7 +320,6 @@ def main(args: Args) -> None:
 
     # Connect to get server metadata
     temp_client = BidirectionalWebsocket(
-        robot_id="robot",
         host=args.host,
         port=args.port,
     )

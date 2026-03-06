@@ -18,6 +18,7 @@ from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import BatchProfile
 from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SlotRequest
+from openpi.serving.schemas import WarmupSeed
 from openpi.shared import logging_config
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,12 @@ def _run_scheduler(
             elif isinstance(msg, AckNotification):
                 scheduler.update_ack(msg)
                 logger.debug("Received ack notification: %s", msg)
+            elif isinstance(msg, WarmupSeed):
+                for arrival_ts, request_ts in msg.obs_samples:
+                    scheduler.latency.update_obs(msg.robot_id, arrival_ts, request_ts)
+                for client_receive_time, server_send_time in msg.delivery_samples:
+                    scheduler.latency.update_action_delivery(msg.robot_id, client_receive_time, server_send_time)
+                logger.info("Seeded latency for robot %s from warmup", msg.robot_id)
 
         while result_sock.poll(0):
             msg = result_sock.recv_pyobj(zmq.NOBLOCK)

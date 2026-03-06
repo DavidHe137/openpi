@@ -59,6 +59,13 @@ class BatchProfile:
     latency_ms: dict[int, float]
 
 
+@dataclass
+class WarmupSeed:
+    robot_id: str
+    obs_samples: list[tuple[float, float]]  # (arrival_ts, request_ts) per ping
+    delivery_samples: list[tuple[float, float]]  # (client_receive_time, server_send_time) per ack
+
+
 @dataclass(frozen=True)
 class SchedulerTimingSample:
     """A single scheduler timing sample emitted by the scheduler process."""

@@ -1,23 +1,31 @@
-import json
 import logging
 import time
-import urllib.error
-import urllib.request
 from typing import Optional
 
 import numpy as np
+import requests
 from dataclasses import asdict
 import websockets.sync.client
 from functools import cache
 
-from openpi_client import msgpack_numpy
 from openpi_client import messages
+from openpi_client import msgpack_numpy
+from openpi_client.messages import (
+    ConnectRequest,
+    ConnectResponse,
+    WarmupAck,
+    WarmupPing,
+    WarmupPong,
+)
 from openpi_client.schemas import ActionChunk, Observation, ServerMetadata
 
 logger = logging.getLogger(__name__)
 
+NUM_WARMUP = 10
+WARMUP_OBS_BYTES = 3 * 224 * 224 * 3  # 3 channels, 224x224 pixels, 3 bytes per pixel
 
-def _parse_urls(host: str, port: Optional[int], robot_id: str) -> tuple[str, str]:
+
+def _parse_urls(host: str, port: Optional[int]) -> tuple[str, str]:
     """Parse host/port into (ws_uri, http_base) tuple."""
     explicit_scheme = False
     if host.startswith("https://"):
@@ -31,7 +39,7 @@ def _parse_urls(host: str, port: Optional[int], robot_id: str) -> tuple[str, str
     else:
         ws_scheme, http_scheme = "ws", "http"
     base = host if (port is None or explicit_scheme) else f"{host}:{port}"
-    return f"{ws_scheme}://{base}/ws?robot_id={robot_id}", f"{http_scheme}://{base}"
+    return f"{ws_scheme}://{base}/ws", f"{http_scheme}://{base}"
 
 
 class BidirectionalWebsocket:
@@ -42,19 +50,20 @@ class BidirectionalWebsocket:
 
     def __init__(
         self,
-        robot_id: str,
         host: str = "0.0.0.0",
         port: Optional[int] = None,
         api_key: Optional[str] = None,
+        control_hz: float = 10.0,
     ) -> None:
-        self._robot_id = robot_id
-        self._ws_uri, self._http_base = _parse_urls(host, port, robot_id)
+        self._ws_uri, self._http_base = _parse_urls(host, port)
         self._api_key = api_key
         self._server_metadata = self._wait_for_server()
         if self._server_metadata.tunnel_url:
             tunnel_host = self._server_metadata.tunnel_url.replace("https://", "", 1)
-            self._ws_uri = f"wss://{tunnel_host}/ws?robot_id={robot_id}"
+            self._ws_uri = f"wss://{tunnel_host}/ws"
         self._ws = self._connect_ws()
+        self._robot_id = self._handshake(control_hz)
+        self._warmup()
 
     @property
     def server_metadata(self) -> ServerMetadata:
@@ -64,14 +73,33 @@ class BidirectionalWebsocket:
         logging.info(f"Waiting for server at {self._http_base}...")
         while True:
             try:
-                req = urllib.request.Request(f"{self._http_base}/metadata")
-                if self._api_key:
-                    req.add_header("Authorization", f"Api-Key {self._api_key}")
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    return ServerMetadata(**json.loads(resp.read()))
-            except (urllib.error.URLError, OSError):
+                resp = requests.get(
+                    f"{self._http_base}/metadata",
+                    headers={"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None,
+                    timeout=5,
+                )
+                resp.raise_for_status()
+                return ServerMetadata(**resp.json())
+            except requests.exceptions.RequestException:
                 logging.info("Still waiting for server...")
                 time.sleep(5)
+
+    def _handshake(self, control_hz: float) -> str:
+        """Send ConnectRequest, receive server-assigned robot_id."""
+        self._ws.send(msgpack_numpy.packb(asdict(ConnectRequest(control_hz=control_hz))))
+        resp = msgpack_numpy.unpackb(self._ws.recv())
+        robot_id = ConnectResponse(**resp).robot_id
+        logger.info("Connected as robot_id=%s", robot_id)
+        return robot_id
+
+    def _warmup(self, num_warmup: int, warmup_obs_bytes: int) -> None:
+        """Perform num_warmup ping/pong round trips to seed server LatencyTracker."""
+        for _ in range(NUM_WARMUP):
+            ping = WarmupPing(client_timestamp=time.time(), payload=bytes(WARMUP_OBS_BYTES))
+            self._ws.send(msgpack_numpy.packb(asdict(ping)))
+            pong = WarmupPong(**msgpack_numpy.unpackb(self._ws.recv()))
+            ack = WarmupAck(server_send_time=pong.server_send_time, client_receive_time=time.time())
+            self._ws.send(msgpack_numpy.packb(asdict(ack)))
 
     def _connect_ws(self) -> websockets.sync.client.ClientConnection:
         headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
@@ -137,8 +165,10 @@ class BidirectionalWebsocket:
 
     @cache
     def get_null_action(self) -> np.ndarray:
-        req = urllib.request.Request(f"{self._http_base}/null_action")
-        if self._api_key:
-            req.add_header("Authorization", f"Api-Key {self._api_key}")
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return msgpack_numpy.unpackb(resp.read())
+        resp = requests.get(
+            f"{self._http_base}/null_action",
+            headers={"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None,
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return msgpack_numpy.unpackb(resp.content)
