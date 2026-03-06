@@ -134,7 +134,12 @@ def _run_scheduler(
                     scheduler.latency.update_obs(msg.robot_id, arrival_ts, request_ts)
                 for client_receive_time, server_send_time in msg.delivery_samples:
                     scheduler.latency.update_action_delivery(msg.robot_id, client_receive_time, server_send_time)
-                logger.info("Seeded latency for robot %s from warmup", msg.robot_id)
+                logger.info(
+                    "Seeded latency for robot %s from warmup, obs_network_ms: %f, action_delivery_ms: %f",
+                    msg.robot_id,
+                    scheduler.latency.obs_network_ms(msg.robot_id),
+                    scheduler.latency.action_delivery_ms(msg.robot_id),
+                )
 
         while result_sock.poll(0):
             msg = result_sock.recv_pyobj(zmq.NOBLOCK)

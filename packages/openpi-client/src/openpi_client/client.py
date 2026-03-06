@@ -6,7 +6,6 @@ import numpy as np
 import requests
 from dataclasses import asdict
 import websockets.sync.client
-from functools import cache
 
 from openpi_client import messages
 from openpi_client import msgpack_numpy
@@ -18,6 +17,7 @@ from openpi_client.messages import (
     WarmupPong,
 )
 from openpi_client.schemas import ActionChunk, Observation, ServerMetadata
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,8 @@ NUM_WARMUP = 10
 WARMUP_OBS_BYTES = 3 * 224 * 224 * 3  # 3 channels, 224x224 pixels, 3 bytes per pixel
 
 
-def _parse_urls(host: str, port: Optional[int]) -> tuple[str, str]:
+# FIXME: need Tuple and not tuple to be backwards compatible with Python 3.8 (libero environment)
+def _parse_urls(host: str, port: Optional[int]) -> Tuple[str, str]:
     """Parse host/port into (ws_uri, http_base) tuple."""
     explicit_scheme = False
     if host.startswith("https://"):
@@ -92,7 +93,7 @@ class BidirectionalWebsocket:
         logger.info("Connected as robot_id=%s", robot_id)
         return robot_id
 
-    def _warmup(self, num_warmup: int, warmup_obs_bytes: int) -> None:
+    def _warmup(self) -> None:
         """Perform num_warmup ping/pong round trips to seed server LatencyTracker."""
         for _ in range(NUM_WARMUP):
             ping = WarmupPing(client_timestamp=time.time(), payload=bytes(WARMUP_OBS_BYTES))
@@ -162,13 +163,3 @@ class BidirectionalWebsocket:
     def reset(self) -> None:
         data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))
         self._ws.send(data)
-
-    @cache
-    def get_null_action(self) -> np.ndarray:
-        resp = requests.get(
-            f"{self._http_base}/null_action",
-            headers={"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None,
-            timeout=5,
-        )
-        resp.raise_for_status()
-        return msgpack_numpy.unpackb(resp.content)
