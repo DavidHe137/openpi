@@ -78,13 +78,13 @@ class ResponseAck:
 
 @dataclass(frozen=True)
 class ConnectRequest:
+    robot_id: str
     control_hz: float
     type: Literal["connect"] = "connect"
 
 
 @dataclass(frozen=True)
 class ConnectResponse:
-    robot_id: str
     type: Literal["connect_response"] = "connect_response"
 
 

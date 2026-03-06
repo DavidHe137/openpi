@@ -11,7 +11,6 @@ from openpi_client import messages
 from openpi_client import msgpack_numpy
 from openpi_client.messages import (
     ConnectRequest,
-    ConnectResponse,
     WarmupAck,
     WarmupPing,
     WarmupPong,
@@ -51,11 +50,13 @@ class BidirectionalWebsocket:
 
     def __init__(
         self,
+        robot_id: str,
         host: str = "0.0.0.0",
         port: Optional[int] = None,
         api_key: Optional[str] = None,
         control_hz: float = 10.0,
     ) -> None:
+        self._robot_id = robot_id
         self._ws_uri, self._http_base = _parse_urls(host, port)
         self._api_key = api_key
         self._server_metadata = self._wait_for_server()
@@ -63,7 +64,7 @@ class BidirectionalWebsocket:
             tunnel_host = self._server_metadata.tunnel_url.replace("https://", "", 1)
             self._ws_uri = f"wss://{tunnel_host}/ws"
         self._ws = self._connect_ws()
-        self._robot_id = self._handshake(control_hz)
+        self._handshake(control_hz)
         self._warmup()
 
     @property
@@ -85,13 +86,11 @@ class BidirectionalWebsocket:
                 logging.info("Still waiting for server...")
                 time.sleep(5)
 
-    def _handshake(self, control_hz: float) -> str:
-        """Send ConnectRequest, receive server-assigned robot_id."""
-        self._ws.send(msgpack_numpy.packb(asdict(ConnectRequest(control_hz=control_hz))))
-        resp = msgpack_numpy.unpackb(self._ws.recv())
-        robot_id = ConnectResponse(**resp).robot_id
-        logger.info("Connected as robot_id=%s", robot_id)
-        return robot_id
+    def _handshake(self, control_hz: float) -> None:
+        """Send ConnectRequest with robot_id, wait for server acknowledgment."""
+        self._ws.send(msgpack_numpy.packb(asdict(ConnectRequest(robot_id=self._robot_id, control_hz=control_hz))))
+        msgpack_numpy.unpackb(self._ws.recv())  # ConnectResponse ack
+        logger.info("Connected as robot_id=%s", self._robot_id)
 
     def _warmup(self) -> None:
         """Perform num_warmup ping/pong round trips to seed server LatencyTracker."""

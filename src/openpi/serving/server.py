@@ -108,7 +108,7 @@ async def _ws_handshake(
     websocket: WebSocket,
     state: ServerState,
 ) -> tuple[str, int, ConnectRequest] | None:
-    """Phase 1: receive ConnectRequest, assign server-generated robot_id.
+    """Phase 1: receive ConnectRequest (with client-provided robot_id), confirm connection.
 
     Returns (robot_id, slot_index, connect_req) on success, or None if the
     client sent an unexpected first message (websocket is closed before returning).
@@ -120,12 +120,12 @@ async def _ws_handshake(
         return None
     connect_req = ConnectRequest(**{k: v for k, v in msg.items() if k != "type"})
 
-    robot_id = uuid.uuid4().hex[:8]
+    robot_id = connect_req.robot_id
     slot_index = state.slots.register(robot_id)
     state.response_queues[robot_id] = asyncio.Queue()
     state.robot_metadata[robot_id] = connect_req
 
-    await websocket.send_bytes(msgpack_numpy.packb(dataclasses.asdict(ConnectResponse(robot_id=robot_id))))
+    await websocket.send_bytes(msgpack_numpy.packb(dataclasses.asdict(ConnectResponse())))
     logger.info("Robot %s connected (control_hz=%.1f)", robot_id, connect_req.control_hz)
     return robot_id, slot_index, connect_req
 
