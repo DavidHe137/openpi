@@ -67,28 +67,7 @@ def _run_gpu_worker(
 
     logger.info("GPU worker starting")
 
-    # FIXME: really doesn't belong here
-    # GPU devices may not be immediately visible after container snapshot restore.
-    # Retry until CUDA becomes available (or we exhaust retries).
-    cuda_max_wait_s = 120
-    cuda_retry_s = 5
-    policy = None
-    for attempt in range(cuda_max_wait_s // cuda_retry_s):
-        try:
-            policy = policy_factory()
-            break
-        except RuntimeError as e:
-            if "No visible GPU devices" in str(e) and attempt < cuda_max_wait_s // cuda_retry_s - 1:
-                logger.warning(
-                    "CUDA not yet available (attempt %d/%d), retrying in %ds…",
-                    attempt + 1,
-                    cuda_max_wait_s // cuda_retry_s,
-                    cuda_retry_s,
-                )
-                time.sleep(cuda_retry_s)
-            else:
-                raise
-    assert policy is not None
+    policy = policy_factory()
     policy.warmup(max_batch_size)
 
     ctx = zmq.Context()
