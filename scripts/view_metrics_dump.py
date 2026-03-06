@@ -136,7 +136,7 @@ def main(args: Args) -> None:
 
     mock_store = MockMetricsStore(hist)
     app = create_dash_app(metadata, mock_store)
-    url = f"http://{args.host}:{args.port}/dashboard/"
+    url = f"http://{args.host}:{args.port}"
     print(f"Dashboard: {url}")
     app.run(host=args.host, port=args.port, debug=False)
 
