@@ -1,8 +1,7 @@
-"""MetricsStore: in-memory metrics state for the websocket policy server."""
-
 import dataclasses
 from dataclasses import dataclass
 from dataclasses import field
+import itertools
 import time
 from typing import Any
 
@@ -39,11 +38,8 @@ class BatchSummary:
 class RobotState:
     """Per-robot tracking for scheduling metrics and network delay."""
 
-    last_start_step: int = 0
-    last_execution_horizon: int = 0
     last_server_send_times: dict[int, float] = field(default_factory=dict)  # request_id → server_send_time
-    total_starvations: int = 0
-    network_delays_ms: list[float] = field(default_factory=list)  # (delay_ms,) unbounded
+    ack_pairs: list[tuple[float, float]] = field(default_factory=list)  # (server_send_time, receive_time)
 
 
 @dataclass
@@ -76,14 +72,7 @@ class MetricsStore:
         self.batches.append(batch)
 
         for response in responses:
-            state = self.robot_states.setdefault(response.robot_id, RobotState())
-
-            if state.last_execution_horizon > 0:
-                robot_had_actions_until = state.last_start_step + state.last_execution_horizon
-                state.total_starvations += max(0, response.start_step - robot_had_actions_until)
-
-            state.last_start_step = response.start_step
-            state.last_execution_horizon = response.execution_horizon
+            self.robot_states.setdefault(response.robot_id, RobotState())
 
     def record_send(self, robot_id: str, request_id: int, server_send_time: float) -> None:
         """Called from send() just before websocket.send_bytes()."""
@@ -98,8 +87,7 @@ class MetricsStore:
             return
         server_send_time = state.last_server_send_times.pop(request_id, None)
         if server_send_time is not None:
-            delay_ms = (receive_time - server_send_time) * 1000
-            state.network_delays_ms.append(delay_ms)
+            state.ack_pairs.append((server_send_time, receive_time))
 
     def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
         """Called from the server process when the scheduler publishes timing samples."""
@@ -142,9 +130,19 @@ class MetricsStore:
 
         per_robot: dict[str, Any] = {}
         for robot_id, state in self.robot_states.items():
+            robot_steps = [
+                (b.start_steps[i], b.execution_horizons[i])
+                for b in self.batches
+                for i, rid in enumerate(b.robot_ids)
+                if rid == robot_id
+            ]
+            starvations = 0
+            for (prev_start, prev_horizon), (curr_start, _) in itertools.pairwise(robot_steps):
+                starvations += max(0, curr_start - (prev_start + prev_horizon))
+            network_delays_ms = [(recv - send) * 1000 for send, recv in state.ack_pairs]
             per_robot[robot_id] = {
-                "total_starvations": state.total_starvations,
-                "avg_network_delay_ms": float(np.mean(state.network_delays_ms)) if state.network_delays_ms else 0.0,
+                "total_starvations": starvations,
+                "avg_network_delay_ms": float(np.mean(network_delays_ms)) if network_delays_ms else 0.0,
             }
 
         return {
@@ -199,9 +197,9 @@ class MetricsStore:
             )
 
         outbound: dict[str, list[float]] = {
-            robot_id: [round(d, 2) for d in state.network_delays_ms]
+            robot_id: [round((recv - send) * 1000, 2) for send, recv in state.ack_pairs]
             for robot_id, state in self.robot_states.items()
-            if state.network_delays_ms
+            if state.ack_pairs
         }
         scheduler_timings: dict[str, list[float]] = {}
         for sample in self.scheduler_timings:
@@ -240,6 +238,12 @@ class MetricsStore:
         store.start_time = data["start_time"]
         store.batch_counter = data["batch_counter"]
         store.batches = [BatchSummary(**b) for b in data["batches"]]
-        store.robot_states = {k: RobotState(**v) for k, v in data["robot_states"].items()}
+        store.robot_states = {
+            k: RobotState(
+                last_server_send_times={int(req_id): t for req_id, t in v["last_server_send_times"].items()},
+                ack_pairs=[tuple(p) for p in v["ack_pairs"]],
+            )
+            for k, v in data["robot_states"].items()
+        }
         store.scheduler_timings = [SchedulerTimingSample(**s) for s in data["scheduler_timings"]]
         return store
