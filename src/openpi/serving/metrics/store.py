@@ -1,5 +1,6 @@
 """MetricsStore: in-memory metrics state for the websocket policy server."""
 
+import dataclasses
 from dataclasses import dataclass
 from dataclasses import field
 import time
@@ -78,10 +79,8 @@ class MetricsStore:
             state = self.robot_states.setdefault(response.robot_id, RobotState())
 
             if state.last_execution_horizon > 0:
-                actions_consumed = response.start_step - state.last_start_step
-                actions_remaining = state.last_execution_horizon - actions_consumed
-                if actions_remaining < 0:
-                    state.total_starvations += abs(actions_remaining)
+                robot_had_actions_until = state.last_start_step + state.last_execution_horizon
+                state.total_starvations += max(0, response.start_step - robot_had_actions_until)
 
             state.last_start_step = response.start_step
             state.last_execution_horizon = response.execution_horizon
@@ -224,45 +223,23 @@ class MetricsStore:
         self.start_time = time.time()
         self.batch_counter = 0
 
+    def dump(self) -> dict[str, Any]:
+        """JSON-serializable dump of all raw state, suitable for full reconstruction via from_dump()."""
+        return {
+            "start_time": self.start_time,
+            "batch_counter": self.batch_counter,
+            "batches": [dataclasses.asdict(b) for b in self.batches],
+            "robot_states": {k: dataclasses.asdict(v) for k, v in self.robot_states.items()},
+            "scheduler_timings": [dataclasses.asdict(s) for s in self.scheduler_timings],
+        }
+
     @classmethod
-    def from_dump(cls, hist: dict) -> "MetricsStore":
-        """Reconstruct a MetricsStore from a history dump produced by history()."""
-        t0: float = hist["server_start_time"]
+    def from_dump(cls, data: dict) -> "MetricsStore":
+        """Reconstruct a MetricsStore from a dump produced by dump()."""
         store = cls()
-        store.start_time = t0
-
-        for batch_id, b in enumerate(hist.get("batches", []), 1):
-            inference_start_time = t0 + b["inference_start_t"]
-            inference_end_time = t0 + b["inference_end_t"]
-            robot_ids = b["robot_ids"]
-            per_req = b["per_request"]
-            server_arrival_times = [inference_start_time - r["queue_ms"] / 1000 for r in per_req]
-            request_timestamps = [
-                arr - r["inbound_ms"] / 1000 for arr, r in zip(server_arrival_times, per_req, strict=True)
-            ]
-            store.batches.append(
-                BatchSummary(
-                    batch_id=batch_id,
-                    robot_ids=robot_ids,
-                    request_ids=list(range(len(robot_ids))),
-                    request_timestamps=request_timestamps,
-                    server_arrival_times=server_arrival_times,
-                    inference_start_time=inference_start_time,
-                    inference_end_time=inference_end_time,
-                    execution_horizons=[0] * len(robot_ids),
-                    start_steps=[0] * len(robot_ids),
-                )
-            )
-
-        for robot_id, delays in hist.get("outbound_delays_ms", {}).items():
-            store.robot_states[robot_id] = RobotState(network_delays_ms=delays)
-
-        for metric_key, durations in hist.get("scheduler_timings_ms", {}).items():
-            scheduler_name, metric_name = metric_key.split(".", 1)
-            store.scheduler_timings.extend(
-                SchedulerTimingSample(scheduler_name=scheduler_name, metric_name=metric_name, duration_ms=d)
-                for d in durations
-            )
-
-        store.batch_counter = len(store.batches)
+        store.start_time = data["start_time"]
+        store.batch_counter = data["batch_counter"]
+        store.batches = [BatchSummary(**b) for b in data["batches"]]
+        store.robot_states = {k: RobotState(**v) for k, v in data["robot_states"].items()}
+        store.scheduler_timings = [SchedulerTimingSample(**s) for s in data["scheduler_timings"]]
         return store

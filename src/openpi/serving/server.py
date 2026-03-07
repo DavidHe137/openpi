@@ -442,8 +442,7 @@ def create_app(
 
     @app.get("/metrics/history")
     async def get_metrics_history(request: Request) -> dict:
-        window_s = request.query_params.get("window_s")
-        return request.app.state.server.metrics_store.history(float(window_s) if window_s else None)
+        return request.app.state.server.metrics_store.dump()
 
     @app.post("/reset-metrics")
     async def reset_metrics(request: Request) -> dict:
