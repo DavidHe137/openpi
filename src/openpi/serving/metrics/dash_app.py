@@ -137,11 +137,11 @@ def _section(title: str, *children: object) -> html.Div:
     )
 
 
-def _stat_card(value: str, label: str) -> html.Div:
+def _stat_card(value: str, label: str, *, value_color: str = "#4fc3f7") -> html.Div:
     return html.Div(
         style=_STAT_CARD,
         children=[
-            html.Div(value, style={"fontSize": "1.9em", "fontWeight": 700, "color": "#4fc3f7", "lineHeight": "1.1"}),
+            html.Div(value, style={"fontSize": "1.9em", "fontWeight": 700, "color": value_color, "lineHeight": "1.1"}),
             html.Div(label, style={"color": "#555", "fontSize": "0.72em", "marginTop": "5px"}),
         ],
     )
@@ -203,67 +203,148 @@ def _task_label(task_key: str, row: dict) -> str:
     return task_key
 
 
-def _task_table(tasks: dict) -> html.Element:
-    if not tasks:
-        return html.Div("No task results yet.", style={"color": "#444", "padding": "12px"})
-    th = {
-        "textAlign": "left",
-        "color": "#555",
-        "fontWeight": 400,
-        "padding": "6px 12px",
-        "borderBottom": "1px solid #222",
-    }
-    td_base = {"padding": "6px 12px"}
-    rows = sorted(tasks.items(), key=lambda kv: kv[1]["episodes"], reverse=True)
-    return html.Table(
-        style={"width": "100%", "borderCollapse": "collapse", "fontSize": "0.85em"},
-        children=[
-            html.Thead(
-                html.Tr(
-                    [
-                        html.Th("Task", style=th),
-                        html.Th("Episodes", style=th),
-                        html.Th("Success (%)", style=th),
-                        html.Th("Throughput (/min)", style=th),
-                        html.Th("Avg Time (s)", style=th),
-                        html.Th("p50 Time (s)", style=th),
-                        html.Th("Avg Steps", style=th),
-                    ]
-                )
-            ),
-            html.Tbody(
-                [
-                    html.Tr(
-                        [
-                            html.Td(_task_label(task_key, row), style={**td_base, "color": "#ccc"}),
-                            html.Td(f"{row['episodes']:,}", style={**td_base, "color": "#4fc3f7", "fontWeight": 600}),
-                            html.Td(
-                                f"{row['success_rate_pct']:.1f}",
-                                style={**td_base, "color": "#81c784", "fontWeight": 600},
-                            ),
-                            html.Td(
-                                f"{row['throughput_per_min']:.2f}",
-                                style={**td_base, "color": "#ce93d8", "fontWeight": 600},
-                            ),
-                            html.Td(
-                                f"{row['avg_duration_s']:.2f}",
-                                style={**td_base, "color": "#ffb74d", "fontWeight": 600},
-                            ),
-                            html.Td(
-                                f"{row['p50_duration_s']:.2f}",
-                                style={**td_base, "color": "#ffb74d", "fontWeight": 600},
-                            ),
-                            html.Td(
-                                f"{row['avg_steps']:.1f}",
-                                style={**td_base, "color": "#4db6ac", "fontWeight": 600},
-                            ),
-                        ]
-                    )
-                    for task_key, row in rows
-                ]
-            ),
-        ],
+def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: list[dict], title: str) -> go.Figure:
+    fig = go.Figure()
+    if not task_events and not task_progress:
+        fig.update_layout(
+            **_layout(
+                title={"text": title, "font": {"size": 12, "color": "#888"}},
+                xaxis={"title": "Episode"},
+                yaxis={"title": "Task / Robot"},
+                showlegend=False,
+            )
+        )
+        return fig
+
+    # Row key = "{robot_id}-{task_id} . averages"
+    row_events: dict[str, dict[int, dict]] = {}
+    row_total_episodes: dict[str, int] = {}
+
+    for event in task_events:
+        label = f"{event['robot_id']}-{event['task_id']} . averages"
+        row_events.setdefault(label, {})[int(event["episode_idx"])] = event
+        row_total_episodes[label] = max(
+            row_total_episodes.get(label, 0),
+            int(event.get("total_episodes") or 0),
+            int(event["episode_idx"]),
+        )
+
+    for prog in task_progress:
+        label = f"{prog['robot_id']}-{prog['task_id']} . averages"
+        row_events.setdefault(label, {})
+        row_total_episodes[label] = max(
+            row_total_episodes.get(label, 0),
+            int(prog.get("total_episodes") or 0),
+            int(prog["episode_idx"]),
+        )
+
+    row_order = sorted(row_events.keys())
+    max_episode = max(row_total_episodes.values(), default=1)
+    row_count = len(row_order)
+
+    z: list[list[float | None]] = []
+    text: list[list[str]] = []
+    hover_text: list[list[str]] = []
+    border_x: list[int] = []
+    border_y: list[str] = []
+    border_color: list[str] = []
+
+    for label in row_order:
+        row_z: list[float | None] = []
+        row_text: list[str] = []
+        row_hover: list[str] = []
+        for episode_idx in range(1, max_episode + 1):
+            if episode_idx > row_total_episodes[label]:
+                row_z.append(None)
+                row_text.append("")
+                row_hover.append("")
+                continue
+
+            event = row_events[label].get(episode_idx)
+            border_x.append(episode_idx)
+            border_y.append(label)
+            if event is None:
+                row_z.append(0.0)
+                row_text.append("")
+                row_hover.append(f"{label}<br>episode: {episode_idx}<br>status: pending")
+                border_color.append("#374151")
+                continue
+
+            duration = float(event["duration_s"])
+            steps = float(event["steps_taken"])
+            row_z.append(2.0 if event["success"] else 1.0)
+            row_text.append(f"{duration:.1f} s / {steps:.0f} st")
+            row_hover.append(
+                f"{label}<br>episode: {episode_idx}<br>duration: {duration:.3f} s<br>"
+                f"steps: {steps:.0f} st<br>success: {event['success']}"
+            )
+            border_color.append("#22c55e" if event["success"] else "#ef4444")
+
+        z.append(row_z)
+        text.append(row_text)
+        hover_text.append(row_hover)
+
+    fig.add_trace(
+        go.Heatmap(
+            x=list(range(1, max_episode + 1)),
+            y=row_order,
+            z=z,
+            text=text,
+            customdata=hover_text,
+            hovertemplate="%{customdata}<extra></extra>",
+            texttemplate="%{text}",
+            textfont={"size": 10, "color": "#111"},
+            zmin=0.0,
+            zmax=2.0,
+            colorscale=[
+                [0.0, "#1f2937"],
+                [0.333, "#1f2937"],
+                [0.334, "#dc2626"],
+                [0.666, "#dc2626"],
+                [0.667, "#22c55e"],
+                [1.0, "#22c55e"],
+            ],
+            showscale=False,
+            xgap=2,
+            ygap=2,
+        )
     )
+
+    cell_size = max(14, min(46, int(760 / max(max_episode, row_count, 1))))
+    fig.add_trace(
+        go.Scatter(
+            x=border_x,
+            y=border_y,
+            mode="markers",
+            hoverinfo="skip",
+            marker={
+                "symbol": "square-open",
+                "size": cell_size,
+                "color": "rgba(0,0,0,0)",
+                "line": {"width": 2, "color": border_color},
+            },
+            showlegend=False,
+        )
+    )
+
+    fig.update_layout(
+        **_layout(
+            title={"text": title, "font": {"size": 12, "color": "#888"}},
+            xaxis={"title": "Episode", "dtick": 1},
+            yaxis={
+                "title": "Robot / Task",
+                "categoryorder": "array",
+                "categoryarray": row_order,
+                "autorange": "reversed",
+                "ticklabelstandoff": 20,
+                "automargin": True,
+            },
+            showlegend=False,
+            height=max(440, row_count * 56 + 120),
+            margin={"t": 40, "r": 18, "b": 70, "l": 360},
+        )
+    )
+    return fig
 
 
 def _task_metric_fig(task_rollups: dict, metric_key: str, title: str, y_title: str, color: str) -> go.Figure:
@@ -482,11 +563,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             ),
             # Per-Robot
             _section("Per-Robot", html.Div(id="div-robots")),
-            # Per-Task
-            _section("Per-Task", html.Div(id="div-tasks")),
             # Charts
             _section(
                 "Charts",
+                # Combined episode heatmap
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Episode Progress Heatmap", style=_CARD_HDR),
+                        dcc.Graph(id="graph-task-heatmap", config=_CFG),
+                    ],
+                ),
                 # GPU inference dist
                 html.Div(
                     style=_CARD,
@@ -522,22 +609,6 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                                 dcc.Graph(id="graph-outbound", config=_CFG),
                             ],
                         ),
-                    ],
-                ),
-                # Task success by task
-                html.Div(
-                    style=_CARD,
-                    children=[
-                        html.Div("Task Success Rate by Task", style=_CARD_HDR),
-                        dcc.Graph(id="graph-task-success", config=_CFG),
-                    ],
-                ),
-                # Task average time by task
-                html.Div(
-                    style=_CARD,
-                    children=[
-                        html.Div("Task Avg Wall Time by Task", style=_CARD_HDR),
-                        dcc.Graph(id="graph-task-time", config=_CFG),
                     ],
                 ),
                 # Task throughput by task
@@ -614,10 +685,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("div-subtitle", "children"),
         Output("div-stats", "children"),
         Output("div-robots", "children"),
-        Output("div-tasks", "children"),
         Output("graph-gpu-dist", "figure"),
-        Output("graph-task-success", "figure"),
-        Output("graph-task-time", "figure"),
+        Output("graph-task-heatmap", "figure"),
         Output("graph-task-throughput", "figure"),
         Output("graph-gantt", "figure"),
         Output("dd-robot", "options"),
@@ -635,6 +704,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         snap = metrics_store.snapshot(window_s)
         hist = metrics_store.history(window_s)
         batches = hist["batches"]
+        task_events = hist.get("task_events", [])
+        task_progress = hist.get("task_progress", [])
         task_rollups = hist.get("task_rollups", {})
 
         def f(v: float) -> str:
@@ -662,22 +733,12 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
 
         robots = snap.get("per_robot", {})
         robot_el = _robot_table(robots)
-        task_el = _task_table(snap.get("per_task", {}))
 
         gpu_fig = _gpu_dist_fig(batches)
-        task_success_fig = _task_metric_fig(
-            task_rollups,
-            metric_key="success_rate_pct",
-            title="Success Rate by Task",
-            y_title="Success (%)",
-            color="#81c784",
-        )
-        task_time_fig = _task_metric_fig(
-            task_rollups,
-            metric_key="avg_duration_s",
-            title="Avg Episode Wall Time by Task",
-            y_title="Seconds",
-            color="#ffb74d",
+        task_heatmap_fig = _combined_task_episode_heatmap_fig(
+            task_events,
+            task_progress,
+            title="Success, Completion Time Metrics",
         )
         task_throughput_fig = _task_metric_fig(
             task_rollups,
@@ -695,10 +756,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             subtitle,
             stat_cards,
             robot_el,
-            task_el,
             gpu_fig,
-            task_success_fig,
-            task_time_fig,
+            task_heatmap_fig,
             task_throughput_fig,
             gantt,
             robot_opts,

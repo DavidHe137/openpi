@@ -41,10 +41,12 @@ class TaskMetricsPublisher(_subscriber.Subscriber):
     def on_episode_start(self) -> None:
         self._episode_start_perf = time.perf_counter()
         self._steps_taken = 0
+        self._publish_progress()
 
     @override
     def on_step(self, observation: Observation, action: Action) -> None:
         self._steps_taken += 1
+        self._publish_progress()
 
     @override
     def on_episode_end(self) -> None:
@@ -61,10 +63,32 @@ class TaskMetricsPublisher(_subscriber.Subscriber):
                 duration_s=duration_s,
                 steps_taken=self._steps_taken,
                 task_language=self._task_language,
+                total_episodes=self._environment.total_episodes,
+                max_episode_steps=self._environment.max_episode_steps,
+                max_duration_s=self._environment.max_episode_steps
+                / self._environment.control_hz,
             )
         except Exception:
             logger.warning(
                 "Failed to publish task_result for task %s/%s",
+                self._task_suite_name,
+                self._task_id,
+            )
+
+    def _publish_progress(self) -> None:
+        try:
+            self._ws_client.send_task_progress(
+                task_suite_name=self._task_suite_name,
+                task_id=self._task_id,
+                episode_idx=self._environment.episode_idx,
+                current_step=self._steps_taken,
+                max_episode_steps=self._environment.max_episode_steps,
+                task_language=self._task_language,
+                total_episodes=self._environment.total_episodes,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to publish task_progress for task %s/%s",
                 self._task_suite_name,
                 self._task_id,
             )

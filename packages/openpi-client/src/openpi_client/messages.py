@@ -85,4 +85,19 @@ class TaskResult:
     duration_s: float
     steps_taken: int
     task_language: Optional[str] = None
+    total_episodes: Optional[int] = None
+    max_episode_steps: Optional[int] = None
+    max_duration_s: Optional[float] = None
     type: Literal["task_result"] = "task_result"
+
+
+@dataclass(frozen=True)
+class TaskProgress:
+    task_suite_name: str
+    task_id: int
+    episode_idx: int
+    current_step: int
+    max_episode_steps: int
+    task_language: Optional[str] = None
+    total_episodes: Optional[int] = None
+    type: Literal["task_progress"] = "task_progress"

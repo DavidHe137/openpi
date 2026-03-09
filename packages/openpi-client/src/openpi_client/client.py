@@ -152,6 +152,9 @@ class BidirectionalWebsocket:
         duration_s: float,
         steps_taken: int,
         task_language: Optional[str] = None,
+        total_episodes: Optional[int] = None,
+        max_episode_steps: Optional[int] = None,
+        max_duration_s: Optional[float] = None,
     ) -> None:
         payload = messages.TaskResult(
             task_suite_name=task_suite_name,
@@ -161,5 +164,29 @@ class BidirectionalWebsocket:
             duration_s=duration_s,
             steps_taken=steps_taken,
             task_language=task_language,
+            total_episodes=total_episodes,
+            max_episode_steps=max_episode_steps,
+            max_duration_s=max_duration_s,
+        )
+        self._ws.send(msgpack_numpy.packb(asdict(payload)))  # type: ignore
+
+    def send_task_progress(
+        self,
+        task_suite_name: str,
+        task_id: int,
+        episode_idx: int,
+        current_step: int,
+        max_episode_steps: int,
+        task_language: Optional[str] = None,
+        total_episodes: Optional[int] = None,
+    ) -> None:
+        payload = messages.TaskProgress(
+            task_suite_name=task_suite_name,
+            task_id=task_id,
+            episode_idx=episode_idx,
+            current_step=current_step,
+            max_episode_steps=max_episode_steps,
+            task_language=task_language,
+            total_episodes=total_episodes,
         )
         self._ws.send(msgpack_numpy.packb(asdict(payload)))  # type: ignore
