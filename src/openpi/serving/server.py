@@ -42,6 +42,7 @@ from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
 from openpi_client.messages import ResponseAck
+from openpi_client.messages import TaskResult
 from openpi_client.schemas import ServerMetadata
 from starlette.middleware.wsgi import WSGIMiddleware
 from starlette.websockets import WebSocketDisconnect
@@ -269,6 +270,20 @@ def create_app(
                         case "ack":
                             ack = ResponseAck(**msg)
                             state.metrics_store.record_ack(robot_id, ack.request_id, ack.receive_time)
+                            continue
+                        case "task_result":
+                            task_result = TaskResult(**msg)
+                            state.metrics_store.record_task_result(
+                                robot_id=robot_id,
+                                task_suite_name=task_result.task_suite_name,
+                                task_id=task_result.task_id,
+                                episode_idx=task_result.episode_idx,
+                                success=task_result.success,
+                                duration_s=task_result.duration_s,
+                                steps_taken=task_result.steps_taken,
+                                task_language=task_result.task_language,
+                                event_time=time.time(),
+                            )
                             continue
                         case "infer":
                             pass

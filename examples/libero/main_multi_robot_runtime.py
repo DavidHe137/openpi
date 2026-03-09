@@ -22,6 +22,7 @@ from examples.libero import logging_config
 from examples.libero.env import LiberoSimEnvironment
 from examples.libero.progress_manager import get_progress_manager
 from examples.libero.subscribers.saver import Saver
+from examples.libero.subscribers.task_metrics_publisher import TaskMetricsPublisher
 from examples.libero.metrics import calculate_metrics, generate_all_plots
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
@@ -152,6 +153,13 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
             task_id=job.task_id,
             task=job.task,
             robot_idx=robot_idx,
+        ),
+        TaskMetricsPublisher(
+            ws_client=ws_client,
+            environment=env,
+            task_suite_name=job.task_suite_name,
+            task_id=job.task_id,
+            task=job.task,
         ),
     ]
     if args.progress_type is not None and _progress_queue is not None:

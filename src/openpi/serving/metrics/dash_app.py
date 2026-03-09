@@ -114,6 +114,16 @@ _BTN_PRIMARY = {
     "fontFamily": "inherit",
     "fontSize": "0.85em",
 }
+_BTN_ACTIVE = {
+    "background": "#14351f",
+    "border": "1px solid #66bb6a",
+    "color": "#b9f6ca",
+    "padding": "6px 16px",
+    "borderRadius": "4px",
+    "cursor": "pointer",
+    "fontFamily": "inherit",
+    "fontSize": "0.85em",
+}
 _CFG = {"displaylogo": False, "responsive": True}
 
 
@@ -184,6 +194,95 @@ def _robot_table(robots: dict) -> html.Element:
             ),
         ],
     )
+
+
+def _task_label(task_key: str, row: dict) -> str:
+    task_language = row.get("task_language")
+    if task_language:
+        return f"{task_key} · {task_language[:36]}"
+    return task_key
+
+
+def _task_table(tasks: dict) -> html.Element:
+    if not tasks:
+        return html.Div("No task results yet.", style={"color": "#444", "padding": "12px"})
+    th = {
+        "textAlign": "left",
+        "color": "#555",
+        "fontWeight": 400,
+        "padding": "6px 12px",
+        "borderBottom": "1px solid #222",
+    }
+    td_base = {"padding": "6px 12px"}
+    rows = sorted(tasks.items(), key=lambda kv: kv[1]["episodes"], reverse=True)
+    return html.Table(
+        style={"width": "100%", "borderCollapse": "collapse", "fontSize": "0.85em"},
+        children=[
+            html.Thead(
+                html.Tr(
+                    [
+                        html.Th("Task", style=th),
+                        html.Th("Episodes", style=th),
+                        html.Th("Success (%)", style=th),
+                        html.Th("Throughput (/min)", style=th),
+                        html.Th("Avg Time (s)", style=th),
+                        html.Th("p50 Time (s)", style=th),
+                        html.Th("Avg Steps", style=th),
+                    ]
+                )
+            ),
+            html.Tbody(
+                [
+                    html.Tr(
+                        [
+                            html.Td(_task_label(task_key, row), style={**td_base, "color": "#ccc"}),
+                            html.Td(f"{row['episodes']:,}", style={**td_base, "color": "#4fc3f7", "fontWeight": 600}),
+                            html.Td(
+                                f"{row['success_rate_pct']:.1f}",
+                                style={**td_base, "color": "#81c784", "fontWeight": 600},
+                            ),
+                            html.Td(
+                                f"{row['throughput_per_min']:.2f}",
+                                style={**td_base, "color": "#ce93d8", "fontWeight": 600},
+                            ),
+                            html.Td(
+                                f"{row['avg_duration_s']:.2f}",
+                                style={**td_base, "color": "#ffb74d", "fontWeight": 600},
+                            ),
+                            html.Td(
+                                f"{row['p50_duration_s']:.2f}",
+                                style={**td_base, "color": "#ffb74d", "fontWeight": 600},
+                            ),
+                            html.Td(
+                                f"{row['avg_steps']:.1f}",
+                                style={**td_base, "color": "#4db6ac", "fontWeight": 600},
+                            ),
+                        ]
+                    )
+                    for task_key, row in rows
+                ]
+            ),
+        ],
+    )
+
+
+def _task_metric_fig(task_rollups: dict, metric_key: str, title: str, y_title: str, color: str) -> go.Figure:
+    fig = go.Figure()
+    rows = sorted(task_rollups.items(), key=lambda kv: kv[1]["episodes"], reverse=True)
+    if rows:
+        labels = [_task_label(task_key, row) for task_key, row in rows]
+        values = [row[metric_key] for _, row in rows]
+        fig.add_trace(go.Bar(x=labels, y=values, marker_color=color))
+    fig.update_layout(
+        **_layout(
+            title={"text": title, "font": {"size": 12, "color": "#888"}},
+            xaxis={"title": "Task"},
+            yaxis={"title": y_title},
+            showlegend=False,
+        )
+    )
+    fig.update_xaxes(tickangle=-20)
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +413,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         children=[
             dcc.Store(id="store-session", storage_type="session"),
             dcc.Store(id="store-xrange"),
+            dcc.Store(id="store-auto-refresh-enabled", data=False),
+            dcc.Interval(id="interval-refresh", interval=5000, disabled=True, n_intervals=0),
             # Header
             html.H1(
                 "openpi · metrics",
@@ -335,6 +436,25 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                 },
                 children=[
                     html.Button("⟳ Refresh", id="btn-refresh", n_clicks=0, style=_BTN_PRIMARY),
+                    html.Button("▶ Auto", id="btn-auto-refresh", n_clicks=0, style=_BTN_PRIMARY),
+                    html.Label("every", style={"color": "#555", "fontSize": "0.85em"}),
+                    dcc.Dropdown(
+                        id="dd-auto-refresh-seconds",
+                        options=[
+                            {"label": "1", "value": 1},
+                            {"label": "2", "value": 2},
+                            {"label": "5", "value": 5},
+                            {"label": "10", "value": 10},
+                            {"label": "15", "value": 15},
+                            {"label": "30", "value": 30},
+                            {"label": "60", "value": 60},
+                        ],
+                        value=5,
+                        clearable=False,
+                        searchable=False,
+                        style={"width": "84px", "fontSize": "0.9em"},
+                    ),
+                    html.Label("seconds", style={"color": "#555", "fontSize": "0.85em"}),
                     html.Label("Last", style={"color": "#555", "fontSize": "0.85em"}),
                     dcc.Input(
                         id="input-window",
@@ -362,6 +482,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             ),
             # Per-Robot
             _section("Per-Robot", html.Div(id="div-robots")),
+            # Per-Task
+            _section("Per-Task", html.Div(id="div-tasks")),
             # Charts
             _section(
                 "Charts",
@@ -402,6 +524,30 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         ),
                     ],
                 ),
+                # Task success by task
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Task Success Rate by Task", style=_CARD_HDR),
+                        dcc.Graph(id="graph-task-success", config=_CFG),
+                    ],
+                ),
+                # Task average time by task
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Task Avg Wall Time by Task", style=_CARD_HDR),
+                        dcc.Graph(id="graph-task-time", config=_CFG),
+                    ],
+                ),
+                # Task throughput by task
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Task Throughput by Task", style=_CARD_HDR),
+                        dcc.Graph(id="graph-task-throughput", config=_CFG),
+                    ],
+                ),
                 # Batch sizes (resampled)
                 html.Div(
                     style=_CARD,
@@ -437,6 +583,30 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     def _init_session(data: dict | None) -> dict:
         return data if data else {"id": str(uuid.uuid4())}
 
+    @app.callback(
+        Output("store-auto-refresh-enabled", "data"),
+        Output("btn-auto-refresh", "children"),
+        Output("btn-auto-refresh", "style"),
+        Output("interval-refresh", "disabled"),
+        Output("interval-refresh", "interval"),
+        Input("btn-auto-refresh", "n_clicks"),
+        Input("dd-auto-refresh-seconds", "value"),
+        State("store-auto-refresh-enabled", "data"),
+    )
+    def _configure_auto_refresh(
+        n_clicks: int,
+        seconds: int | None,
+        enabled: bool | None,
+    ) -> tuple[bool, str, dict, bool, int]:
+        _ = n_clicks
+        is_enabled = bool(enabled)
+        if ctx.triggered_id == "btn-auto-refresh":
+            is_enabled = not is_enabled
+        refresh_seconds = max(1, int(seconds) if seconds is not None else 5)
+        btn_label = f"⏸ Auto ({refresh_seconds}s)" if is_enabled else "▶ Auto"
+        btn_style = _BTN_ACTIVE if is_enabled else _BTN_PRIMARY
+        return is_enabled, btn_label, btn_style, (not is_enabled), refresh_seconds * 1000
+
     # -------------------------------------------------------------------------
     # Main refresh: stats, robots, GPU dist, Gantt
     # -------------------------------------------------------------------------
@@ -444,20 +614,28 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("div-subtitle", "children"),
         Output("div-stats", "children"),
         Output("div-robots", "children"),
+        Output("div-tasks", "children"),
         Output("graph-gpu-dist", "figure"),
+        Output("graph-task-success", "figure"),
+        Output("graph-task-time", "figure"),
+        Output("graph-task-throughput", "figure"),
         Output("graph-gantt", "figure"),
         Output("dd-robot", "options"),
         Output("span-status", "children"),
         Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
         State("input-window", "value"),
     )
     def _refresh_main(
         n_clicks: int,
+        n_intervals: int,
         window_s: float | None,
     ) -> tuple:
+        _ = n_clicks, n_intervals
         snap = metrics_store.snapshot(window_s)
         hist = metrics_store.history(window_s)
         batches = hist["batches"]
+        task_rollups = hist.get("task_rollups", {})
 
         def f(v: float) -> str:
             return f"{v:.1f}"
@@ -475,19 +653,57 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             ("GPU busy (%)", f"{snap['gpu_busy_pct']:.1f}%"),
             ("avg queue delay (ms)", f(snap["avg_queue_delay_ms"])),
             ("total batches", f"{snap['total_batches']:,}"),
+            ("task success (%)", f(snap["task_success_rate_pct"])),
+            ("task throughput (/min)", f(snap["task_throughput_per_min"])),
+            ("avg task time (s)", f(snap["avg_task_duration_s"])),
+            ("avg task steps", f(snap["avg_task_steps"])),
         ]
         stat_cards = [_stat_card(v, lbl) for lbl, v in stats]
 
         robots = snap.get("per_robot", {})
         robot_el = _robot_table(robots)
+        task_el = _task_table(snap.get("per_task", {}))
 
         gpu_fig = _gpu_dist_fig(batches)
+        task_success_fig = _task_metric_fig(
+            task_rollups,
+            metric_key="success_rate_pct",
+            title="Success Rate by Task",
+            y_title="Success (%)",
+            color="#81c784",
+        )
+        task_time_fig = _task_metric_fig(
+            task_rollups,
+            metric_key="avg_duration_s",
+            title="Avg Episode Wall Time by Task",
+            y_title="Seconds",
+            color="#ffb74d",
+        )
+        task_throughput_fig = _task_metric_fig(
+            task_rollups,
+            metric_key="throughput_per_min",
+            title="Task Throughput by Task",
+            y_title="Tasks / min",
+            color="#ce93d8",
+        )
         gantt = _gantt_fig(batches, float(window_s) if window_s else float("inf"))
 
         robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in robots]
         status = "last refresh: " + datetime.datetime.now(datetime.UTC).astimezone().strftime("%H:%M:%S")
 
-        return subtitle, stat_cards, robot_el, gpu_fig, gantt, robot_opts, status
+        return (
+            subtitle,
+            stat_cards,
+            robot_el,
+            task_el,
+            gpu_fig,
+            task_success_fig,
+            task_time_fig,
+            task_throughput_fig,
+            gantt,
+            robot_opts,
+            status,
+        )
 
     # -------------------------------------------------------------------------
     # Batch sizes: initial load (resampled)
@@ -495,10 +711,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     @app.callback(
         Output("graph-batch", "figure"),
         Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
         State("input-window", "value"),
         State("store-session", "data"),
     )
-    def _load_batch(n_clicks: int, window_s: float | None, session_data: dict | None) -> FigureResampler:
+    def _load_batch(
+        n_clicks: int,
+        n_intervals: int,
+        window_s: float | None,
+        session_data: dict | None,
+    ) -> FigureResampler:
+        _ = n_clicks, n_intervals
         sid = (session_data or {}).get("id", "default")
         hist = metrics_store.history(window_s)
         batches = hist["batches"]
@@ -536,10 +759,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     @app.callback(
         Output("graph-busy", "figure"),
         Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
         State("input-window", "value"),
         State("store-session", "data"),
     )
-    def _load_busy(n_clicks: int, window_s: float | None, session_data: dict | None) -> FigureResampler:
+    def _load_busy(
+        n_clicks: int,
+        n_intervals: int,
+        window_s: float | None,
+        session_data: dict | None,
+    ) -> FigureResampler:
+        _ = n_clicks, n_intervals
         sid = (session_data or {}).get("id", "default")
         hist = metrics_store.history(window_s)
         batches = hist["batches"]
@@ -636,14 +866,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("graph-infer", "figure"),
         Output("graph-outbound", "figure"),
         Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
         Input("dd-robot", "value"),
         State("input-window", "value"),
     )
     def _update_stage(
         n_clicks: int,
+        n_intervals: int,
         robot: str,
         window_s: float | None,
     ) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
+        _ = n_clicks, n_intervals
         hist = metrics_store.history(window_s)
         return _stage_figs(hist, robot or "all")
 

@@ -74,3 +74,15 @@ class ResponseAck:
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt
     type: Literal["ack"] = "ack"
+
+
+@dataclass(frozen=True)
+class TaskResult:
+    task_suite_name: str
+    task_id: int
+    episode_idx: int
+    success: bool
+    duration_s: float
+    steps_taken: int
+    task_language: Optional[str] = None
+    type: Literal["task_result"] = "task_result"

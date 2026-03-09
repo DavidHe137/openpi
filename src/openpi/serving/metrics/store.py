@@ -46,12 +46,28 @@ class RobotState:
 
 
 @dataclass
+class TaskEpisodeEvent:
+    """One downstream task completion event from a client runtime."""
+
+    robot_id: str
+    task_suite_name: str
+    task_id: int
+    episode_idx: int
+    success: bool
+    duration_s: float
+    steps_taken: int
+    event_time: float
+    task_language: str | None = None
+
+
+@dataclass
 class MetricsStore:
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
     batches: list[BatchSummary] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
     robot_states: dict[str, RobotState] = field(default_factory=dict)
+    task_events: list[TaskEpisodeEvent] = field(default_factory=list)
     start_time: float = field(default_factory=time.time)
     _batch_counter: int = field(default=0, init=False)
 
@@ -106,6 +122,70 @@ class MetricsStore:
         """Called from the server process when the scheduler publishes timing samples."""
         self.scheduler_timings.extend(samples)
 
+    def record_task_result(
+        self,
+        robot_id: str,
+        task_suite_name: str,
+        task_id: int,
+        episode_idx: int,
+        *,
+        success: bool,
+        duration_s: float,
+        steps_taken: int,
+        task_language: str | None = None,
+        event_time: float | None = None,
+    ) -> None:
+        """Called when client sends a downstream task completion event."""
+        self.task_events.append(
+            TaskEpisodeEvent(
+                robot_id=robot_id,
+                task_suite_name=task_suite_name,
+                task_id=task_id,
+                episode_idx=episode_idx,
+                success=success,
+                duration_s=duration_s,
+                steps_taken=steps_taken,
+                task_language=task_language,
+                event_time=time.time() if event_time is None else event_time,
+            )
+        )
+
+    def _build_task_rollups(self, events: list[TaskEpisodeEvent], span_s: float) -> dict[str, dict[str, Any]]:
+        rollups: dict[str, dict[str, Any]] = {}
+        for event in events:
+            task_key = f"{event.task_suite_name}/{event.task_id}"
+            row = rollups.setdefault(
+                task_key,
+                {
+                    "task_suite_name": event.task_suite_name,
+                    "task_id": event.task_id,
+                    "task_language": event.task_language,
+                    "episodes": 0,
+                    "successes": 0,
+                    "durations_s": [],
+                    "steps": [],
+                },
+            )
+            row["episodes"] += 1
+            row["successes"] += int(event.success)
+            row["durations_s"].append(event.duration_s)
+            row["steps"].append(event.steps_taken)
+            if not row["task_language"] and event.task_language:
+                row["task_language"] = event.task_language
+
+        for row in rollups.values():
+            episodes = row["episodes"]
+            durations_s = row["durations_s"]
+            steps = row["steps"]
+            row["success_rate_pct"] = (row["successes"] / episodes * 100) if episodes else 0.0
+            row["throughput_per_min"] = (episodes / span_s * 60) if span_s > 0 else 0.0
+            row["avg_duration_s"] = float(np.mean(durations_s)) if durations_s else 0.0
+            row["p50_duration_s"] = float(np.percentile(durations_s, 50)) if durations_s else 0.0
+            row["avg_steps"] = float(np.mean(steps)) if steps else 0.0
+            del row["durations_s"]
+            del row["steps"]
+        return rollups
+
     def snapshot(self, window_s: float | None = None) -> dict[str, Any]:
         """JSON-serializable summary of current metrics."""
         now = time.time()
@@ -114,8 +194,10 @@ class MetricsStore:
         if window_s is not None:
             cutoff = now - window_s
             batches = [b for b in self.batches if b.inference_end_time >= cutoff]
+            task_events = [e for e in self.task_events if e.event_time >= cutoff]
         else:
             batches = self.batches
+            task_events = self.task_events
 
         total_requests = sum(len(b.robot_ids) for b in batches)
 
@@ -148,6 +230,12 @@ class MetricsStore:
                 "avg_network_delay_ms": float(np.mean(state.network_delays_ms)) if state.network_delays_ms else 0.0,
             }
 
+        task_rollups = self._build_task_rollups(task_events, span_s)
+        durations_s = [e.duration_s for e in task_events]
+        steps = [e.steps_taken for e in task_events]
+        total_task_episodes = len(task_events)
+        total_task_successes = sum(int(e.success) for e in task_events)
+
         return {
             "uptime_s": uptime_s,
             "total_batches": self._batch_counter,
@@ -159,6 +247,13 @@ class MetricsStore:
             "avg_queue_delay_ms": avg_queue_delay_ms,
             "requests_per_second": requests_per_second,
             "per_robot": per_robot,
+            "total_task_episodes": total_task_episodes,
+            "task_success_rate_pct": (total_task_successes / total_task_episodes * 100) if total_task_episodes else 0.0,
+            "task_throughput_per_min": (total_task_episodes / span_s * 60) if span_s > 0 else 0.0,
+            "avg_task_duration_s": float(np.mean(durations_s)) if durations_s else 0.0,
+            "p50_task_duration_s": float(np.percentile(durations_s, 50)) if durations_s else 0.0,
+            "avg_task_steps": float(np.mean(steps)) if steps else 0.0,
+            "per_task": task_rollups,
         }
 
     def history(self, window_s: float | None = None) -> dict[str, Any]:
@@ -167,8 +262,10 @@ class MetricsStore:
         if window_s is not None:
             cutoff = now - window_s
             batches = [b for b in self.batches if b.inference_end_time >= cutoff]
+            task_events = [e for e in self.task_events if e.event_time >= cutoff]
         else:
             batches = self.batches
+            task_events = self.task_events
         t0 = self.start_time
 
         batch_data = []
@@ -209,11 +306,31 @@ class MetricsStore:
             metric_key = f"{sample.scheduler_name}.{sample.metric_name}"
             scheduler_timings.setdefault(metric_key, []).append(round(sample.duration_ms, 3))
 
+        span_s = window_s if window_s is not None else max(now - t0, 0.0)
+        task_rollups = self._build_task_rollups(task_events, span_s)
+        task_event_data = [
+            {
+                "t": round(event.event_time - t0, 3),
+                "robot_id": event.robot_id,
+                "task_key": f"{event.task_suite_name}/{event.task_id}",
+                "task_suite_name": event.task_suite_name,
+                "task_id": event.task_id,
+                "task_language": event.task_language,
+                "episode_idx": event.episode_idx,
+                "success": event.success,
+                "duration_s": round(event.duration_s, 3),
+                "steps_taken": event.steps_taken,
+            }
+            for event in task_events
+        ]
+
         return {
             "server_start_time": t0,
             "batches": batch_data,
             "outbound_delays_ms": outbound,
             "scheduler_timings_ms": scheduler_timings,
+            "task_events": task_event_data,
+            "task_rollups": task_rollups,
         }
 
     def reset(self) -> None:
@@ -221,5 +338,6 @@ class MetricsStore:
         self.batches.clear()
         self.scheduler_timings.clear()
         self.robot_states.clear()
+        self.task_events.clear()
         self.start_time = time.time()
         self._batch_counter = 0

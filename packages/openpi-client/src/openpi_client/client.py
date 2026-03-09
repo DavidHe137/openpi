@@ -142,3 +142,24 @@ class BidirectionalWebsocket:
     def reset(self) -> None:
         data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))
         self._ws.send(data)
+
+    def send_task_result(
+        self,
+        task_suite_name: str,
+        task_id: int,
+        episode_idx: int,
+        success: bool,
+        duration_s: float,
+        steps_taken: int,
+        task_language: Optional[str] = None,
+    ) -> None:
+        payload = messages.TaskResult(
+            task_suite_name=task_suite_name,
+            task_id=task_id,
+            episode_idx=episode_idx,
+            success=success,
+            duration_s=duration_s,
+            steps_taken=steps_taken,
+            task_language=task_language,
+        )
+        self._ws.send(msgpack_numpy.packb(asdict(payload)))  # type: ignore
