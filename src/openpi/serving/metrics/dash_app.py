@@ -359,6 +359,7 @@ def _task_metric_fig(task_rollups: dict, metric_key: str, title: str, y_title: s
             title={"text": title, "font": {"size": 12, "color": "#888"}},
             xaxis={"title": "Task"},
             yaxis={"title": y_title},
+            height=320,
             showlegend=False,
         )
     )
@@ -387,7 +388,9 @@ def _gpu_dist_fig(batches: list[dict]) -> go.Figure:
                 line_width=1.5,
             )
         )
-    fig.update_layout(**_layout(xaxis={"title": "Batch size"}, yaxis={"title": "GPU time (ms)"}, showlegend=False))
+    fig.update_layout(
+        **_layout(xaxis={"title": "Batch size"}, yaxis={"title": "GPU time (ms)"}, height=320, showlegend=False)
+    )
     return fig
 
 
@@ -448,7 +451,7 @@ def _stage_figs(hist: dict, robot: str) -> tuple[go.Figure, go.Figure, go.Figure
     od = hist.get("outbound_delays_ms", {})
     outbound = list(od.get(robot) or []) if robot != "all" else [d for v in od.values() for d in v]
 
-    small = {**_DARK, "margin": {"t": 36, "r": 8, "b": 44, "l": 48}}
+    small = {**_DARK, "margin": {"t": 36, "r": 8, "b": 44, "l": 48}, "height": 280}
     figs = []
     for data, color, title in [
         (inbound, "#4fc3f7", "Inbound Network"),
@@ -479,6 +482,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         __name__,
         url_base_pathname="/dashboard/",
         title="openpi · metrics",
+        prevent_initial_callbacks="initial_duplicate",
         suppress_callback_exceptions=True,
     )
 
@@ -579,7 +583,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                     style=_CARD,
                     children=[
                         html.Div("GPU Inference Time by Batch Size", style=_CARD_HDR),
-                        dcc.Graph(id="graph-gpu-dist", config=_CFG),
+                        dcc.Graph(id="graph-gpu-dist", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # Stage latency
@@ -603,10 +607,10 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         html.Div(
                             style={"display": "grid", "gridTemplateColumns": "repeat(4, 1fr)"},
                             children=[
-                                dcc.Graph(id="graph-inbound", config=_CFG),
-                                dcc.Graph(id="graph-queue", config=_CFG),
-                                dcc.Graph(id="graph-infer", config=_CFG),
-                                dcc.Graph(id="graph-outbound", config=_CFG),
+                                dcc.Graph(id="graph-inbound", config=_CFG, style={"height": "280px"}),
+                                dcc.Graph(id="graph-queue", config=_CFG, style={"height": "280px"}),
+                                dcc.Graph(id="graph-infer", config=_CFG, style={"height": "280px"}),
+                                dcc.Graph(id="graph-outbound", config=_CFG, style={"height": "280px"}),
                             ],
                         ),
                     ],
@@ -616,7 +620,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                     style=_CARD,
                     children=[
                         html.Div("Task Throughput by Task", style=_CARD_HDR),
-                        dcc.Graph(id="graph-task-throughput", config=_CFG),
+                        dcc.Graph(id="graph-task-throughput", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # Batch sizes (resampled)
@@ -624,7 +628,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                     style=_CARD,
                     children=[
                         html.Div("Batch Sizes Over Time", style=_CARD_HDR),
-                        dcc.Graph(id="graph-batch", config=_CFG),
+                        dcc.Graph(id="graph-batch", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # GPU busy (resampled)
@@ -632,7 +636,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                     style=_CARD,
                     children=[
                         html.Div("GPU Busy (%)", style=_CARD_HDR),
-                        dcc.Graph(id="graph-busy", config=_CFG),
+                        dcc.Graph(id="graph-busy", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # Gantt
@@ -794,7 +798,9 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                 hf_x=times,
                 hf_y=sizes,
             )
-        fr.update_layout(**_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Batch size"}))
+        fr.update_layout(
+            **_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Batch size"}, height=320)
+        )
         _resamplers.setdefault(sid, {})["batch"] = fr
         return fr
 
@@ -861,7 +867,9 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             )
         fr.update_layout(
             **_layout(
-                xaxis={"title": "Time since server start (s)"}, yaxis={"title": "GPU busy (%)", "range": [0, 100]}
+                xaxis={"title": "Time since server start (s)"},
+                yaxis={"title": "GPU busy (%)", "range": [0, 100]},
+                height=320,
             )
         )
         _resamplers.setdefault(sid, {})["busy"] = fr
@@ -912,9 +920,13 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     def _apply_xrange(xrange: list | None) -> tuple:
         if not xrange:
             raise dash.exceptions.PreventUpdate
-        p = Patch()
-        p["layout"]["xaxis"]["range"] = xrange
-        return p, p, p
+        p_batch = Patch()
+        p_batch["layout"]["xaxis"]["range"] = xrange
+        p_busy = Patch()
+        p_busy["layout"]["xaxis"]["range"] = xrange
+        p_gantt = Patch()
+        p_gantt["layout"]["xaxis"]["range"] = xrange
+        return p_batch, p_busy, p_gantt
 
     # -------------------------------------------------------------------------
     # Stage latency distributions
@@ -944,10 +956,13 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         @app.callback(
             Output(gid, "figure", allow_duplicate=True),
             Input(gid, "relayoutData"),
+            State(gid, "figure"),
             prevent_initial_call=True,
         )
-        def _zoom_histogram(relay: dict | None) -> Patch:
+        def _zoom_histogram(relay: dict | None, figure: dict | None) -> Patch:
             if not relay or "xaxis.range[0]" not in relay:
+                raise dash.exceptions.PreventUpdate
+            if not figure or not figure.get("data"):
                 raise dash.exceptions.PreventUpdate
             x0 = float(relay["xaxis.range[0]"])
             x1 = float(relay["xaxis.range[1]"])
