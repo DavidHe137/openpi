@@ -147,7 +147,7 @@ def _stat_card(value: str, label: str, *, value_color: str = "#4fc3f7") -> html.
     )
 
 
-def _robot_table(robots: dict) -> html.Element:
+def _robot_table(robots: dict, sla_pct: float) -> html.Element:
     if not robots:
         return html.Div("No robots yet.", style={"color": "#444", "padding": "12px"})
     th = {
@@ -165,7 +165,9 @@ def _robot_table(robots: dict) -> html.Element:
                 html.Tr(
                     [
                         html.Th("Robot", style=th),
-                        html.Th("Starvations", style=th),
+                        html.Th("Starved / Obs", style=th),
+                        html.Th("Starvation (%)", style=th),
+                        html.Th("Healthy", style=th),
                         html.Th("Avg Net Delay (ms)", style=th),
                     ]
                 )
@@ -176,10 +178,26 @@ def _robot_table(robots: dict) -> html.Element:
                         [
                             html.Td(rid, style={**td_base, "color": "#ccc"}),
                             html.Td(
-                                str(r["total_starvations"]),
+                                f"{r.get('starved_steps', 0):,} / {r.get('observed_steps', 0):,}",
                                 style={
                                     **td_base,
-                                    "color": "#ff8a65" if r["total_starvations"] > 0 else "#4fc3f7",
+                                    "color": "#ff8a65" if r.get("starved_steps", 0) > 0 else "#4fc3f7",
+                                    "fontWeight": 600,
+                                },
+                            ),
+                            html.Td(
+                                f"{r.get('starvation_rate_pct', 0.0):.2f}",
+                                style={
+                                    **td_base,
+                                    "color": "#ff8a65" if r.get("starvation_rate_pct", 0.0) > sla_pct else "#4fc3f7",
+                                    "fontWeight": 600,
+                                },
+                            ),
+                            html.Td(
+                                "yes" if r.get("healthy", False) else "no",
+                                style={
+                                    **td_base,
+                                    "color": "#81c784" if r.get("healthy", False) else "#ef9a9a",
                                     "fontWeight": 600,
                                 },
                             ),
@@ -194,13 +212,6 @@ def _robot_table(robots: dict) -> html.Element:
             ),
         ],
     )
-
-
-def _task_label(task_key: str, row: dict) -> str:
-    task_language = row.get("task_language")
-    if task_language:
-        return f"{task_key} · {task_language[:36]}"
-    return task_key
 
 
 def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: list[dict], title: str) -> go.Figure:
@@ -347,23 +358,71 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
     return fig
 
 
-def _task_metric_fig(task_rollups: dict, metric_key: str, title: str, y_title: str, color: str) -> go.Figure:
+def _sla_capacity_curve_fig(sla_capacity_curve: list[dict], sla_pct: float) -> go.Figure:
     fig = go.Figure()
-    rows = sorted(task_rollups.items(), key=lambda kv: kv[1]["episodes"], reverse=True)
-    if rows:
-        labels = [_task_label(task_key, row) for task_key, row in rows]
-        values = [row[metric_key] for _, row in rows]
-        fig.add_trace(go.Bar(x=labels, y=values, marker_color=color))
+    if sla_capacity_curve:
+        xs = [point["sla_pct"] for point in sla_capacity_curve]
+        ys = [point["healthy_robot_count"] for point in sla_capacity_curve]
+        active = [point["active_robot_count"] for point in sla_capacity_curve]
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines+markers",
+                line={"color": "#ce93d8", "width": 2},
+                marker={"size": 5},
+                customdata=active,
+                hovertemplate="SLA %{x:.0f}%<br>healthy %{y} / %{customdata}<extra></extra>",
+                name="healthy robots",
+            )
+        )
+        fig.add_vline(x=sla_pct, line_width=1, line_dash="dot", line_color="#4fc3f7")
     fig.update_layout(
         **_layout(
-            title={"text": title, "font": {"size": 12, "color": "#888"}},
-            xaxis={"title": "Task"},
-            yaxis={"title": y_title},
+            title={"text": "SLA Capacity Curve", "font": {"size": 12, "color": "#888"}},
+            xaxis={"title": "SLA threshold (%)", "range": [0, 20], "dtick": 2},
+            yaxis={"title": "Healthy robots"},
             height=320,
             showlegend=False,
         )
     )
-    fig.update_xaxes(tickangle=-20)
+    return fig
+
+
+def _healthy_robots_over_time_fig(series: list[dict], sla_pct: float) -> go.Figure:
+    fig = go.Figure()
+    if series:
+        xs = [point["t"] for point in series]
+        healthy = [point["healthy_robot_count"] for point in series]
+        active = [point["active_robot_count"] for point in series]
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=healthy,
+                mode="lines+markers",
+                line={"color": "#81c784", "width": 2},
+                marker={"size": 4},
+                name="healthy robots",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=active,
+                mode="lines",
+                line={"color": "#607d8b", "width": 1.5, "dash": "dot"},
+                name="active robots",
+            )
+        )
+    fig.update_layout(
+        **_layout(
+            title={"text": f"Healthy Robots Over Time @ {sla_pct:.0f}% SLA", "font": {"size": 12, "color": "#888"}},
+            xaxis={"title": "Time since server start (s)"},
+            yaxis={"title": "Robots"},
+            height=320,
+            showlegend=True,
+        )
+    )
     return fig
 
 
@@ -540,6 +599,19 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         style={"width": "84px", "fontSize": "0.9em"},
                     ),
                     html.Label("seconds", style={"color": "#555", "fontSize": "0.85em"}),
+                    html.Label("SLA", style={"color": "#555", "fontSize": "0.85em"}),
+                    html.Div(
+                        style={"width": "220px", "paddingTop": "2px"},
+                        children=dcc.Slider(
+                            id="slider-sla-pct",
+                            min=0,
+                            max=20,
+                            step=1,
+                            value=10,
+                            marks={0: "0%", 5: "5%", 10: "10%", 15: "15%", 20: "20%"},
+                            tooltip={"placement": "bottom"},
+                        ),
+                    ),
                     html.Label("Last", style={"color": "#555", "fontSize": "0.85em"}),
                     dcc.Input(
                         id="input-window",
@@ -615,12 +687,20 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         ),
                     ],
                 ),
-                # Task throughput by task
+                # SLA capacity curve
                 html.Div(
                     style=_CARD,
                     children=[
-                        html.Div("Task Throughput by Task", style=_CARD_HDR),
-                        dcc.Graph(id="graph-task-throughput", config=_CFG, style={"height": "320px"}),
+                        html.Div("SLA Capacity Curve", style=_CARD_HDR),
+                        dcc.Graph(id="graph-sla-capacity", config=_CFG, style={"height": "320px"}),
+                    ],
+                ),
+                # Healthy robots over time
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Healthy Robots Over Time", style=_CARD_HDR),
+                        dcc.Graph(id="graph-healthy-robots", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # Batch sizes (resampled)
@@ -691,26 +771,31 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("div-robots", "children"),
         Output("graph-gpu-dist", "figure"),
         Output("graph-task-heatmap", "figure"),
-        Output("graph-task-throughput", "figure"),
+        Output("graph-sla-capacity", "figure"),
+        Output("graph-healthy-robots", "figure"),
         Output("graph-gantt", "figure"),
         Output("dd-robot", "options"),
         Output("span-status", "children"),
         Input("btn-refresh", "n_clicks"),
         Input("interval-refresh", "n_intervals"),
+        Input("slider-sla-pct", "value"),
         State("input-window", "value"),
     )
     def _refresh_main(
         n_clicks: int,
         n_intervals: int,
+        sla_pct: float | None,
         window_s: float | None,
     ) -> tuple:
         _ = n_clicks, n_intervals
-        snap = metrics_store.snapshot(window_s)
-        hist = metrics_store.history(window_s)
+        sla_pct = float(sla_pct) if sla_pct is not None else 10.0
+        snap = metrics_store.snapshot(window_s, sla_pct=sla_pct)
+        hist = metrics_store.history(window_s, sla_pct=sla_pct)
         batches = hist["batches"]
         task_events = hist.get("task_events", [])
         task_progress = hist.get("task_progress", [])
-        task_rollups = hist.get("task_rollups", {})
+        sla_capacity_curve = hist.get("sla_capacity_curve", [])
+        healthy_robots_over_time = hist.get("healthy_robots_over_time", [])
 
         def f(v: float) -> str:
             return f"{v:.1f}"
@@ -729,14 +814,14 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             ("avg queue delay (ms)", f(snap["avg_queue_delay_ms"])),
             ("total batches", f"{snap['total_batches']:,}"),
             ("task success (%)", f(snap["task_success_rate_pct"])),
-            ("task throughput (/min)", f(snap["task_throughput_per_min"])),
+            (f"healthy robots @ {sla_pct:.0f}% SLA", f"{snap['healthy_robot_count']}/{snap['active_robot_count']}"),
             ("avg task time (s)", f(snap["avg_task_duration_s"])),
             ("avg task steps", f(snap["avg_task_steps"])),
         ]
         stat_cards = [_stat_card(v, lbl) for lbl, v in stats]
 
         robots = snap.get("per_robot", {})
-        robot_el = _robot_table(robots)
+        robot_el = _robot_table(robots, sla_pct)
 
         gpu_fig = _gpu_dist_fig(batches)
         task_heatmap_fig = _combined_task_episode_heatmap_fig(
@@ -744,13 +829,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             task_progress,
             title="Success, Completion Time Metrics",
         )
-        task_throughput_fig = _task_metric_fig(
-            task_rollups,
-            metric_key="throughput_per_min",
-            title="Task Throughput by Task",
-            y_title="Tasks / min",
-            color="#ce93d8",
-        )
+        sla_capacity_fig = _sla_capacity_curve_fig(sla_capacity_curve, sla_pct)
+        healthy_robots_fig = _healthy_robots_over_time_fig(healthy_robots_over_time, sla_pct)
         gantt = _gantt_fig(batches, float(window_s) if window_s else float("inf"))
 
         robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in robots]
@@ -762,7 +842,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             robot_el,
             gpu_fig,
             task_heatmap_fig,
-            task_throughput_fig,
+            sla_capacity_fig,
+            healthy_robots_fig,
             gantt,
             robot_opts,
             status,

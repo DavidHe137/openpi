@@ -1,15 +1,18 @@
 """MetricsStore: in-memory metrics state for the websocket policy server."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
 import threading
 import time
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 from openpi_client.messages import InferResponse
 
 from openpi.serving.schemas import SchedulerTimingSample
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -44,6 +47,16 @@ class RobotState:
     last_server_send_times: dict[int, float] = field(default_factory=dict)  # request_id → server_send_time
     total_starvations: int = 0
     network_delays_ms: list[float] = field(default_factory=list)  # (delay_ms,) unbounded
+
+
+@dataclass
+class StarvationIntervalEvent:
+    """One observed interval for starvation-rate accounting."""
+
+    robot_id: str
+    observed_steps: int
+    starved_steps: int
+    event_time: float
 
 
 @dataclass
@@ -86,6 +99,7 @@ class MetricsStore:
     batches: list[BatchSummary] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
     robot_states: dict[str, RobotState] = field(default_factory=dict)
+    starvation_intervals: list[StarvationIntervalEvent] = field(default_factory=list)
     task_events: list[TaskEpisodeEvent] = field(default_factory=list)
     task_progress: dict[tuple[str, str, int, int], TaskEpisodeProgress] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
@@ -115,10 +129,18 @@ class MetricsStore:
                 state = self.robot_states.setdefault(response.robot_id, RobotState())
 
                 if state.last_execution_horizon > 0:
-                    actions_consumed = response.start_step - state.last_start_step
-                    actions_remaining = state.last_execution_horizon - actions_consumed
-                    if actions_remaining < 0:
-                        state.total_starvations += abs(actions_remaining)
+                    delta = response.start_step - state.last_start_step
+                    if delta > 0:
+                        starved_steps = max(0, delta - state.last_execution_horizon)
+                        self.starvation_intervals.append(
+                            StarvationIntervalEvent(
+                                robot_id=response.robot_id,
+                                observed_steps=delta,
+                                starved_steps=starved_steps,
+                                event_time=response.inference_end_time,
+                            )
+                        )
+                        state.total_starvations += starved_steps
 
                 state.last_start_step = response.start_step
                 state.last_execution_horizon = response.execution_horizon
@@ -213,84 +235,115 @@ class MetricsStore:
                 )
             )
 
-    def _build_task_rollups(
+    @staticmethod
+    def _window_filter(items: list[T], event_time_getter: Callable[[T], float], cutoff: float | None) -> list[T]:
+        if cutoff is None:
+            return items
+        return [item for item in items if event_time_getter(item) >= cutoff]
+
+    def _build_robot_sla_rollup(
         self,
-        events: list[TaskEpisodeEvent],
-        progress: list[TaskEpisodeProgress],
-        span_s: float,
-    ) -> dict[str, dict[str, Any]]:
-        rollups: dict[str, dict[str, Any]] = {}
-        for event in events:
-            task_key = f"{event.task_suite_name}/{event.task_id}"
-            row = rollups.setdefault(
-                task_key,
+        robot_ids: set[str],
+        intervals: list[StarvationIntervalEvent],
+        sla_pct: float,
+    ) -> tuple[dict[str, dict[str, Any]], int, int, float]:
+        per_robot: dict[str, dict[str, Any]] = {
+            robot_id: {"observed_steps": 0, "starved_steps": 0} for robot_id in robot_ids
+        }
+        for interval in intervals:
+            row = per_robot.setdefault(interval.robot_id, {"observed_steps": 0, "starved_steps": 0})
+            row["observed_steps"] += interval.observed_steps
+            row["starved_steps"] += interval.starved_steps
+
+        active_robot_count = 0
+        healthy_robot_count = 0
+        total_observed_steps = 0
+        total_starved_steps = 0
+        for row in per_robot.values():
+            observed_steps = row["observed_steps"]
+            starved_steps = row["starved_steps"]
+            total_observed_steps += observed_steps
+            total_starved_steps += starved_steps
+            starvation_rate_pct = (starved_steps / observed_steps * 100) if observed_steps > 0 else 0.0
+            active = observed_steps > 0
+            healthy = active and starvation_rate_pct <= sla_pct
+            row["starvation_rate_pct"] = starvation_rate_pct
+            row["active"] = active
+            row["healthy"] = healthy
+            if active:
+                active_robot_count += 1
+            if healthy:
+                healthy_robot_count += 1
+
+        global_starvation_rate_pct = (
+            (total_starved_steps / total_observed_steps * 100) if total_observed_steps > 0 else 0.0
+        )
+        return per_robot, active_robot_count, healthy_robot_count, global_starvation_rate_pct
+
+    def _build_sla_capacity_curve(self, per_robot_rollup: dict[str, dict[str, Any]]) -> list[dict[str, float | int]]:
+        active_rates = [
+            float(row["starvation_rate_pct"]) for row in per_robot_rollup.values() if int(row["observed_steps"]) > 0
+        ]
+        active_robot_count = len(active_rates)
+        curve: list[dict[str, float | int]] = []
+        for sla_pct in range(21):
+            healthy_robot_count = sum(1 for rate in active_rates if rate <= sla_pct)
+            curve.append(
                 {
-                    "task_suite_name": event.task_suite_name,
-                    "task_id": event.task_id,
-                    "task_language": event.task_language,
-                    "episodes": 0,
-                    "successes": 0,
-                    "progress_equiv": 0.0,
-                    "durations_s": [],
-                    "steps": [],
-                },
+                    "sla_pct": float(sla_pct),
+                    "healthy_robot_count": healthy_robot_count,
+                    "active_robot_count": active_robot_count,
+                    "healthy_robot_ratio_pct": (healthy_robot_count / active_robot_count * 100)
+                    if active_robot_count > 0
+                    else 0.0,
+                }
             )
-            row["episodes"] += 1
-            row["successes"] += int(event.success)
-            row["durations_s"].append(event.duration_s)
-            row["steps"].append(event.steps_taken)
-            if not row["task_language"] and event.task_language:
-                row["task_language"] = event.task_language
+        return curve
 
-        for prog in progress:
-            task_key = f"{prog.task_suite_name}/{prog.task_id}"
-            row = rollups.setdefault(
-                task_key,
+    def _build_healthy_robots_over_time(
+        self,
+        intervals: list[StarvationIntervalEvent],
+        *,
+        sla_pct: float,
+        t0: float,
+    ) -> list[dict[str, float | int]]:
+        points: list[dict[str, float | int]] = []
+        robot_totals: dict[str, dict[str, int]] = {}
+        for interval in sorted(intervals, key=lambda item: item.event_time):
+            row = robot_totals.setdefault(interval.robot_id, {"observed_steps": 0, "starved_steps": 0})
+            row["observed_steps"] += interval.observed_steps
+            row["starved_steps"] += interval.starved_steps
+
+            active_robot_count = 0
+            healthy_robot_count = 0
+            for robot_row in robot_totals.values():
+                observed_steps = robot_row["observed_steps"]
+                if observed_steps <= 0:
+                    continue
+                active_robot_count += 1
+                starvation_rate_pct = robot_row["starved_steps"] / observed_steps * 100
+                if starvation_rate_pct <= sla_pct:
+                    healthy_robot_count += 1
+
+            points.append(
                 {
-                    "task_suite_name": prog.task_suite_name,
-                    "task_id": prog.task_id,
-                    "task_language": prog.task_language,
-                    "episodes": 0,
-                    "successes": 0,
-                    "progress_equiv": 0.0,
-                    "durations_s": [],
-                    "steps": [],
-                },
+                    "t": round(interval.event_time - t0, 3),
+                    "healthy_robot_count": healthy_robot_count,
+                    "active_robot_count": active_robot_count,
+                }
             )
-            if not row["task_language"] and prog.task_language:
-                row["task_language"] = prog.task_language
-            if prog.max_episode_steps > 0:
-                row["progress_equiv"] += min(1.0, prog.current_step / prog.max_episode_steps)
+        return points
 
-        for row in rollups.values():
-            episodes = row["episodes"]
-            durations_s = row["durations_s"]
-            steps = row["steps"]
-            row["success_rate_pct"] = (row["successes"] / episodes * 100) if episodes else 0.0
-            row["throughput_per_min"] = ((episodes + row["progress_equiv"]) / span_s * 60) if span_s > 0 else 0.0
-            row["avg_duration_s"] = float(np.mean(durations_s)) if durations_s else 0.0
-            row["p50_duration_s"] = float(np.percentile(durations_s, 50)) if durations_s else 0.0
-            row["avg_steps"] = float(np.mean(steps)) if steps else 0.0
-            del row["progress_equiv"]
-            del row["durations_s"]
-            del row["steps"]
-        return rollups
-
-    def snapshot(self, window_s: float | None = None) -> dict[str, Any]:
+    def snapshot(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> dict[str, Any]:
         """JSON-serializable summary of current metrics."""
         with self._lock:
             now = time.time()
             uptime_s = now - self.start_time
+            cutoff = now - window_s if window_s is not None else None
 
-            if window_s is not None:
-                cutoff = now - window_s
-                batches = [b for b in self.batches if b.inference_end_time >= cutoff]
-                task_events = [e for e in self.task_events if e.event_time >= cutoff]
-                task_progress = [p for p in self.task_progress.values() if p.update_time >= cutoff]
-            else:
-                batches = self.batches
-                task_events = self.task_events
-                task_progress = list(self.task_progress.values())
+            batches = self._window_filter(self.batches, lambda b: b.inference_end_time, cutoff)
+            task_events = self._window_filter(self.task_events, lambda e: e.event_time, cutoff)
+            starvation_intervals = self._window_filter(self.starvation_intervals, lambda i: i.event_time, cutoff)
 
             total_requests = sum(len(b.robot_ids) for b in batches)
 
@@ -318,21 +371,38 @@ class MetricsStore:
             span_s = window_s if window_s is not None else uptime_s
             requests_per_second = total_requests / span_s if span_s > 0 else 0.0
 
+            robot_rollup, active_robot_count, healthy_robot_count, global_starvation_rate_pct = (
+                self._build_robot_sla_rollup(
+                    set(self.robot_states.keys()),
+                    starvation_intervals,
+                    sla_pct,
+                )
+            )
             per_robot: dict[str, Any] = {}
-            for robot_id, state in self.robot_states.items():
+            for robot_id in sorted(set(self.robot_states.keys()) | set(robot_rollup.keys())):
+                state = self.robot_states.get(robot_id)
+                rollup = robot_rollup.get(
+                    robot_id,
+                    {
+                        "observed_steps": 0,
+                        "starved_steps": 0,
+                        "starvation_rate_pct": 0.0,
+                        "active": False,
+                        "healthy": False,
+                    },
+                )
                 per_robot[robot_id] = {
-                    "total_starvations": state.total_starvations,
-                    "avg_network_delay_ms": float(np.mean(state.network_delays_ms)) if state.network_delays_ms else 0.0,
+                    "total_starvations": state.total_starvations if state is not None else 0,
+                    "avg_network_delay_ms": float(np.mean(state.network_delays_ms))
+                    if state is not None and state.network_delays_ms
+                    else 0.0,
+                    **rollup,
                 }
 
-            task_rollups = self._build_task_rollups(task_events, task_progress, span_s)
             durations_s = [e.duration_s for e in task_events]
             steps = [e.steps_taken for e in task_events]
             total_task_episodes = len(task_events)
             total_task_successes = sum(int(e.success) for e in task_events)
-            progress_equiv = sum(
-                min(1.0, p.current_step / p.max_episode_steps) for p in task_progress if p.max_episode_steps > 0
-            )
 
             return {
                 "uptime_s": uptime_s,
@@ -344,33 +414,31 @@ class MetricsStore:
                 "p99_latency_ms": p99_latency_ms,
                 "avg_queue_delay_ms": avg_queue_delay_ms,
                 "requests_per_second": requests_per_second,
+                "sla_pct": float(sla_pct),
+                "healthy_robot_count": healthy_robot_count,
+                "active_robot_count": active_robot_count,
+                "healthy_robot_ratio_pct": (healthy_robot_count / active_robot_count * 100)
+                if active_robot_count > 0
+                else 0.0,
+                "global_starvation_rate_pct": global_starvation_rate_pct,
                 "per_robot": per_robot,
                 "total_task_episodes": total_task_episodes,
                 "task_success_rate_pct": (total_task_successes / total_task_episodes * 100)
                 if total_task_episodes
                 else 0.0,
-                "task_throughput_per_min": ((total_task_episodes + progress_equiv) / span_s * 60)
-                if span_s > 0
-                else 0.0,
                 "avg_task_duration_s": float(np.mean(durations_s)) if durations_s else 0.0,
-                "p50_task_duration_s": float(np.percentile(durations_s, 50)) if durations_s else 0.0,
                 "avg_task_steps": float(np.mean(steps)) if steps else 0.0,
-                "per_task": task_rollups,
             }
 
-    def history(self, window_s: float | None = None) -> dict[str, Any]:
+    def history(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> dict[str, Any]:
         """Per-batch time-series data for Plotly charts in the dashboard."""
         with self._lock:
             now = time.time()
-            if window_s is not None:
-                cutoff = now - window_s
-                batches = [b for b in self.batches if b.inference_end_time >= cutoff]
-                task_events = [e for e in self.task_events if e.event_time >= cutoff]
-                task_progress = [p for p in self.task_progress.values() if p.update_time >= cutoff]
-            else:
-                batches = self.batches
-                task_events = self.task_events
-                task_progress = list(self.task_progress.values())
+            cutoff = now - window_s if window_s is not None else None
+            batches = self._window_filter(self.batches, lambda b: b.inference_end_time, cutoff)
+            task_events = self._window_filter(self.task_events, lambda e: e.event_time, cutoff)
+            task_progress = self._window_filter(list(self.task_progress.values()), lambda p: p.update_time, cutoff)
+            starvation_intervals = self._window_filter(self.starvation_intervals, lambda i: i.event_time, cutoff)
             t0 = self.start_time
 
             batch_data = []
@@ -411,8 +479,15 @@ class MetricsStore:
                 metric_key = f"{sample.scheduler_name}.{sample.metric_name}"
                 scheduler_timings.setdefault(metric_key, []).append(round(sample.duration_ms, 3))
 
-            span_s = window_s if window_s is not None else max(now - t0, 0.0)
-            task_rollups = self._build_task_rollups(task_events, task_progress, span_s)
+            robot_rollup, _, _, _ = self._build_robot_sla_rollup(
+                set(self.robot_states.keys()), starvation_intervals, sla_pct
+            )
+            sla_capacity_curve = self._build_sla_capacity_curve(robot_rollup)
+            healthy_robots_over_time = self._build_healthy_robots_over_time(
+                starvation_intervals,
+                sla_pct=sla_pct,
+                t0=t0,
+            )
             task_event_data = [
                 {
                     "t": round(event.event_time - t0, 3),
@@ -446,15 +521,19 @@ class MetricsStore:
                 }
                 for prog in task_progress
             ]
+            per_robot_starvation = [{"robot_id": robot_id, **row} for robot_id, row in sorted(robot_rollup.items())]
 
             return {
                 "server_start_time": t0,
+                "sla_pct": float(sla_pct),
                 "batches": batch_data,
                 "outbound_delays_ms": outbound,
                 "scheduler_timings_ms": scheduler_timings,
                 "task_events": task_event_data,
                 "task_progress": task_progress_data,
-                "task_rollups": task_rollups,
+                "sla_capacity_curve": sla_capacity_curve,
+                "healthy_robots_over_time": healthy_robots_over_time,
+                "per_robot_starvation": per_robot_starvation,
             }
 
     def reset(self) -> None:
@@ -463,6 +542,7 @@ class MetricsStore:
             self.batches.clear()
             self.scheduler_timings.clear()
             self.robot_states.clear()
+            self.starvation_intervals.clear()
             self.task_events.clear()
             self.task_progress.clear()
             self.start_time = time.time()
