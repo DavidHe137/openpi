@@ -7,11 +7,15 @@ from multiprocessing.synchronize import Event
 import signal
 import time
 
+import numpy as np
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
+from openpi_client.messages import InferType
+from openpi_client.messages import RTCParams
 import zmq
 
 from openpi.serving.schemas import BatchProfile
+from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.slots import RobotSlots
 from openpi.shared import logging_config
@@ -63,28 +67,7 @@ def _run_gpu_worker(
 
     logger.info("GPU worker starting")
 
-    # FIXME: really doesn't belong here
-    # GPU devices may not be immediately visible after container snapshot restore.
-    # Retry until CUDA becomes available (or we exhaust retries).
-    cuda_max_wait_s = 120
-    cuda_retry_s = 5
-    policy = None
-    for attempt in range(cuda_max_wait_s // cuda_retry_s):
-        try:
-            policy = policy_factory()
-            break
-        except RuntimeError as e:
-            if "No visible GPU devices" in str(e) and attempt < cuda_max_wait_s // cuda_retry_s - 1:
-                logger.warning(
-                    "CUDA not yet available (attempt %d/%d), retrying in %ds…",
-                    attempt + 1,
-                    cuda_max_wait_s // cuda_retry_s,
-                    cuda_retry_s,
-                )
-                time.sleep(cuda_retry_s)
-            else:
-                raise
-    assert policy is not None
+    policy = policy_factory()
     policy.warmup(max_batch_size)
 
     ctx = zmq.Context()
@@ -102,6 +85,25 @@ def _run_gpu_worker(
     ready_event.set()
     logger.info("GPU worker ready")
 
+    _last_infer_step: dict[str, int] = {}
+    _prev_actions: dict[str, np.ndarray] = {}
+    _action_shape: tuple[int, int] | None = None
+
+    def _make_rtc_params(robot_id: str, start_step: int, d_param: int) -> RTCParams | None:
+        nonlocal _action_shape
+        last = _last_infer_step.get(robot_id)
+        if last is not None and start_step < last:
+            _last_infer_step.pop(robot_id, None)
+            _prev_actions.pop(robot_id, None)
+            last = None
+        s = start_step - last if last is not None else 0
+        prev = _prev_actions.get(robot_id)
+        if prev is None and _action_shape is not None:
+            prev = np.zeros(_action_shape, dtype=np.float32)
+        if prev is None:
+            return None
+        return RTCParams(prev_action=prev, s_param=s, d_param=d_param)
+
     while True:
         slot_reqs: list[SlotRequest] = batch_queue.get()  # blocking
 
@@ -113,11 +115,15 @@ def _run_gpu_worker(
             InferRequest(
                 robot_id=sr.robot_id,
                 observation=sd.obs,
-                start_step=sd.start_step,
+                observation_step=sd.observation_step,
+                action_start_step=sd.action_start_step,
+                min_execution_horizon=sd.min_execution_horizon,
                 request_timestamp=sd.request_timestamp,
                 deadline=sd.deadline,
                 infer_type=sd.infer_type,
-                params=sd.params,
+                params=_make_rtc_params(sr.robot_id, sd.observation_step, sr.estimated_d_param)
+                if sd.infer_type == InferType.INFERENCE_TIME_RTC
+                else sd.params,
                 noise=sd.noise,
             )
             for sr, sd in zip(slot_reqs, slot_datas, strict=True)
@@ -132,7 +138,8 @@ def _run_gpu_worker(
             InferResponse(
                 robot_id=sr.robot_id,
                 request_id=sd.request_id,
-                start_step=sd.start_step,
+                observation_step=sd.observation_step,
+                action_start_step=sd.action_start_step,
                 request_timestamp=sd.request_timestamp,
                 execution_horizon=len(action_dict["actions"]),
                 actions=action_dict["actions"],
@@ -144,5 +151,29 @@ def _run_gpu_worker(
             for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True)
         ]
 
+        # Update per-robot RTC state
+        for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True):
+            if sd.infer_type == InferType.INFERENCE_TIME_RTC:
+                prev_action = action_dict["actions"][0]  # shape (ah, ad)
+                if _action_shape is None:
+                    _action_shape = prev_action.shape
+                _last_infer_step[sr.robot_id] = sd.observation_step
+                _prev_actions[sr.robot_id] = prev_action
+
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
         response_sock.send_pyobj(responses)
+
+        # Notify scheduler of completion so it can update latency estimates
+        inference_duration_ms = (t1 - t0) * 1e3
+        notify_sock.send_pyobj(
+            [
+                CompletionNotification(
+                    robot_id=sr.robot_id,
+                    action_start_step=sd.action_start_step,
+                    request_id=sd.request_id,
+                    batch_size=len(slot_reqs),
+                    inference_duration_ms=inference_duration_ms,
+                )
+                for sr, sd in zip(slot_reqs, slot_datas, strict=True)
+            ],
+        )

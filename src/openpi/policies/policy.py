@@ -420,7 +420,9 @@ class Policy(BasePolicy):
         observation = self.make_example()
         return InferRequest(
             robot_id="test_robot",
-            start_step=0,
+            observation_step=0,
+            action_start_step=0,
+            min_execution_horizon=0,
             request_timestamp=0,
             deadline=0,
             observation=observation,
@@ -436,21 +438,27 @@ class Policy(BasePolicy):
         requests = [
             InferRequest(
                 robot_id="test_robot",
-                start_step=0,
+                observation_step=0,
+                action_start_step=0,
+                min_execution_horizon=0,
                 request_timestamp=0,
                 deadline=0,
                 observation=observation,
                 infer_type=InferType.SYNC,
                 params=None,
+                noise=None,
             ),
             InferRequest(
                 robot_id="test_robot",
-                start_step=0,
+                observation_step=0,
+                action_start_step=0,
+                min_execution_horizon=0,
                 request_timestamp=0,
                 deadline=0,
                 observation=observation,
                 infer_type=InferType.INFERENCE_TIME_RTC,
                 params=RTCParams(prev_action=self.make_example_actions(), s_param=5, d_param=3),
+                noise=None,
             ),
         ]
 

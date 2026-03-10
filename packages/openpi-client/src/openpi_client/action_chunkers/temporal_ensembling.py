@@ -30,8 +30,6 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
         """
         super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
         self._m_param = m_param
-        self.reset()
-        self._background_thread.start()
 
     @override
     def _update_action_queue(self, action_chunk):
@@ -45,10 +43,12 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
             # Determine range of steps to generate
             if existing_actions:
                 start_step = existing_actions[0].step
-                end_step = max(existing_actions[-1].step, action_chunk.start_step + action_chunk.execution_horizon - 1)
+                end_step = max(
+                    existing_actions[-1].step, action_chunk.action_start_step + action_chunk.execution_horizon - 1
+                )
             else:
-                start_step = action_chunk.start_step
-                end_step = action_chunk.start_step + action_chunk.execution_horizon - 1
+                start_step = action_chunk.action_start_step
+                end_step = action_chunk.action_start_step + action_chunk.execution_horizon - 1
 
             # For each step, collect all predictions and ensemble them
             for step in range(start_step, end_step + 1):
@@ -56,8 +56,8 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
 
                 # Collect predictions from all chunks that cover this step
                 for chunk_idx, chunk in enumerate(self._action_chunks):
-                    chunk_start = chunk.start_step
-                    chunk_end = chunk.start_step + len(chunk.actions) - 1
+                    chunk_start = chunk.action_start_step
+                    chunk_end = chunk.action_start_step + len(chunk.actions) - 1
 
                     if chunk_start <= step <= chunk_end:
                         action_idx = step - chunk_start
@@ -77,6 +77,8 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
                             step=step,
                             action=ensembled_action,
                             action_chunk_index=len(self._action_chunks) - 1,
-                            index_in_chunk=step - action_chunk.start_step if step >= action_chunk.start_step else None,
+                            index_in_chunk=step - action_chunk.action_start_step
+                            if step >= action_chunk.action_start_step
+                            else None,
                         )
                     )
