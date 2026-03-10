@@ -74,6 +74,12 @@ class MetricsStore(JSONDataclass):
     batch_counter: int = field(default=0)
 
     def __post_init__(self):
+        # Coerce dicts into typed dataclasses when loading from JSON
+        self.batches = [BatchSummary(**b) if isinstance(b, dict) else b for b in self.batches]
+        self.requests = [RequestRecord(**r) if isinstance(r, dict) else r for r in self.requests]
+        self.scheduler_timings = [
+            SchedulerTimingSample(**s) if isinstance(s, dict) else s for s in self.scheduler_timings
+        ]
         # Transient index: in-flight requests waiting for ack; not serialized
         self._pending: dict[int, RequestRecord] = {r.request_id: r for r in self.requests if r.receive_time == 0.0}
 
