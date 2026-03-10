@@ -1,7 +1,7 @@
-"""MetricsStore: in-memory metrics state for the websocket policy server."""
-
+import dataclasses
 from dataclasses import dataclass
 from dataclasses import field
+import itertools
 import time
 from typing import Any
 
@@ -23,7 +23,8 @@ class BatchSummary:
     inference_start_time: float  # same for all requests in the batch
     inference_end_time: float  # same for all requests in the batch
     execution_horizons: list[int]
-    start_steps: list[int]
+    observation_steps: list[int]
+    action_start_steps: list[int]
 
     @property
     def gpu_time_ms(self) -> float:
@@ -38,11 +39,8 @@ class BatchSummary:
 class RobotState:
     """Per-robot tracking for scheduling metrics and network delay."""
 
-    last_start_step: int = 0
-    last_execution_horizon: int = 0
     last_server_send_times: dict[int, float] = field(default_factory=dict)  # request_id → server_send_time
-    total_starvations: int = 0
-    network_delays_ms: list[float] = field(default_factory=list)  # (delay_ms,) unbounded
+    ack_pairs: list[tuple[float, float]] = field(default_factory=list)  # (server_send_time, receive_time)
 
 
 @dataclass
@@ -53,16 +51,16 @@ class MetricsStore:
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
     robot_states: dict[str, RobotState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
-    _batch_counter: int = field(default=0, init=False)
+    batch_counter: int = field(default=0, init=False)
 
     def record_batch(self, responses: list[InferResponse]) -> None:
         """Called once per batch by _router_task."""
         if not responses:
             return
 
-        self._batch_counter += 1
+        self.batch_counter += 1
         batch = BatchSummary(
-            batch_id=self._batch_counter,
+            batch_id=self.batch_counter,
             robot_ids=[r.robot_id for r in responses],
             request_ids=[r.request_id for r in responses],
             request_timestamps=[r.request_timestamp for r in responses],
@@ -70,21 +68,13 @@ class MetricsStore:
             inference_start_time=responses[0].inference_start_time,
             inference_end_time=responses[0].inference_end_time,
             execution_horizons=[r.execution_horizon for r in responses],
-            start_steps=[r.start_step for r in responses],
+            observation_steps=[r.observation_step for r in responses],
+            action_start_steps=[r.action_start_step for r in responses],
         )
         self.batches.append(batch)
 
         for response in responses:
-            state = self.robot_states.setdefault(response.robot_id, RobotState())
-
-            if state.last_execution_horizon > 0:
-                actions_consumed = response.start_step - state.last_start_step
-                actions_remaining = state.last_execution_horizon - actions_consumed
-                if actions_remaining < 0:
-                    state.total_starvations += abs(actions_remaining)
-
-            state.last_start_step = response.start_step
-            state.last_execution_horizon = response.execution_horizon
+            self.robot_states.setdefault(response.robot_id, RobotState())
 
     def record_send(self, robot_id: str, request_id: int, server_send_time: float) -> None:
         """Called from send() just before websocket.send_bytes()."""
@@ -92,15 +82,15 @@ class MetricsStore:
         if state is not None:
             state.last_server_send_times[request_id] = server_send_time
 
-    def record_ack(self, robot_id: str, request_id: int, receive_time: float) -> None:
+    def record_ack(self, robot_id: str, request_id: int, receive_time: float, execution_start_step: int) -> None:
         """Called when client sends ResponseAck."""
+        # TODO: use execution_start_step
         state = self.robot_states.get(robot_id)
         if state is None:
             return
         server_send_time = state.last_server_send_times.pop(request_id, None)
         if server_send_time is not None:
-            delay_ms = (receive_time - server_send_time) * 1000
-            state.network_delays_ms.append(delay_ms)
+            state.ack_pairs.append((server_send_time, receive_time))
 
     def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
         """Called from the server process when the scheduler publishes timing samples."""
@@ -143,14 +133,24 @@ class MetricsStore:
 
         per_robot: dict[str, Any] = {}
         for robot_id, state in self.robot_states.items():
+            robot_steps = [
+                (b.action_start_steps[i], b.execution_horizons[i])
+                for b in self.batches
+                for i, rid in enumerate(b.robot_ids)
+                if rid == robot_id
+            ]
+            starvations = 0
+            for (prev_start, prev_horizon), (curr_start, _) in itertools.pairwise(robot_steps):
+                starvations += max(0, curr_start - (prev_start + prev_horizon))
+            network_delays_ms = [(recv - send) * 1000 for send, recv in state.ack_pairs]
             per_robot[robot_id] = {
-                "total_starvations": state.total_starvations,
-                "avg_network_delay_ms": float(np.mean(state.network_delays_ms)) if state.network_delays_ms else 0.0,
+                "total_starvations": starvations,
+                "avg_network_delay_ms": float(np.mean(network_delays_ms)) if network_delays_ms else 0.0,
             }
 
         return {
             "uptime_s": uptime_s,
-            "total_batches": self._batch_counter,
+            "total_batches": self.batch_counter,
             "total_requests": total_requests,
             "avg_gpu_time_ms": avg_gpu_time_ms,
             "gpu_busy_pct": round(gpu_busy_pct, 1),
@@ -178,13 +178,24 @@ class MetricsStore:
                 per_req.append(
                     {
                         "robot_id": rid,
-                        "inbound_ms": round((b.server_arrival_times[j] - b.request_timestamps[j]) * 1000, 2),
-                        "queue_ms": round((b.inference_start_time - b.server_arrival_times[j]) * 1000, 2),
+                        "inbound_ms": round(
+                            (b.server_arrival_times[j] - b.request_timestamps[j]) * 1000,
+                            2,
+                        ),
+                        "queue_ms": round(
+                            (b.inference_start_time - b.server_arrival_times[j]) * 1000,
+                            2,
+                        ),
                         "infer_ms": round(b.gpu_time_ms, 2),
                     }
                 )
             idle_before_ms = (
-                round((b.inference_start_time - batches[i - 1].inference_end_time) * 1000, 2) if i > 0 else 0.0
+                round(
+                    (b.inference_start_time - batches[i - 1].inference_end_time) * 1000,
+                    2,
+                )
+                if i > 0
+                else 0.0
             )
             batch_data.append(
                 {
@@ -200,9 +211,9 @@ class MetricsStore:
             )
 
         outbound: dict[str, list[float]] = {
-            robot_id: [round(d, 2) for d in state.network_delays_ms]
+            robot_id: [round((recv - send) * 1000, 2) for send, recv in state.ack_pairs]
             for robot_id, state in self.robot_states.items()
-            if state.network_delays_ms
+            if state.ack_pairs
         }
         scheduler_timings: dict[str, list[float]] = {}
         for sample in self.scheduler_timings:
@@ -222,4 +233,31 @@ class MetricsStore:
         self.scheduler_timings.clear()
         self.robot_states.clear()
         self.start_time = time.time()
-        self._batch_counter = 0
+        self.batch_counter = 0
+
+    def dump(self) -> dict[str, Any]:
+        """JSON-serializable dump of all raw state, suitable for full reconstruction via from_dump()."""
+        return {
+            "start_time": self.start_time,
+            "batch_counter": self.batch_counter,
+            "batches": [dataclasses.asdict(b) for b in self.batches],
+            "robot_states": {k: dataclasses.asdict(v) for k, v in self.robot_states.items()},
+            "scheduler_timings": [dataclasses.asdict(s) for s in self.scheduler_timings],
+        }
+
+    @classmethod
+    def from_dump(cls, data: dict) -> "MetricsStore":
+        """Reconstruct a MetricsStore from a dump produced by dump()."""
+        store = cls()
+        store.start_time = data["start_time"]
+        store.batch_counter = data["batch_counter"]
+        store.batches = [BatchSummary(**b) for b in data["batches"]]
+        store.robot_states = {
+            k: RobotState(
+                last_server_send_times={int(req_id): t for req_id, t in v["last_server_send_times"].items()},
+                ack_pairs=[tuple(p) for p in v["ack_pairs"]],
+            )
+            for k, v in data["robot_states"].items()
+        }
+        store.scheduler_timings = [SchedulerTimingSample(**s) for s in data["scheduler_timings"]]
+        return store
