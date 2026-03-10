@@ -460,7 +460,7 @@ def create_app(
 
     @app.post("/reset-metrics")
     async def reset_metrics(request: Request) -> dict:
-        request.app.state.server.metrics_store = MetricsStore()
+        request.app.state.server.metrics_store.reset()
         return {"status": "ok"}
 
     dash_app = create_dash_app(metadata, metrics_store)

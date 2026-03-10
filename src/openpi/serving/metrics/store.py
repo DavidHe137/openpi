@@ -71,7 +71,7 @@ class MetricsStore(JSONDataclass):
     requests: list[RequestRecord] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
     start_time: float = field(default_factory=time.time)
-    batch_counter: int = field(default=0, init=False)
+    batch_counter: int = field(default=0)
 
     def __post_init__(self):
         # Transient index: in-flight requests waiting for ack; not serialized
@@ -126,15 +126,6 @@ class MetricsStore(JSONDataclass):
         """Called from the server process when the scheduler publishes timing samples."""
         self.scheduler_timings.extend(samples)
 
-    def reset(self) -> None:
-        """Reset all metrics."""
-        self.batches.clear()
-        self.requests.clear()
-        self.scheduler_timings.clear()
-        self.start_time = time.time()
-        self.batch_counter = 0
-        self._pending.clear()
-
     # --- windowed views ---
 
     def _window(self, window_s: float | None) -> tuple[list[BatchSummary], list[RequestRecord]]:
@@ -175,14 +166,33 @@ class MetricsStore(JSONDataclass):
                 [r for r in requests if r.robot_id == robot_id and r.receive_time > 0.0],
                 key=lambda r: r.execution_start_step,
             )
-            starvations = sum(
-                max(
-                    0,
-                    (curr.action_start_step + curr.first_executed_index)
-                    - (prev.action_start_step + prev.execution_horizon),
-                )
-                for prev, curr in itertools.pairwise(acked)
+            if not acked:
+                per_robot[robot_id] = {
+                    "total_starvations": 0,
+                    "avg_network_delay_ms": 0.0,
+                }
+                continue
+
+            # Is the first chunk in this list a genuine episode start?
+            first = acked[0]
+            is_episode_start = not any(
+                r.receive_time > 0.0 and r.execution_start_step < first.execution_start_step
+                for r in self.requests
+                if r.robot_id == robot_id
             )
+            starvations = first.first_executed_index if is_episode_start else 0
+
+            for prev, curr in itertools.pairwise(acked):
+                effective_start = curr.action_start_step + curr.first_executed_index
+                if effective_start < prev.action_start_step:
+                    # Episode boundary: step counter reset, don't use gap formula
+                    starvations += curr.first_executed_index
+                else:
+                    starvations += max(
+                        0,
+                        effective_start - (prev.action_start_step + prev.execution_horizon),
+                    )
+
             network_delays_ms = [r.outbound_ms for r in acked]
             per_robot[robot_id] = {
                 "total_starvations": starvations,
@@ -241,7 +251,12 @@ class MetricsStore(JSONDataclass):
                 for r in batch_reqs
             ]
             idle_before_ms = (
-                round((b.inference_start_time - batches[i - 1].inference_end_time) * 1000, 2) if i > 0 else 0.0
+                round(
+                    (b.inference_start_time - batches[i - 1].inference_end_time) * 1000,
+                    2,
+                )
+                if i > 0
+                else 0.0
             )
             batch_data.append(
                 {
@@ -282,3 +297,12 @@ class MetricsStore(JSONDataclass):
             "outbound_delays_ms": self._outbound_delays(requests),
             "scheduler_timings_ms": self._scheduler_timing_series(),
         }
+
+    def reset(self) -> None:
+        """Reset all metrics."""
+        self.batches.clear()
+        self.requests.clear()
+        self.scheduler_timings.clear()
+        self.start_time = time.time()
+        self.batch_counter = 0
+        self._pending.clear()
