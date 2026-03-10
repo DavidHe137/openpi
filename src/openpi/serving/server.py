@@ -44,8 +44,7 @@ from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
 from openpi_client.messages import ResponseAck
-from openpi_client.messages import TaskProgress
-from openpi_client.messages import TaskResult
+from openpi_client.messages import TaskUpdate
 from openpi_client.messages import WarmupPong
 from openpi_client.schemas import ServerMetadata
 from starlette.middleware.wsgi import WSGIMiddleware
@@ -395,35 +394,23 @@ def create_app(
                                     )
                                 )
                             continue
-                        case "task_result":
-                            task_result = TaskResult(**msg)
-                            state.metrics_store.record_task_result(
+                        case "task_update":
+                            task_update = TaskUpdate(**msg)
+                            state.metrics_store.record_task_update(
                                 robot_id=robot_id,
-                                task_suite_name=task_result.task_suite_name,
-                                task_id=task_result.task_id,
-                                episode_idx=task_result.episode_idx,
-                                success=task_result.success,
-                                duration_s=task_result.duration_s,
-                                steps_taken=task_result.steps_taken,
-                                task_language=task_result.task_language,
-                                total_episodes=task_result.total_episodes,
-                                max_episode_steps=task_result.max_episode_steps,
-                                max_duration_s=task_result.max_duration_s,
+                                task_suite_name=task_update.task_suite_name,
+                                task_id=task_update.task_id,
+                                episode_idx=task_update.episode_idx,
+                                current_step=task_update.current_step,
+                                max_episode_steps=task_update.max_episode_steps,
+                                phase=task_update.phase,
+                                task_language=task_update.task_language,
+                                total_episodes=task_update.total_episodes,
+                                success=task_update.success,
+                                duration_s=task_update.duration_s,
+                                steps_taken=task_update.steps_taken,
+                                max_duration_s=task_update.max_duration_s,
                                 event_time=time.time(),
-                            )
-                            continue
-                        case "task_progress":
-                            task_progress = TaskProgress(**msg)
-                            state.metrics_store.record_task_progress(
-                                robot_id=robot_id,
-                                task_suite_name=task_progress.task_suite_name,
-                                task_id=task_progress.task_id,
-                                episode_idx=task_progress.episode_idx,
-                                current_step=task_progress.current_step,
-                                max_episode_steps=task_progress.max_episode_steps,
-                                task_language=task_progress.task_language,
-                                total_episodes=task_progress.total_episodes,
-                                update_time=time.time(),
                             )
                             continue
                         case "infer":

@@ -232,7 +232,7 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
     row_total_episodes: dict[str, int] = {}
 
     for event in task_events:
-        label = f"{event['robot_id']}-{event['task_id']} . averages"
+        label = f"{event['robot_id']}-{int(event['task_id'])} . avg"
         row_events.setdefault(label, {})[int(event["episode_idx"])] = event
         row_total_episodes[label] = max(
             row_total_episodes.get(label, 0),
@@ -241,7 +241,7 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
         )
 
     for prog in task_progress:
-        label = f"{prog['robot_id']}-{prog['task_id']} . averages"
+        label = f"{prog['robot_id']}-{int(prog['task_id'])} . avg"
         row_events.setdefault(label, {})
         row_total_episodes[label] = max(
             row_total_episodes.get(label, 0),
@@ -252,6 +252,21 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
     row_order = sorted(row_events.keys())
     max_episode = max(row_total_episodes.values(), default=1)
     row_count = len(row_order)
+    row_ticktext: dict[str, str] = {}
+    for label in row_order:
+        completed = list(row_events[label].values())
+        if completed:
+            avg_duration_s = float(np.mean([float(event["duration_s"]) for event in completed]))
+            avg_steps = float(np.mean([float(event["steps_taken"]) for event in completed]))
+            row_ticktext[label] = (
+                f"{label}  "
+                f"<span style='color:#4fc3f7;font-weight:700'>{avg_duration_s:.1f}s</span> / "
+                f"<span style='color:#ffb74d;font-weight:700'>{avg_steps:.0f}st</span>"
+            )
+        else:
+            row_ticktext[label] = (
+                f"{label}  <span style='color:#6b7280'>--s</span> / <span style='color:#6b7280'>--st</span>"
+            )
 
     z: list[list[float | None]] = []
     text: list[list[str]] = []
@@ -346,13 +361,16 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
                 "title": "Robot / Task",
                 "categoryorder": "array",
                 "categoryarray": row_order,
+                "tickmode": "array",
+                "tickvals": row_order,
+                "ticktext": [row_ticktext[row] for row in row_order],
                 "autorange": "reversed",
                 "ticklabelstandoff": 20,
                 "automargin": True,
             },
             showlegend=False,
             height=max(440, row_count * 56 + 120),
-            margin={"t": 40, "r": 18, "b": 70, "l": 360},
+            margin={"t": 40, "r": 18, "b": 70, "l": 430},
         )
     )
     return fig
@@ -825,9 +843,6 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             ("avg queue delay (ms)", f(snap["avg_queue_delay_ms"])),
             ("total batches", f"{snap['total_batches']:,}"),
             ("task success (%)", f(snap["task_success_rate_pct"])),
-            (f"healthy robots @ {sla_pct:.0f}% SLA", f"{snap['healthy_robot_count']}/{snap['active_robot_count']}"),
-            ("avg task time (s)", f(snap["avg_task_duration_s"])),
-            ("avg task steps", f(snap["avg_task_steps"])),
         ]
         stat_cards = [_stat_card(v, lbl) for lbl, v in stats]
 

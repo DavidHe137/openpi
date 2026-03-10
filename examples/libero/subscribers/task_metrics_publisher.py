@@ -55,40 +55,43 @@ class TaskMetricsPublisher(_subscriber.Subscriber):
 
         duration_s = max(0.0, time.perf_counter() - self._episode_start_perf)
         try:
-            self._ws_client.send_task_result(
+            self._ws_client.send_task_update(
                 task_suite_name=self._task_suite_name,
                 task_id=self._task_id,
                 episode_idx=self._environment.episode_idx,
+                current_step=self._steps_taken,
+                max_episode_steps=self._environment.max_episode_steps,
+                phase="result",
                 success=self._environment.current_success,
                 duration_s=duration_s,
                 steps_taken=self._steps_taken,
                 task_language=self._task_language,
                 total_episodes=self._environment.total_episodes,
-                max_episode_steps=self._environment.max_episode_steps,
                 max_duration_s=self._environment.max_episode_steps
                 / self._environment.control_hz,
             )
         except Exception:
             logger.warning(
-                "Failed to publish task_result for task %s/%s",
+                "Failed to publish task_update(result) for task %s/%s",
                 self._task_suite_name,
                 self._task_id,
             )
 
     def _publish_progress(self) -> None:
         try:
-            self._ws_client.send_task_progress(
+            self._ws_client.send_task_update(
                 task_suite_name=self._task_suite_name,
                 task_id=self._task_id,
                 episode_idx=self._environment.episode_idx,
                 current_step=self._steps_taken,
                 max_episode_steps=self._environment.max_episode_steps,
+                phase="progress",
                 task_language=self._task_language,
                 total_episodes=self._environment.total_episodes,
             )
         except Exception:
             logger.debug(
-                "Failed to publish task_progress for task %s/%s",
+                "Failed to publish task_update(progress) for task %s/%s",
                 self._task_suite_name,
                 self._task_id,
             )

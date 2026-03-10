@@ -235,6 +235,57 @@ class MetricsStore:
                 )
             )
 
+    def record_task_update(
+        self,
+        robot_id: str,
+        task_suite_name: str,
+        task_id: int,
+        episode_idx: int,
+        *,
+        current_step: int,
+        max_episode_steps: int,
+        phase: str,
+        task_language: str | None = None,
+        total_episodes: int | None = None,
+        success: bool | None = None,
+        duration_s: float | None = None,
+        steps_taken: int | None = None,
+        max_duration_s: float | None = None,
+        event_time: float | None = None,
+    ) -> None:
+        """Record a downstream task update (in-progress or terminal result)."""
+        if phase == "progress":
+            self.record_task_progress(
+                robot_id=robot_id,
+                task_suite_name=task_suite_name,
+                task_id=task_id,
+                episode_idx=episode_idx,
+                current_step=current_step,
+                max_episode_steps=max_episode_steps,
+                task_language=task_language,
+                total_episodes=total_episodes,
+                update_time=event_time,
+            )
+            return
+
+        if phase == "result":
+            if success is None or duration_s is None:
+                return
+            self.record_task_result(
+                robot_id=robot_id,
+                task_suite_name=task_suite_name,
+                task_id=task_id,
+                episode_idx=episode_idx,
+                success=success,
+                duration_s=duration_s,
+                steps_taken=current_step if steps_taken is None else steps_taken,
+                task_language=task_language,
+                total_episodes=total_episodes,
+                max_episode_steps=max_episode_steps,
+                max_duration_s=max_duration_s,
+                event_time=event_time,
+            )
+
     @staticmethod
     def _window_filter(items: list[T], event_time_getter: Callable[[T], float], cutoff: float | None) -> list[T]:
         if cutoff is None:
