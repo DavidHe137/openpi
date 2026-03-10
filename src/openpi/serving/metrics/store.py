@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
 import itertools
@@ -12,35 +13,54 @@ from openpi.serving.schemas import SchedulerTimingSample
 
 
 @dataclass
-class BatchSummary:
-    """Stored once per completed GPU batch."""
+class RequestRecord:
+    """Full lifecycle record for one inference request."""
 
+    robot_id: str
     batch_id: int
-    robot_ids: list[str]
-    request_ids: list[int]
-    request_timestamps: list[float]
-    server_arrival_times: list[float]
-    inference_start_time: float  # same for all requests in the batch
-    inference_end_time: float  # same for all requests in the batch
-    execution_horizons: list[int]
-    observation_steps: list[int]
-    action_start_steps: list[int]
+    request_id: int
+    observation_step: int
+    action_start_step: int
+    execution_horizon: int
+    # Lifecycle timestamps
+    request_timestamp: float  # client: when request was created
+    server_arrival_time: float  # server: when observation arrived
+    inference_start_time: float  # gpu: before infer_batch
+    inference_end_time: float  # gpu: after infer_batch
+    server_send_time: float = 0.0  # server: before websocket.send_bytes()
+    receive_time: float = 0.0  # client: ResponseAck.receive_time
+    execution_start_step: int = 0  # client: ResponseAck.execution_start_step
+    first_executed_index: int = 0  # client: index within chunk where execution started
+
+    @property
+    def queue_delay_ms(self) -> float:
+        return (self.inference_start_time - self.server_arrival_time) * 1000
 
     @property
     def gpu_time_ms(self) -> float:
         return (self.inference_end_time - self.inference_start_time) * 1000
 
     @property
-    def queue_delays_ms(self) -> list[float]:
-        return [(self.inference_start_time - t) * 1000 for t in self.server_arrival_times]
+    def total_latency_ms(self) -> float:
+        return (self.inference_end_time - self.request_timestamp) * 1000
+
+    @property
+    def outbound_ms(self) -> float:
+        """Only valid when receive_time > 0."""
+        return (self.receive_time - self.server_send_time) * 1000
 
 
 @dataclass
-class RobotState:
-    """Per-robot tracking for scheduling metrics and network delay."""
+class BatchSummary:
+    """Stored once per completed GPU batch."""
 
-    last_server_send_times: dict[int, float] = field(default_factory=dict)  # request_id → server_send_time
-    ack_pairs: list[tuple[float, float]] = field(default_factory=list)  # (server_send_time, receive_time)
+    batch_id: int
+    inference_start_time: float
+    inference_end_time: float
+
+    @property
+    def gpu_time_ms(self) -> float:
+        return (self.inference_end_time - self.inference_start_time) * 1000
 
 
 @dataclass
@@ -48,10 +68,14 @@ class MetricsStore(JSONDataclass):
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
     batches: list[BatchSummary] = field(default_factory=list)
+    requests: list[RequestRecord] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
-    robot_states: dict[str, RobotState] = field(default_factory=dict)
     start_time: float = field(default_factory=time.time)
     batch_counter: int = field(default=0, init=False)
+
+    def __post_init__(self):
+        # Transient index: in-flight requests waiting for ack; not serialized
+        self._pending: dict[int, RequestRecord] = {r.request_id: r for r in self.requests if r.receive_time == 0.0}
 
     def record_batch(self, responses: list[InferResponse]) -> None:
         """Called once per batch by _router_task."""
@@ -61,168 +85,200 @@ class MetricsStore(JSONDataclass):
         self.batch_counter += 1
         batch = BatchSummary(
             batch_id=self.batch_counter,
-            robot_ids=[r.robot_id for r in responses],
-            request_ids=[r.request_id for r in responses],
-            request_timestamps=[r.request_timestamp for r in responses],
-            server_arrival_times=[r.server_arrival_time for r in responses],
             inference_start_time=responses[0].inference_start_time,
             inference_end_time=responses[0].inference_end_time,
-            execution_horizons=[r.execution_horizon for r in responses],
-            observation_steps=[r.observation_step for r in responses],
-            action_start_steps=[r.action_start_step for r in responses],
         )
         self.batches.append(batch)
 
         for response in responses:
-            self.robot_states.setdefault(response.robot_id, RobotState())
+            record = RequestRecord(
+                robot_id=response.robot_id,
+                batch_id=self.batch_counter,
+                request_id=response.request_id,
+                observation_step=response.observation_step,
+                action_start_step=response.action_start_step,
+                execution_horizon=response.execution_horizon,
+                request_timestamp=response.request_timestamp,
+                server_arrival_time=response.server_arrival_time,
+                inference_start_time=response.inference_start_time,
+                inference_end_time=response.inference_end_time,
+            )
+            self.requests.append(record)
+            self._pending[record.request_id] = record
 
-    def record_send(self, robot_id: str, request_id: int, server_send_time: float) -> None:
-        """Called from send() just before websocket.send_bytes()."""
-        state = self.robot_states.get(robot_id)
-        if state is not None:
-            state.last_server_send_times[request_id] = server_send_time
-
-    def record_ack(self, robot_id: str, request_id: int, receive_time: float, execution_start_step: int) -> None:
+    def record_ack(
+        self,
+        robot_id: str,
+        request_id: int,
+        server_send_time: float | None,
+        receive_time: float,
+        execution_start_step: int,
+        first_executed_index: int = 0,
+    ) -> None:
         """Called when client sends ResponseAck."""
-        # TODO: use execution_start_step
-        state = self.robot_states.get(robot_id)
-        if state is None:
-            return
-        server_send_time = state.last_server_send_times.pop(request_id, None)
-        if server_send_time is not None:
-            state.ack_pairs.append((server_send_time, receive_time))
+        if record := self._pending.pop(request_id, None):
+            record.server_send_time = server_send_time or 0.0
+            record.receive_time = receive_time
+            record.execution_start_step = execution_start_step
+            record.first_executed_index = first_executed_index
 
     def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
         """Called from the server process when the scheduler publishes timing samples."""
         self.scheduler_timings.extend(samples)
 
-    def snapshot(self, window_s: float | None = None) -> dict[str, Any]:
-        """JSON-serializable summary of current metrics."""
-        now = time.time()
-        uptime_s = now - self.start_time
+    def reset(self) -> None:
+        """Reset all metrics."""
+        self.batches.clear()
+        self.requests.clear()
+        self.scheduler_timings.clear()
+        self.start_time = time.time()
+        self.batch_counter = 0
+        self._pending.clear()
 
-        if window_s is not None:
-            cutoff = now - window_s
-            batches = [b for b in self.batches if b.inference_end_time >= cutoff]
-        else:
-            batches = self.batches
+    # --- windowed views ---
 
-        total_requests = sum(len(b.robot_ids) for b in batches)
+    def _window(self, window_s: float | None) -> tuple[list[BatchSummary], list[RequestRecord]]:
+        """Return (batches, requests) filtered to the given time window."""
+        if window_s is None:
+            return self.batches, self.requests
+        cutoff = time.time() - window_s
+        batches = [b for b in self.batches if b.inference_end_time >= cutoff]
+        batch_ids = {b.batch_id for b in batches}
+        requests = [r for r in self.requests if r.batch_id in batch_ids]
+        return batches, requests
 
+    # --- snapshot helpers ---
+
+    def _gpu_stats(self, batches: list[BatchSummary], window_s: float | None) -> tuple[float, float]:
+        """Returns (avg_gpu_time_ms, gpu_busy_pct)."""
         gpu_times = [b.gpu_time_ms for b in batches]
         avg_gpu_time_ms = float(np.mean(gpu_times)) if gpu_times else 0.0
-
         if len(batches) >= 2:
-            wall_s = (
-                window_s if window_s is not None else (batches[-1].inference_end_time - batches[0].inference_start_time)
-            )
-            total_busy_ms = sum(gpu_times)
-            gpu_busy_pct = min(100.0, total_busy_ms / (wall_s * 1000) * 100) if wall_s > 0 else 0.0
+            wall_s = window_s or (batches[-1].inference_end_time - batches[0].inference_start_time)
+            gpu_busy_pct = min(100.0, sum(gpu_times) / (wall_s * 1000) * 100) if wall_s > 0 else 0.0
         else:
             gpu_busy_pct = 0.0
+        return avg_gpu_time_ms, gpu_busy_pct
 
-        latencies_ms = [(b.inference_end_time - req_ts) * 1000 for b in batches for req_ts in b.request_timestamps]
-        p50_latency_ms = float(np.percentile(latencies_ms, 50)) if latencies_ms else 0.0
-        p99_latency_ms = float(np.percentile(latencies_ms, 99)) if latencies_ms else 0.0
+    def _latency_percentiles(self, requests: list[RequestRecord]) -> tuple[float, float]:
+        """Returns (p50_latency_ms, p99_latency_ms)."""
+        latencies_ms = [r.total_latency_ms for r in requests]
+        if not latencies_ms:
+            return 0.0, 0.0
+        return float(np.percentile(latencies_ms, 50)), float(np.percentile(latencies_ms, 99))
 
-        queue_delays: list[float] = [d for b in batches for d in b.queue_delays_ms]
-        avg_queue_delay_ms = float(np.mean(queue_delays)) if queue_delays else 0.0
-
-        span_s = window_s if window_s is not None else uptime_s
-        requests_per_second = total_requests / span_s if span_s > 0 else 0.0
-
+    def _per_robot_stats(self, requests: list[RequestRecord]) -> dict[str, Any]:
+        """Returns per-robot starvation and network delay stats."""
         per_robot: dict[str, Any] = {}
-        for robot_id, state in self.robot_states.items():
-            robot_steps = [
-                (b.action_start_steps[i], b.execution_horizons[i])
-                for b in self.batches
-                for i, rid in enumerate(b.robot_ids)
-                if rid == robot_id
-            ]
-            starvations = 0
-            for (prev_start, prev_horizon), (curr_start, _) in itertools.pairwise(robot_steps):
-                starvations += max(0, curr_start - (prev_start + prev_horizon))
-            network_delays_ms = [(recv - send) * 1000 for send, recv in state.ack_pairs]
+        for robot_id in {r.robot_id for r in requests}:
+            acked = sorted(
+                [r for r in requests if r.robot_id == robot_id and r.receive_time > 0.0],
+                key=lambda r: r.execution_start_step,
+            )
+            starvations = sum(
+                max(
+                    0,
+                    (curr.action_start_step + curr.first_executed_index)
+                    - (prev.action_start_step + prev.execution_horizon),
+                )
+                for prev, curr in itertools.pairwise(acked)
+            )
+            network_delays_ms = [r.outbound_ms for r in acked]
             per_robot[robot_id] = {
                 "total_starvations": starvations,
                 "avg_network_delay_ms": float(np.mean(network_delays_ms)) if network_delays_ms else 0.0,
             }
+        return per_robot
+
+    def snapshot(self, window_s: float | None = None) -> dict[str, Any]:
+        """JSON-serializable summary of current metrics."""
+        now = time.time()
+        uptime_s = now - self.start_time
+        batches, requests = self._window(window_s)
+
+        avg_gpu_time_ms, gpu_busy_pct = self._gpu_stats(batches, window_s)
+        p50_latency_ms, p99_latency_ms = self._latency_percentiles(requests)
+
+        queue_delays = [r.queue_delay_ms for r in requests]
+        avg_queue_delay_ms = float(np.mean(queue_delays)) if queue_delays else 0.0
+
+        span_s = window_s if window_s is not None else uptime_s
+        requests_per_second = len(requests) / span_s if span_s > 0 else 0.0
 
         return {
             "uptime_s": uptime_s,
             "total_batches": self.batch_counter,
-            "total_requests": total_requests,
+            "total_requests": len(requests),
             "avg_gpu_time_ms": avg_gpu_time_ms,
             "gpu_busy_pct": round(gpu_busy_pct, 1),
             "p50_latency_ms": p50_latency_ms,
             "p99_latency_ms": p99_latency_ms,
             "avg_queue_delay_ms": avg_queue_delay_ms,
             "requests_per_second": requests_per_second,
-            "per_robot": per_robot,
+            "per_robot": self._per_robot_stats(requests),
         }
 
-    def history(self, window_s: float | None = None) -> dict[str, Any]:
-        """Per-batch time-series data for Plotly charts in the dashboard."""
-        now = time.time()
-        if window_s is not None:
-            cutoff = now - window_s
-            batches = [b for b in self.batches if b.inference_end_time >= cutoff]
-        else:
-            batches = self.batches
-        t0 = self.start_time
+    # --- history helpers ---
+
+    def _batch_series(
+        self, batches: list[BatchSummary], requests: list[RequestRecord], t0: float
+    ) -> list[dict[str, Any]]:
+        """Returns per-batch time-series entries."""
+        requests_by_batch: dict[int, list[RequestRecord]] = defaultdict(list)
+        for r in requests:
+            requests_by_batch[r.batch_id].append(r)
 
         batch_data = []
         for i, b in enumerate(batches):
-            per_req = []
-            for j, rid in enumerate(b.robot_ids):
-                per_req.append(
-                    {
-                        "robot_id": rid,
-                        "inbound_ms": round(
-                            (b.server_arrival_times[j] - b.request_timestamps[j]) * 1000,
-                            2,
-                        ),
-                        "queue_ms": round(
-                            (b.inference_start_time - b.server_arrival_times[j]) * 1000,
-                            2,
-                        ),
-                        "infer_ms": round(b.gpu_time_ms, 2),
-                    }
-                )
+            batch_reqs = requests_by_batch.get(b.batch_id, [])
+            per_req = [
+                {
+                    "robot_id": r.robot_id,
+                    "inbound_ms": round((r.server_arrival_time - r.request_timestamp) * 1000, 2),
+                    "queue_ms": round(r.queue_delay_ms, 2),
+                    "infer_ms": round(b.gpu_time_ms, 2),
+                }
+                for r in batch_reqs
+            ]
             idle_before_ms = (
-                round(
-                    (b.inference_start_time - batches[i - 1].inference_end_time) * 1000,
-                    2,
-                )
-                if i > 0
-                else 0.0
+                round((b.inference_start_time - batches[i - 1].inference_end_time) * 1000, 2) if i > 0 else 0.0
             )
             batch_data.append(
                 {
                     "t": round(b.inference_end_time - t0, 3),
-                    "batch_size": len(b.robot_ids),
+                    "batch_size": len(batch_reqs),
                     "gpu_time_ms": round(b.gpu_time_ms, 2),
                     "idle_before_ms": idle_before_ms,
                     "inference_start_t": round(b.inference_start_time - t0, 3),
                     "inference_end_t": round(b.inference_end_time - t0, 3),
-                    "robot_ids": b.robot_ids,
+                    "robot_ids": [r.robot_id for r in batch_reqs],
                     "per_request": per_req,
                 }
             )
+        return batch_data
 
-        outbound: dict[str, list[float]] = {
-            robot_id: [round((recv - send) * 1000, 2) for send, recv in state.ack_pairs]
-            for robot_id, state in self.robot_states.items()
-            if state.ack_pairs
-        }
-        scheduler_timings: dict[str, list[float]] = {}
+    def _outbound_delays(self, requests: list[RequestRecord]) -> dict[str, list[float]]:
+        """Returns per-robot lists of outbound round-trip delays in ms."""
+        outbound: dict[str, list[float]] = {}
+        for r in requests:
+            if r.receive_time > 0.0:
+                outbound.setdefault(r.robot_id, []).append(round(r.outbound_ms, 2))
+        return outbound
+
+    def _scheduler_timing_series(self) -> dict[str, list[float]]:
+        """Returns per-metric lists of scheduler timing samples in ms."""
+        result: dict[str, list[float]] = {}
         for sample in self.scheduler_timings:
-            metric_key = f"{sample.scheduler_name}.{sample.metric_name}"
-            scheduler_timings.setdefault(metric_key, []).append(round(sample.duration_ms, 3))
+            key = f"{sample.scheduler_name}.{sample.metric_name}"
+            result.setdefault(key, []).append(round(sample.duration_ms, 3))
+        return result
 
+    def history(self, window_s: float | None = None) -> dict[str, Any]:
+        """Per-batch time-series data for Plotly charts in the dashboard."""
+        batches, requests = self._window(window_s)
         return {
-            "server_start_time": t0,
-            "batches": batch_data,
-            "outbound_delays_ms": outbound,
-            "scheduler_timings_ms": scheduler_timings,
+            "server_start_time": self.start_time,
+            "batches": self._batch_series(batches, requests, self.start_time),
+            "outbound_delays_ms": self._outbound_delays(requests),
+            "scheduler_timings_ms": self._scheduler_timing_series(),
         }

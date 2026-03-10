@@ -76,6 +76,7 @@ class ResponseAck:
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt
     execution_start_step: int  # client step when new chunk became available
+    first_executed_index: int = 0  # index within chunk where actual execution started
     type: Literal["ack"] = "ack"
 
 

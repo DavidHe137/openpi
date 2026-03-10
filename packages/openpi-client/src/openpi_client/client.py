@@ -148,11 +148,14 @@ class BidirectionalWebsocket:
 
         return messages.InferResponse(**response)
 
-    def send_ack(self, request_id: int, receive_time: float, execution_start_step: int) -> None:
+    def send_ack(
+        self, request_id: int, receive_time: float, execution_start_step: int, first_executed_index: int = 0
+    ) -> None:
         ack = messages.ResponseAck(
             request_id=request_id,
             receive_time=receive_time,
             execution_start_step=execution_start_step,
+            first_executed_index=first_executed_index,
         )
         self._ws.send(msgpack_numpy.packb(asdict(ack)))
 

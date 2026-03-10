@@ -92,10 +92,12 @@ class ActionChunkBroker(ABC):
                 )
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)
+                first_executed_index = max(0, self._action_step - action_chunk.action_start_step)
                 self._ws_client.send_ack(
                     action_chunk.request_id,
                     action_chunk.response_timestamp,
                     action_chunk.execution_start_step,
+                    first_executed_index,
                 )
 
     def _update_action_queue(self, action_chunk: ActionChunk) -> None:

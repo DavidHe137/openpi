@@ -359,10 +359,15 @@ def create_app(
                             continue
                         case "ack":
                             ack = ResponseAck(**msg)
-                            state.metrics_store.record_ack(
-                                robot_id, ack.request_id, ack.receive_time, ack.execution_start_step
-                            )
                             server_send_time = send_times.pop(ack.request_id, None)
+                            state.metrics_store.record_ack(
+                                robot_id,
+                                ack.request_id,
+                                server_send_time,
+                                ack.receive_time,
+                                ack.execution_start_step,
+                                ack.first_executed_index,
+                            )
                             if server_send_time is not None:
                                 await state.scheduler_sock.send_pyobj(
                                     AckNotification(
@@ -427,7 +432,6 @@ def create_app(
                 send_time = time.time()
                 send_times[response.request_id] = send_time
                 stamped = dataclasses.replace(response, server_send_time=send_time)
-                state.metrics_store.record_send(robot_id, response.request_id, send_time)
                 await websocket.send_bytes(msgpack_numpy.packb(asdict(stamped)))
 
         recv_task = asyncio.create_task(recv())
@@ -452,7 +456,7 @@ def create_app(
 
     @app.get("/metrics/history")
     async def get_metrics_history(request: Request) -> dict:
-        return request.app.state.server.metrics_store.dump()
+        return asdict(request.app.state.server.metrics_store)
 
     @app.post("/reset-metrics")
     async def reset_metrics(request: Request) -> dict:
