@@ -599,25 +599,6 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         style={"width": "84px", "fontSize": "0.9em"},
                     ),
                     html.Label("seconds", style={"color": "#555", "fontSize": "0.85em"}),
-                    html.Label("SLA", style={"color": "#555", "fontSize": "0.85em"}),
-                    html.Div(
-                        style={"width": "220px", "paddingTop": "2px"},
-                        children=dcc.Slider(
-                            id="slider-sla-pct",
-                            min=0,
-                            max=20,
-                            step=1,
-                            value=10,
-                            marks={
-                                0: {"label": "0%", "style": {"color": "#fff"}},
-                                5: {"label": "5%", "style": {"color": "#fff"}},
-                                10: {"label": "10%", "style": {"color": "#fff"}},
-                                15: {"label": "15%", "style": {"color": "#fff"}},
-                                20: {"label": "20%", "style": {"color": "#fff"}},
-                            },
-                            tooltip={"placement": "bottom"},
-                        ),
-                    ),
                     html.Label("Last", style={"color": "#555", "fontSize": "0.85em"}),
                     dcc.Input(
                         id="input-window",
@@ -698,6 +679,30 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                     style=_CARD,
                     children=[
                         html.Div("SLA Capacity Curve", style=_CARD_HDR),
+                        html.Div(
+                            style={"padding": "10px 14px 0 14px"},
+                            children=[
+                                html.Div(
+                                    "SLA threshold (%)",
+                                    style={"color": "#666", "fontSize": "0.8em", "marginBottom": "4px"},
+                                ),
+                                dcc.Slider(
+                                    id="slider-sla-pct",
+                                    min=0,
+                                    max=20,
+                                    step=1,
+                                    value=10,
+                                    marks={
+                                        0: {"label": "0%", "style": {"color": "#fff"}},
+                                        5: {"label": "5%", "style": {"color": "#fff"}},
+                                        10: {"label": "10%", "style": {"color": "#fff"}},
+                                        15: {"label": "15%", "style": {"color": "#fff"}},
+                                        20: {"label": "20%", "style": {"color": "#fff"}},
+                                    },
+                                    tooltip={"placement": "bottom"},
+                                ),
+                            ],
+                        ),
                         dcc.Graph(id="graph-sla-capacity", config=_CFG, style={"height": "320px"}),
                     ],
                 ),

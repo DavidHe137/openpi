@@ -56,6 +56,7 @@ class Args:
     port: int = 8080
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
+    min_execution_horizon: int = 10
     latency_ms: List[float] = field(
         default_factory=list
     )  # Optional per-robot artificial latency (ms); length <= num_robots
@@ -120,7 +121,7 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
     config = BrokerConfig(
         ws_client=ws_client,
         control_hz=args.control_hz,
-        min_execution_horizon=3,  # NOTE: hardcode for now
+        min_execution_horizon=args.min_execution_horizon,
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
