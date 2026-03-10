@@ -248,7 +248,7 @@ class RuntimeMetadata(JSONDataclass):
     # Environment config
     task_suite_name: str
     num_steps_wait: int
-    num_trials_per_task: int
+    num_trials_per_robot: int
     max_steps: int
     seed: int
     resize_size: int
