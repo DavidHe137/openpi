@@ -1,7 +1,6 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
-import itertools
 import time
 from typing import Any
 
@@ -70,6 +69,8 @@ class MetricsStore(JSONDataclass):
     batches: list[BatchSummary] = field(default_factory=list)
     requests: list[RequestRecord] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
+    arrivals: list[tuple[str, int, float]] = field(default_factory=list)
+    # (robot_id, observation_step, arrival_timestamp)
     start_time: float = field(default_factory=time.time)
     batch_counter: int = field(default=0)
 
@@ -80,6 +81,8 @@ class MetricsStore(JSONDataclass):
         self.scheduler_timings = [
             SchedulerTimingSample(**s) if isinstance(s, dict) else s for s in self.scheduler_timings
         ]
+        # JSON round-trips tuples as lists; coerce back
+        self.arrivals = [(r, s, t) for r, s, t in self.arrivals]
         # Transient index: in-flight requests waiting for ack; not serialized
         self._pending: dict[int, RequestRecord] = {r.request_id: r for r in self.requests if r.receive_time == 0.0}
 
@@ -128,6 +131,10 @@ class MetricsStore(JSONDataclass):
             record.execution_start_step = execution_start_step
             record.first_executed_index = first_executed_index
 
+    def record_arrival(self, robot_id: str, observation_step: int, arrival_timestamp: float) -> None:
+        """Called on every infer request arrival to track episode boundaries."""
+        self.arrivals.append((robot_id, observation_step, arrival_timestamp))
+
     def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
         """Called from the server process when the scheduler publishes timing samples."""
         self.scheduler_timings.extend(samples)
@@ -164,44 +171,57 @@ class MetricsStore(JSONDataclass):
             return 0.0, 0.0
         return float(np.percentile(latencies_ms, 50)), float(np.percentile(latencies_ms, 99))
 
+    def _episodes(self, robot_id: str) -> list[tuple[float, float, list[int]]]:
+        """Returns list of (start_time, end_time_excl, obs_steps) per episode."""
+        robot_arr = [(s, t) for r, s, t in self.arrivals if r == robot_id]
+        if not robot_arr:
+            return []
+        episodes: list[tuple[float, float, list[int]]] = []
+        current_steps: list[int] = []
+        current_start = -1.0
+        last_step = -1
+        for obs_step, timestamp in robot_arr:
+            if last_step >= 0 and obs_step < last_step:  # episode reset
+                episodes.append((current_start, timestamp, current_steps))
+                current_steps = []
+                current_start = timestamp
+            if not current_steps:
+                current_start = timestamp
+            current_steps.append(obs_step)
+            last_step = obs_step
+        if current_steps:
+            episodes.append((current_start, float("inf"), current_steps))
+        return episodes
+
     def _per_robot_stats(self, requests: list[RequestRecord]) -> dict[str, Any]:
         """Returns per-robot starvation and network delay stats."""
         per_robot: dict[str, Any] = {}
         for robot_id in {r.robot_id for r in requests}:
-            acked = sorted(
-                [r for r in requests if r.robot_id == robot_id and r.receive_time > 0.0],
-                key=lambda r: r.execution_start_step,
-            )
-            if not acked:
-                per_robot[robot_id] = {
-                    "total_starvations": 0,
-                    "avg_network_delay_ms": 0.0,
-                }
-                continue
+            episodes = self._episodes(robot_id)
+            acked_all = [r for r in self.requests if r.robot_id == robot_id and r.receive_time > 0.0]
 
-            # Is the first chunk in this list a genuine episode start?
-            first = acked[0]
-            is_episode_start = not any(
-                r.receive_time > 0.0 and r.execution_start_step < first.execution_start_step
-                for r in self.requests
-                if r.robot_id == robot_id
-            )
-            starvations = first.first_executed_index if is_episode_start else 0
+            total_starvations = 0
+            for ep_start, ep_end, obs_steps in episodes:
+                ep_chunks = [r for r in acked_all if ep_start <= r.server_arrival_time < ep_end]
+                obs = np.array(obs_steps, dtype=np.int64)
+                if len(obs) == 0:
+                    continue
+                max_step = int(obs.max())
+                actions_left = np.zeros(max_step + 1, dtype=np.int32)
+                for r in ep_chunks:
+                    start = r.action_start_step + r.first_executed_index
+                    end = min(r.action_start_step + r.execution_horizon, max_step + 1)
+                    if start < end:
+                        steps = np.arange(start, end)
+                        avail = r.action_start_step + r.execution_horizon - steps
+                        actions_left[start:end] = np.maximum(actions_left[start:end], avail)
+                valid = obs[obs <= max_step]
+                total_starvations += int(np.sum(actions_left[valid] == 0))
 
-            for prev, curr in itertools.pairwise(acked):
-                effective_start = curr.action_start_step + curr.first_executed_index
-                if effective_start < prev.action_start_step:
-                    # Episode boundary: step counter reset, don't use gap formula
-                    starvations += curr.first_executed_index
-                else:
-                    starvations += max(
-                        0,
-                        effective_start - (prev.action_start_step + prev.execution_horizon),
-                    )
-
-            network_delays_ms = [r.outbound_ms for r in acked]
+            acked_windowed = [r for r in requests if r.robot_id == robot_id and r.receive_time > 0.0]
+            network_delays_ms = [r.outbound_ms for r in acked_windowed]
             per_robot[robot_id] = {
-                "total_starvations": starvations,
+                "total_starvations": total_starvations,
                 "avg_network_delay_ms": float(np.mean(network_delays_ms)) if network_delays_ms else 0.0,
             }
         return per_robot
@@ -309,6 +329,7 @@ class MetricsStore(JSONDataclass):
         self.batches.clear()
         self.requests.clear()
         self.scheduler_timings.clear()
+        self.arrivals.clear()
         self.start_time = time.time()
         self.batch_counter = 0
         self._pending.clear()

@@ -423,6 +423,7 @@ def create_app(
                         control_hz=state.robot_metadata[robot_id].control_hz,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
+                    state.metrics_store.record_arrival(robot_id, req.observation_step, arrival_timestamp)
             except WebSocketDisconnect:
                 logger.debug("Robot %s disconnected", robot_id)
 
