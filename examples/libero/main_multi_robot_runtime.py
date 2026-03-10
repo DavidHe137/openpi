@@ -110,7 +110,7 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     config = BrokerConfig(
         ws_client=ws_client,
         control_hz=args.control_hz,
-        min_execution_horizon=ws_client.server_metadata.action_horizon,
+        min_execution_horizon=3,  # NOTE: hardcode for now
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
