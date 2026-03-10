@@ -31,8 +31,7 @@ LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
 
 logger = logging.getLogger(__name__)
 
-# One-time startup synchronization state.
-_start_barrier = None
+# One-time startup synchronization state (per worker process).
 _has_synced_start = False
 
 
@@ -91,22 +90,14 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
     return float(args.latency_ms[robot_idx])
 
 
-def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
-    global \
-        robot_idx, \
-        ws_client, \
-        broker, \
-        agent, \
-        _progress_queue, \
-        _start_barrier, \
-        _has_synced_start
+def init_worker(args: Args, counter, progress_queue) -> None:
+    global robot_idx, ws_client, broker, agent, _progress_queue, _has_synced_start
     with counter.get_lock():
         robot_idx = counter.value
         counter.value += 1
 
     # Store queue globally for access in create_runtime
     _progress_queue = progress_queue
-    _start_barrier = start_barrier
     _has_synced_start = False
 
     ws_client = BidirectionalWebsocket(
@@ -123,33 +114,6 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
-
-
-def _wait_for_initial_start_sync() -> None:
-    """Block on a one-time startup barrier before first control step."""
-    global _has_synced_start  # NOTE: shared between workers. maybe can persist worker state elsewhere to avoid global, but I think this is fine
-    if _has_synced_start:
-        return
-
-    if _start_barrier is None:
-        _has_synced_start = True
-        return
-
-    _start_barrier.wait()
-    _has_synced_start = True
-
-
-class _StartupSyncSubscriber(_subscriber.Subscriber):
-    """One-shot startup synchronization right before first episode steps."""
-
-    def on_episode_start(self) -> None:
-        _wait_for_initial_start_sync()
-
-    def on_step(self, observation, action) -> None:
-        return
-
-    def on_episode_end(self) -> None:
-        return
 
 
 def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
@@ -177,7 +141,6 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
     }
 
     subscribers: List[_subscriber.Subscriber] = [
-        _StartupSyncSubscriber(),
         Saver(
             out_dir=pathlib.Path(args.output_dir),
             environment=env,
@@ -212,8 +175,14 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
 
 def _robot_worker(task_args) -> None:
     """Worker process that handles jobs for a specific robot index."""
-    args, job, _server_metadata = task_args
+    global _has_synced_start
+    args, job, start_barrier = task_args
     runtime = create_runtime(args, job)
+
+    if not _has_synced_start:
+        if start_barrier is not None:
+            start_barrier.wait()
+        _has_synced_start = True
     runtime.run()
     runtime.close()
 
@@ -227,9 +196,9 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
 
     if args.debug:
         # Debug mode: no progress manager, single process for pdb compatibility
-        init_worker(args, counter, None, None)
+        init_worker(args, counter, None)
         for job in jobs:
-            _robot_worker((args, job, server_metadata))
+            _robot_worker((args, job, None))
     else:
         total_episodes = sum(len(job.initial_states) for job in jobs)
         active_workers = min(args.num_robots, len(jobs))
@@ -248,14 +217,14 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
             with multiprocessing.Pool(
                 processes=active_workers,
                 initializer=init_worker,
-                initargs=(args, counter, progress_manager.queue, start_barrier),
+                initargs=(args, counter, progress_manager.queue),
             ) as pool:
                 try:
                     # use imap_unordered so that it exits immediately on any exception
                     _ = list(
                         pool.imap_unordered(
                             _robot_worker,
-                            [(args, job, server_metadata) for job in jobs],
+                            [(args, job, start_barrier) for job in jobs],
                         )
                     )
                 except Exception as e:
