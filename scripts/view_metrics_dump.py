@@ -22,7 +22,7 @@ from openpi.serving.metrics.store import MetricsStore
 
 @dataclass
 class Args:
-    path: str  # experiment output dir or path to server_metrics_history.json
+    path: str  # experiment output dir
     port: int = 8050
     host: str = "127.0.0.1"
 
