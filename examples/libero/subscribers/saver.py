@@ -181,7 +181,7 @@ class Saver(_subscriber.Subscriber):
             prefix = f"chunk_{i:04d}"
 
             # Save observation that triggered this inference
-            obs = self._observations_buffer.get(chunk.observation_step)
+            obs = self._observations_buffer.get(chunk.start_step)
             if obs is not None:
                 data_to_save[f"{prefix}/observation/state"] = obs.state
                 data_to_save[f"{prefix}/observation/image"] = obs.image
@@ -190,7 +190,7 @@ class Saver(_subscriber.Subscriber):
                     data_to_save[f"{prefix}/observation/prompt"] = obs.prompt
             else:
                 logger.warning(
-                    f"No observation found for chunk {i} at step {chunk.observation_step}"
+                    f"No observation found for chunk {i} at step {chunk.start_step}"
                 )
 
             # Save noise (should always be present)
@@ -201,8 +201,7 @@ class Saver(_subscriber.Subscriber):
             data_to_save[f"{prefix}/actions"] = chunk.actions
 
             # Save metadata
-            # TODO: fix this
-            data_to_save[f"{prefix}/start_step"] = chunk.observation_step
+            data_to_save[f"{prefix}/start_step"] = chunk.start_step
             data_to_save[f"{prefix}/execution_horizon"] = chunk.execution_horizon
 
         # Save as compressed npz
