@@ -429,8 +429,19 @@ class MetricsStore:
                     sla_pct,
                 )
             )
+            task_successes_by_robot: dict[str, int] = {}
+            for event in task_events:
+                if event.success:
+                    task_successes_by_robot[event.robot_id] = task_successes_by_robot.get(event.robot_id, 0) + 1
+
+            total_task_episodes = len(task_events)
+            total_task_successes = sum(task_successes_by_robot.values())
+            tp_suc_per_sec_all = (total_task_successes / span_s) if span_s > 0 else 0.0
+
             per_robot: dict[str, Any] = {}
-            for robot_id in sorted(set(self.robot_states.keys()) | set(robot_rollup.keys())):
+            for robot_id in sorted(
+                set(self.robot_states.keys()) | set(robot_rollup.keys()) | set(task_successes_by_robot)
+            ):
                 state = self.robot_states.get(robot_id)
                 rollup = robot_rollup.get(
                     robot_id,
@@ -442,18 +453,18 @@ class MetricsStore:
                         "healthy": False,
                     },
                 )
+                successes = task_successes_by_robot.get(robot_id, 0)
                 per_robot[robot_id] = {
                     "total_starvations": state.total_starvations if state is not None else 0,
                     "avg_network_delay_ms": float(np.mean(state.network_delays_ms))
                     if state is not None and state.network_delays_ms
                     else 0.0,
+                    "tp_suc_per_sec_robot": (successes / span_s) if span_s > 0 else 0.0,
                     **rollup,
                 }
 
             durations_s = [e.duration_s for e in task_events]
             steps = [e.steps_taken for e in task_events]
-            total_task_episodes = len(task_events)
-            total_task_successes = sum(int(e.success) for e in task_events)
 
             return {
                 "uptime_s": uptime_s,
@@ -477,6 +488,7 @@ class MetricsStore:
                 "task_success_rate_pct": (total_task_successes / total_task_episodes * 100)
                 if total_task_episodes
                 else 0.0,
+                "tp_suc_per_sec_all": tp_suc_per_sec_all,
                 "avg_task_duration_s": float(np.mean(durations_s)) if durations_s else 0.0,
                 "avg_task_steps": float(np.mean(steps)) if steps else 0.0,
             }

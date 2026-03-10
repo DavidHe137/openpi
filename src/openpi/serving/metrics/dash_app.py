@@ -168,6 +168,7 @@ def _robot_table(robots: dict, sla_pct: float) -> html.Element:
                         html.Th("Starved / Obs", style=th),
                         html.Th("Starvation (%)", style=th),
                         html.Th("Healthy", style=th),
+                        html.Th("TP (suc/sec/robot)", style=th),
                         html.Th("Avg Net Delay (ms)", style=th),
                     ]
                 )
@@ -200,6 +201,10 @@ def _robot_table(robots: dict, sla_pct: float) -> html.Element:
                                     "color": "#81c784" if r.get("healthy", False) else "#ef9a9a",
                                     "fontWeight": 600,
                                 },
+                            ),
+                            html.Td(
+                                f"{r.get('tp_suc_per_sec_robot', 0.0):.3f}",
+                                style={**td_base, "color": "#4fc3f7", "fontWeight": 600},
                             ),
                             html.Td(
                                 f"{r['avg_network_delay_ms']:.2f}",
@@ -843,6 +848,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             ("avg queue delay (ms)", f(snap["avg_queue_delay_ms"])),
             ("total batches", f"{snap['total_batches']:,}"),
             ("task success (%)", f(snap["task_success_rate_pct"])),
+            ("TP (suc/sec/all)", f"{snap.get('tp_suc_per_sec_all', 0.0):.3f}"),
         ]
         stat_cards = [_stat_card(v, lbl) for lbl, v in stats]
 
