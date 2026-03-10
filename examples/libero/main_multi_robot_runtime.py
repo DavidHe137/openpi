@@ -116,7 +116,6 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
     )
 
     # Create broker config and instantiate
-    # FIXME: hardcoded for now
     config = BrokerConfig(
         ws_client=ws_client,
         control_hz=args.control_hz,
@@ -128,7 +127,7 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
 
 def _wait_for_initial_start_sync() -> None:
     """Block on a one-time startup barrier before first control step."""
-    global _has_synced_start
+    global _has_synced_start  # NOTE: shared between workers. maybe can persist worker state elsewhere to avoid global, but I think this is fine
     if _has_synced_start:
         return
 
@@ -228,9 +227,6 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
 
     if args.debug:
         # Debug mode: no progress manager, single process for pdb compatibility
-        logging.info(
-            "Debug mode uses a single process; skipping concurrent startup synchronization"
-        )
         init_worker(args, counter, None, None)
         for job in jobs:
             _robot_worker((args, job, server_metadata))
