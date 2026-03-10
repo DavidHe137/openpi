@@ -62,7 +62,7 @@ class Args:
     task_suite_name: str = "libero_10"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
     num_trials_per_task: int = 10  # Number of rollouts per task
-    max_steps: int = 1000  # Maximum number of control steps per episode
+    max_steps: int = 600  # Maximum number of control steps per episode
 
     #################################################################################################################
     # Multi-robot / threading parameters
