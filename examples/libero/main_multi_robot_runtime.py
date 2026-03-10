@@ -1,3 +1,4 @@
+import json
 import logging
 import pathlib
 import multiprocessing
@@ -5,6 +6,7 @@ import shutil
 from typing import List, Literal, Optional, Dict, Type
 import datetime
 import time
+
 
 import numpy as np
 from jaxtyping import Float
@@ -14,6 +16,7 @@ from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import ActionChunkBrokerType, BrokerConfig
 from openpi_client.schemas import RuntimeMetadata, ServerMetadata
+import requests
 import tyro
 from dataclasses import dataclass, field
 
@@ -58,8 +61,8 @@ class Args:
     #################################################################################################################
     task_suite_name: str = "libero_10"
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
-    num_trials_per_robot: int = 10  # Number of rollouts per robot per task
-    max_steps: int = 500  # Maximum number of control steps per episode
+    num_trials_per_task: int = 10  # Number of rollouts per task
+    max_steps: int = 600  # Maximum number of control steps per episode
 
     #################################################################################################################
     # Multi-robot / threading parameters
@@ -198,8 +201,12 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
         for job in jobs:
             _robot_worker((args, job, server_metadata))
     else:
+        total_episodes = sum(len(job.initial_states) for job in jobs)
         with get_progress_manager(
-            args.progress_type, max_steps=args.max_steps
+            args.progress_type,
+            total_jobs=len(jobs),
+            total_episodes=total_episodes,
+            max_steps=args.max_steps,
         ) as progress_manager:
             # Pass queue to worker initializer
             with multiprocessing.Pool(
@@ -235,32 +242,45 @@ def create_jobs(args: Args) -> List[Job]:
         args.task_suite_name,
         num_tasks_in_suite,
         args.num_robots,
-        args.num_trials_per_robot,
+        args.num_trials_per_task,
         args.control_hz,
     )
 
-    jobs: List[Job] = []
+    base_jobs: List[Job] = []
     for task_id in range(num_tasks_in_suite):
         task: benchmark.Task = task_suite.get_task(task_id)
         all_initial_states: Float[np.ndarray, "n_initial_states state_dim"] = (
             task_suite.get_task_init_states(task_id)
         )
 
-        if len(all_initial_states) < args.num_trials_per_robot:
+        if len(all_initial_states) < args.num_trials_per_task:
             logging.error(
                 "Task %d has less initial states than trials per robot; skipping",
                 task_id,
             )
             continue
 
-        initial_states = all_initial_states[: args.num_trials_per_robot]
+        initial_states = all_initial_states[: args.num_trials_per_task]
         job = Job(
             task=task,
             task_suite_name=args.task_suite_name,
             task_id=task_id,
             initial_states=initial_states,
         )
-        jobs.append(job)
+        base_jobs.append(job)
+
+    # If num_robots > num_tasks, repeat tasks cyclically so every robot gets a job.
+    if args.num_robots > len(base_jobs):
+        logging.warning(
+            "num_robots (%d) > num_tasks (%d); repeating tasks cyclically to fill all robots",
+            args.num_robots,
+            len(base_jobs),
+        )
+        jobs: List[Job] = [
+            base_jobs[i % len(base_jobs)] for i in range(args.num_robots)
+        ]
+    else:
+        jobs = base_jobs
 
     logging.info("Created %d jobs", len(jobs))
 
@@ -284,7 +304,7 @@ def main(args: Args) -> None:
         raise ValueError(f"Output path {args.output_dir} already exists")
     if args.overwrite:
         if pathlib.Path(args.output_dir).exists():
-            shutil.rmtree(args.output_dir)
+            shutil.rmtree(args.output_dir, ignore_errors=True)
         pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
     # Validate latency specification
@@ -312,7 +332,7 @@ def main(args: Args) -> None:
     runtime_metadata = RuntimeMetadata(
         task_suite_name=args.task_suite_name,
         num_steps_wait=args.num_steps_wait,
-        num_trials_per_robot=args.num_trials_per_robot,
+        num_trials_per_task=args.num_trials_per_task,
         max_steps=args.max_steps,
         num_robots=args.num_robots,
         control_hz=args.control_hz,
@@ -331,8 +351,26 @@ def main(args: Args) -> None:
     server_metadata.to_json(output_path / "server_metadata.json")
     logging.info(f"Saved server metadata to {output_path / 'server_metadata.json'}")
 
+    # Reset server-side metrics so this experiment gets a clean slate
+    server_base = f"http://{args.host}:{args.port}"
+    try:
+        requests.post(f"{server_base}/reset-metrics", timeout=5.0)
+        logging.info("Reset server metrics")
+    except Exception as e:
+        logging.warning(f"Could not reset server metrics: {e}")
+
     # Run robots
     run_robots(args, jobs, server_metadata)
+
+    # Dump server-side metrics history for offline analysis
+    try:
+        history = requests.get(f"{server_base}/metrics/history", timeout=10.0).json()
+        hist_path = output_path / "server_metrics_history.json"
+        hist_path.write_text(json.dumps(history, indent=2))
+        logging.info(f"Saved server metrics history to {hist_path}")
+    except Exception as e:
+        logging.warning(f"Could not fetch server metrics history: {e}")
+
     calculate_metrics(pathlib.Path(args.output_dir))
     generate_all_plots(pathlib.Path(args.output_dir))
 

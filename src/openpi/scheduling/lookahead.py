@@ -17,19 +17,15 @@ class LookaheadScheduler(RequestScheduler):
         batch_profile: dict[int, float] | None = None,
         *,
         horizon_ms: int = 1000,
-        timestep_ms: int = 10,
+        timestep_ms: int = 50,
         action_horizon_steps: int = 10,
         control_hz: int = 20,
     ) -> None:
         super().__init__(batch_queue, max_batch_size, batch_profile)
-        if timestep_ms <= 0:
-            raise ValueError("timestep_ms must be positive")
-        if horizon_ms <= 0:
-            raise ValueError("horizon_ms must be positive")
-        if action_horizon_steps <= 0:
-            raise ValueError("action_horizon_steps must be positive")
-        if control_hz <= 0:
-            raise ValueError("control_hz must be positive")
+        assert timestep_ms > 0, "timestep_ms must be positive"
+        assert horizon_ms > 0, "horizon_ms must be positive"
+        assert action_horizon_steps > 0, "action_horizon_steps must be positive"
+        assert control_hz > 0, "control_hz must be positive"
 
         self._timestep_ms = float(timestep_ms)
         self._horizon_ticks = self._to_ticks(horizon_ms)
