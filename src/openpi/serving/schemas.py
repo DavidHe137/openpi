@@ -29,6 +29,7 @@ class SlotRequest:
     infer_type: InferType
     params: RTCParams | VlashParams | TrainTimeRTCParams | None
     noise: np.ndarray | None
+    control_hz: float
     estimated_d_param: int = 0  # filled by scheduler before batching
 
 
