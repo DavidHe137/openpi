@@ -21,13 +21,14 @@ class SlotRequest:
     robot_id: str
     request_id: int
     arrival_timestamp: float  # when WS received the request (server-side)
-    start_step: int
+    observation_step: int
+    action_start_step: int
     request_timestamp: float
     deadline: float
+    min_execution_horizon: int
     infer_type: InferType
     params: RTCParams | VlashParams | TrainTimeRTCParams | None
     noise: np.ndarray | None
-    min_execution_horizon: int = 0  # minimum steps to execute before server will re-infer this robot
     estimated_d_param: int = 0  # filled by scheduler before batching
 
 

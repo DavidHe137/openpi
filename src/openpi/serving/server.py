@@ -354,7 +354,9 @@ def create_app(
                             continue
                         case "ack":
                             ack = ResponseAck(**msg)
-                            state.metrics_store.record_ack(robot_id, ack.request_id, ack.receive_time)
+                            state.metrics_store.record_ack(
+                                robot_id, ack.request_id, ack.receive_time, ack.execution_start_step
+                            )
                             server_send_time = send_times.pop(ack.request_id, None)
                             if server_send_time is not None:
                                 await state.scheduler_sock.send_pyobj(
@@ -384,9 +386,11 @@ def create_app(
                             obs=req.observation,
                             request_id=request_id,
                             arrival_timestamp=arrival_timestamp,
-                            start_step=req.start_step,
+                            observation_step=req.observation_step,
+                            action_start_step=req.action_start_step,
                             request_timestamp=req.request_timestamp,
                             deadline=req.deadline,
+                            min_execution_horizon=req.min_execution_horizon,
                             infer_type=req.infer_type,
                             params=req.params,
                             noise=req.noise,
@@ -398,13 +402,14 @@ def create_app(
                         robot_id=robot_id,
                         request_id=request_id,
                         arrival_timestamp=arrival_timestamp,
-                        start_step=req.start_step,
+                        observation_step=req.observation_step,
+                        action_start_step=req.action_start_step,
                         request_timestamp=req.request_timestamp,
                         deadline=req.deadline,
+                        min_execution_horizon=req.min_execution_horizon,
                         infer_type=req.infer_type,
                         params=req.params,
                         noise=req.noise,
-                        min_execution_horizon=req.min_execution_horizon,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
                     logger.debug("Sent slot request to scheduler: %s", slot_req)

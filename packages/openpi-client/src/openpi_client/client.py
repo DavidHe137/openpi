@@ -15,7 +15,7 @@ from openpi_client.messages import (
     WarmupPing,
     WarmupPong,
 )
-from openpi_client.schemas import ActionChunk, Observation, ServerMetadata
+from openpi_client.schemas import Observation, ServerMetadata
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
@@ -117,13 +117,15 @@ class BidirectionalWebsocket:
         self,
         obs: Observation,
         deadline: float,
+        action_start_step: int,
         infer_type: messages.InferType = messages.InferType.SYNC,
-        noise: Optional[np.ndarray] = None,
         min_execution_horizon: int = 0,
+        noise: Optional[np.ndarray] = None,
     ) -> None:
         request = messages.InferRequest(
             request_timestamp=time.time(),
-            start_step=obs.step,
+            observation_step=obs.step,
+            action_start_step=action_start_step,
             robot_id=self._robot_id,
             observation=asdict(obs),
             deadline=deadline,
@@ -136,7 +138,7 @@ class BidirectionalWebsocket:
 
     def receive(
         self,
-    ) -> ActionChunk:  # noqa: UP006
+    ) -> messages.InferResponse:  # noqa: UP006
         response = self._ws.recv()
 
         response = msgpack_numpy.unpackb(response)
@@ -144,20 +146,15 @@ class BidirectionalWebsocket:
             # we're expecting bytes; if the server sends a string, it's an error.
             raise RuntimeError(f"Error in inference server:\n{response}")
 
-        infer_response = messages.InferResponse(**response)
-        response_timestamp = time.time()
-        ack = messages.ResponseAck(request_id=infer_response.request_id, receive_time=response_timestamp)
-        self._ws.send(msgpack_numpy.packb(asdict(ack)))
+        return messages.InferResponse(**response)
 
-        action_chunk = ActionChunk(
-            actions=infer_response.actions,
-            request_timestamp=infer_response.request_timestamp,
-            response_timestamp=response_timestamp,
-            start_step=infer_response.start_step,
-            execution_horizon=infer_response.execution_horizon,
-            noise=infer_response.noise,
+    def send_ack(self, request_id: int, receive_time: float, execution_start_step: int) -> None:
+        ack = messages.ResponseAck(
+            request_id=request_id,
+            receive_time=receive_time,
+            execution_start_step=execution_start_step,
         )
-        return action_chunk
+        self._ws.send(msgpack_numpy.packb(asdict(ack)))
 
     def reset(self) -> None:
         data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))

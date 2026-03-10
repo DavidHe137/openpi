@@ -30,8 +30,6 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
         """
         super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
         self._m_param = m_param
-        self.reset()
-        self._background_thread.start()
 
     @override
     def _update_action_queue(self, action_chunk):

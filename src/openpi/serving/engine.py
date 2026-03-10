@@ -115,11 +115,12 @@ def _run_gpu_worker(
             InferRequest(
                 robot_id=sr.robot_id,
                 observation=sd.obs,
-                start_step=sd.start_step,
+                observation_step=sd.observation_step,
+                action_start_step=sd.action_start_step,
                 request_timestamp=sd.request_timestamp,
                 deadline=sd.deadline,
                 infer_type=sd.infer_type,
-                params=_make_rtc_params(sr.robot_id, sd.start_step, sr.estimated_d_param)
+                params=_make_rtc_params(sr.robot_id, sd.observation_step, sr.estimated_d_param)
                 if sd.infer_type == InferType.INFERENCE_TIME_RTC
                 else sd.params,
                 noise=sd.noise,
@@ -136,7 +137,8 @@ def _run_gpu_worker(
             InferResponse(
                 robot_id=sr.robot_id,
                 request_id=sd.request_id,
-                start_step=sd.start_step,
+                observation_step=sd.observation_step,
+                action_start_step=sd.action_start_step,
                 request_timestamp=sd.request_timestamp,
                 execution_horizon=len(action_dict["actions"]),
                 actions=action_dict["actions"],
@@ -154,7 +156,7 @@ def _run_gpu_worker(
                 prev_action = action_dict["actions"][0]  # shape (ah, ad)
                 if _action_shape is None:
                     _action_shape = prev_action.shape
-                _last_infer_step[sr.robot_id] = sd.start_step
+                _last_infer_step[sr.robot_id] = sd.observation_step
                 _prev_actions[sr.robot_id] = prev_action
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients

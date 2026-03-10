@@ -37,13 +37,14 @@ class TrainTimeRTCParams:
 class InferRequest:
     robot_id: str
     observation: dict
-    start_step: int  # TODO: can maybe fold into observation after typing
+    observation_step: int
+    action_start_step: int
     request_timestamp: float
     deadline: float
+    min_execution_horizon: int
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
-    min_execution_horizon: int = 0  # minimum steps to execute before server will re-infer this robot
     type: Literal["infer"] = "infer"
 
 
@@ -57,7 +58,8 @@ class ResetRequest:
 class InferResponse:
     robot_id: str
     request_id: int  # for routing response to correct connection
-    start_step: int  # from request
+    observation_step: int  # from request
+    action_start_step: int  # from request
     request_timestamp: float  # from request
     actions: Float[np.ndarray, "1 action_horizon action_dim"]  # TODO: check the type on this
     execution_horizon: int
@@ -73,6 +75,7 @@ class InferResponse:
 class ResponseAck:
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt
+    execution_start_step: int  # client step when new chunk became available
     type: Literal["ack"] = "ack"
 
 
