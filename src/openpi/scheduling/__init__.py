@@ -59,7 +59,8 @@ class RequestScheduler(ABC):
                 self._deadlines[request.robot_id] = request.deadline
                 self._latest_scheduled_requests[request.robot_id] = request
                 d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
-                d_steps = round(d_ms / _STEP_MS) if d_ms is not None else 0
+                step_ms = 1000.0 / request.control_hz
+                d_steps = round(d_ms / step_ms) if d_ms is not None else 0
                 annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
 
             self._batch_queue.put_nowait(annotated)
