@@ -144,22 +144,32 @@ class ActionChunk(ParquetDataclass, CSVDataclass):
     We store all actions, including past execution horizon, as they might come in handy for debugging later
     """
 
-    start_step: int
+    observation_step: int
+    action_start_step: int
+    execution_start_step: int  # which observation step the execution started on
     actions: np.ndarray
     execution_horizon: int
     request_timestamp: float
     response_timestamp: float
+    request_id: int = -1
     noise: Optional[np.ndarray] = None
 
     @classmethod
-    def from_infer_response(cls, infer_response: messages.InferResponse) -> "ActionChunk":
+    def from_infer_response(
+        cls,
+        infer_response: messages.InferResponse,
+        execution_start_step: int,
+    ) -> "ActionChunk":
         # NOTE: copy attributes instead of composition to make it easier to serialize for parquet/csv
         return ActionChunk(
-            start_step=infer_response.start_step,
+            observation_step=infer_response.observation_step,
+            action_start_step=infer_response.action_start_step,
+            execution_start_step=execution_start_step,
             actions=infer_response.actions,
             execution_horizon=infer_response.execution_horizon,
             request_timestamp=infer_response.request_timestamp,
             response_timestamp=time.time(),
+            request_id=infer_response.request_id,
             noise=infer_response.noise,
         )
 

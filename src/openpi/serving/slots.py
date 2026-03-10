@@ -22,9 +22,11 @@ class SlotData:
     obs: dict
     request_id: int
     arrival_timestamp: float
-    start_step: int
+    observation_step: int
+    action_start_step: int
     request_timestamp: float
     deadline: float
+    min_execution_horizon: int
     infer_type: Any
     params: Any
     noise: Any  # np.ndarray | None

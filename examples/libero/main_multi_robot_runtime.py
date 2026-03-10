@@ -114,7 +114,10 @@ def init_worker(args: Args, counter, progress_queue) -> None:
     )
 
     # Create broker config and instantiate
-    config = BrokerConfig(ws_client=ws_client, control_hz=args.control_hz)
+    # FIXME: hardcoded for now
+    config = BrokerConfig(
+        ws_client=ws_client, control_hz=args.control_hz, min_execution_horizon=3
+    )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
 
@@ -317,7 +320,10 @@ def main(args: Args) -> None:
 
     # Connect to get server metadata
     temp_client = BidirectionalWebsocket(
-        robot_id="robot", host=args.host, port=args.port
+        robot_id="robot",
+        host=args.host,
+        port=args.port,
+        control_hz=args.control_hz,
     )
     server_metadata = temp_client.server_metadata
     temp_client.close()
