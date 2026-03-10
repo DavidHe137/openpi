@@ -332,6 +332,7 @@ def plot_task_breakdown(
     plot_fn: Callable[[plt.Axes, np.ndarray, str], None],
     title: str,
     filename: pathlib.Path,
+    title_pad: Optional[float] = None,
 ) -> None:
     """Create grid: 'All Tasks' in first cell, then one cell per task.
 
@@ -341,6 +342,7 @@ def plot_task_breakdown(
         plot_fn: Function(ax, data, subtitle) that plots on a single axes
         title: Overall figure title
         filename: Where to save
+        title_pad: Optional extra padding (points) between suptitle and subplots
     """
     if df.empty:
         print(f"No data for {column}")
@@ -373,7 +375,9 @@ def plot_task_breakdown(
     elif n_rows == 1 or n_cols == 1:
         axes = axes.reshape(n_rows, n_cols)
 
-    fig.suptitle(title, fontsize=16, fontweight="bold")
+    fig.suptitle(title, fontsize=16, fontweight="bold", y=1.0 if title_pad else 0.98)
+    if title_pad is not None:
+        fig.subplots_adjust(top=0.88)
 
     # Plot overall
     plot_fn(axes.flat[0], df[column].values, "All Tasks Combined")
@@ -400,30 +404,18 @@ def plot_task_breakdown(
 
 
 def generate_latency_plot(output_path: pathlib.Path) -> None:
-    """Latency distribution: overall + per-task."""
+    """Latency distribution: overall + per-task (in milliseconds)."""
     df = load_action_chunks(output_path)
+    if not df.empty:
+        df = df.copy()
+        df["latency_ms"] = df["latency"] * 1000
     plot_task_breakdown(
         df,
-        column="latency",
-        plot_fn=lambda ax, data, title: plot_histogram(
-            ax, data, title, "Latency (seconds)"
-        ),
+        column="latency_ms",
+        plot_fn=lambda ax, data, title: plot_histogram(ax, data, title, "Latency (ms)"),
         title="Action Chunk Latency Distribution",
         filename=output_path / "plots" / "action_chunk_latency.png",
-    )
-
-
-def generate_execution_horizon_plot(output_path: pathlib.Path) -> None:
-    """Execution horizon distribution: overall + per-task."""
-    df = load_action_chunks(output_path)
-    plot_task_breakdown(
-        df,
-        column="execution_horizon",
-        plot_fn=lambda ax, data, title: plot_histogram(
-            ax, data, title, "Steps", color="coral", show_stats=False
-        ),
-        title="Execution Horizon Distribution",
-        filename=output_path / "plots" / "execution_horizon.png",
+        title_pad=20,
     )
 
 
@@ -457,6 +449,7 @@ def generate_success_rate_plot(output_path: pathlib.Path) -> None:
         return "red"
 
     fig, ax = plt.subplots(figsize=(12, 6))
+    fig.subplots_adjust(top=0.88)
     plot_bar_chart(
         ax,
         labels=summary["task_label"].tolist(),
@@ -479,21 +472,20 @@ def generate_success_rate_plot(output_path: pathlib.Path) -> None:
 
 
 def generate_steps_plot(output_path: pathlib.Path) -> None:
-    """Steps analysis: overall histograms + per-task violin plot."""
+    """Steps analysis: successful episodes histogram + per-task violin plot."""
     df = load_episodes(output_path)
     if df.empty:
         print("No episode data for steps plot")
         return
 
     fig = plt.figure(figsize=(16, 10))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.2], hspace=0.3)
+    gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.2], hspace=0.3)
     fig.suptitle("Steps Taken Analysis", fontsize=16, fontweight="bold")
 
-    # Overall distributions
+    # Overall distribution for successful episodes only
     success_steps = df[df["success"]]["steps_taken"].values
-    failure_steps = df[~df["success"]]["steps_taken"].values
 
-    ax_success = fig.add_subplot(gs[0, 0])
+    ax_success = fig.add_subplot(gs[0])
     if len(success_steps) > 0:
         plot_histogram(
             ax_success,
@@ -514,28 +506,7 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
         )
         ax_success.set_title("Successful Episodes")
 
-    ax_failure = fig.add_subplot(gs[0, 1])
-    if len(failure_steps) > 0:
-        plot_histogram(
-            ax_failure,
-            failure_steps,
-            "Failed Episodes",
-            "Steps",
-            color="red",
-            show_stats=False,
-        )
-    else:
-        ax_failure.text(
-            0.5,
-            0.5,
-            "No failed episodes",
-            ha="center",
-            va="center",
-            transform=ax_failure.transAxes,
-        )
-        ax_failure.set_title("Failed Episodes")
-
-    # Per-task violin plot
+    # Per-task violin plot (success only)
     df["task_label"] = (
         "Task " + df["task_id"].astype(str) + "\n" + df["task_language"].str[:30]
     )
@@ -545,12 +516,15 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
     ):
         groups[task_label] = {
             "success": group[group["success"]]["steps_taken"].values,
-            "failure": group[~group["success"]]["steps_taken"].values,
         }
 
-    ax_violin = fig.add_subplot(gs[1, :])
+    ax_violin = fig.add_subplot(gs[1])
     plot_grouped_violin(
-        ax_violin, groups, ylabel="Steps", title="Steps by Task (Success vs Failure)"
+        ax_violin,
+        groups,
+        ylabel="Steps",
+        title="Steps by Task (Successful Episodes)",
+        group_colors={"success": "lightgreen"},
     )
 
     plt.tight_layout()
@@ -623,8 +597,13 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
 
     ax.set_yticks(range(n_robots))
     ax.set_yticklabels([f"robot_{r}" for r in robots], fontsize=8)
+    # X-axis ticks every 20 steps (= 1 second at 20 Hz control)
+    tick_interval = 20
+    x_ticks = np.arange(0, max_len, tick_interval)
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels([f"{t // tick_interval}s" for t in x_ticks], fontsize=6)
     ax.set_xlabel(
-        "Step (episodes concatenated, white lines = episode boundaries)",
+        "Time in seconds (episodes concatenated, white lines = episode boundaries)",
         fontweight="bold",
     )
     ax.set_ylabel("Robot", fontweight="bold")
@@ -693,45 +672,13 @@ def generate_per_robot_success_rate_plot(output_path: pathlib.Path) -> None:
     print(f"Saved {plots_dir / 'per_robot_success_rate.png'}")
 
 
-def generate_per_robot_completion_speed_plot(output_path: pathlib.Path) -> None:
-    """Box plot of steps taken per robot (lower = faster completion)."""
-    df = load_episodes(output_path)
-    if df.empty:
-        print("No episode data for per-robot completion speed plot")
-        return
-
-    robots = sorted(df["robot_idx"].unique())
-    data_by_robot = [df[df["robot_idx"] == r]["steps_taken"].values for r in robots]
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bp = ax.boxplot(data_by_robot, labels=[str(r) for r in robots], patch_artist=True)
-
-    for patch in bp["boxes"]:
-        patch.set_facecolor("lightblue")
-        patch.set_alpha(0.7)
-
-    ax.set_xlabel("Robot Index", fontsize=12)
-    ax.set_ylabel("Steps Taken", fontsize=12)
-    ax.set_title("Per-Robot Task Completion Speed", fontsize=14, fontweight="bold")
-    ax.grid(axis="y", alpha=0.3)
-
-    plt.tight_layout()
-    plots_dir = output_path / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(plots_dir / "per_robot_completion_speed.png", dpi=150)
-    plt.close(fig)
-    print(f"Saved {plots_dir / 'per_robot_completion_speed.png'}")
-
-
 def generate_all_plots(output_path: pathlib.Path) -> None:
     """Generate all plots."""
     print("Generating plots...")
     generate_latency_plot(output_path)
-    generate_execution_horizon_plot(output_path)
     generate_success_rate_plot(output_path)
     generate_steps_plot(output_path)
     generate_per_robot_success_rate_plot(output_path)
-    generate_per_robot_completion_speed_plot(output_path)
     generate_actions_left_heatmap(output_path)
     print("Done!")
 
