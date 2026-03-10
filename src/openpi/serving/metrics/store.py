@@ -121,7 +121,7 @@ class MetricsStore:
                 inference_start_time=responses[0].inference_start_time,
                 inference_end_time=responses[0].inference_end_time,
                 execution_horizons=[r.execution_horizon for r in responses],
-                start_steps=[r.start_step for r in responses],
+                start_steps=[r.action_start_step for r in responses],
             )
             self.batches.append(batch)
 
@@ -129,7 +129,7 @@ class MetricsStore:
                 state = self.robot_states.setdefault(response.robot_id, RobotState())
 
                 if state.last_execution_horizon > 0:
-                    delta = response.start_step - state.last_start_step
+                    delta = response.action_start_step - state.last_start_step
                     if delta > 0:
                         starved_steps = max(0, delta - state.last_execution_horizon)
                         self.starvation_intervals.append(
@@ -142,7 +142,7 @@ class MetricsStore:
                         )
                         state.total_starvations += starved_steps
 
-                state.last_start_step = response.start_step
+                state.last_start_step = response.action_start_step
                 state.last_execution_horizon = response.execution_horizon
 
     def record_send(self, robot_id: str, request_id: int, server_send_time: float) -> None:
@@ -152,7 +152,7 @@ class MetricsStore:
             if state is not None:
                 state.last_server_send_times[request_id] = server_send_time
 
-    def record_ack(self, robot_id: str, request_id: int, receive_time: float) -> None:
+    def record_ack(self, robot_id: str, request_id: int, receive_time: float, execution_start_step: int) -> None:
         """Called when client sends ResponseAck."""
         with self._lock:
             state = self.robot_states.get(robot_id)

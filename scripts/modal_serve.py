@@ -3,11 +3,10 @@ import pathlib
 import subprocess
 import threading
 import time
-import urllib.error
-import urllib.request
 
 import modal
 import modal.experimental
+import requests
 
 log = logging.getLogger(__name__)
 
@@ -131,10 +130,10 @@ class ModalPolicyServer:
         self.process = _start_process()
         while True:
             try:
-                urllib.request.urlopen(f"http://localhost:{PORT}/metadata", timeout=5)
+                requests.get(f"http://localhost:{PORT}/metadata", timeout=5).raise_for_status()
                 logger.info("Server ready, snapshot will be taken now.")
                 return
-            except (urllib.error.URLError, OSError):
+            except requests.exceptions.RequestException:
                 time.sleep(1)
 
     @modal.enter(snap=False)
@@ -146,9 +145,6 @@ class ModalPolicyServer:
 
     @modal.asgi_app()
     def stable_endpoint(self):
-        import json
-        import urllib.request
-
         from fastapi import FastAPI
         from fastapi.responses import RedirectResponse
 
@@ -156,8 +152,7 @@ class ModalPolicyServer:
 
         @stable.get("/metadata")
         def metadata():
-            with urllib.request.urlopen(f"http://localhost:{PORT}/metadata") as resp:
-                meta = json.loads(resp.read())
+            meta = requests.get(f"http://localhost:{PORT}/metadata").json()
             meta["tunnel_url"] = self._url
             return meta
 

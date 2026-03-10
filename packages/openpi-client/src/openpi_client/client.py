@@ -1,19 +1,45 @@
-import json
 import logging
 import time
-import urllib.error
-import urllib.request
 from typing import Optional
 
 import numpy as np
+import requests
 from dataclasses import asdict
 import websockets.sync.client
 
-from openpi_client import msgpack_numpy
 from openpi_client import messages
-from openpi_client.schemas import ActionChunk, Observation, ServerMetadata
+from openpi_client import msgpack_numpy
+from openpi_client.messages import (
+    ConnectRequest,
+    WarmupAck,
+    WarmupPing,
+    WarmupPong,
+)
+from openpi_client.schemas import Observation, ServerMetadata
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
+
+NUM_WARMUP = 10
+WARMUP_OBS_BYTES = 3 * 224 * 224 * 3  # 3 channels, 224x224 pixels, 3 bytes per pixel
+
+
+# FIXME: need Tuple and not tuple to be backwards compatible with Python 3.8 (libero environment)
+def _parse_urls(host: str, port: Optional[int]) -> Tuple[str, str]:
+    """Parse host/port into (ws_uri, http_base) tuple."""
+    explicit_scheme = False
+    if host.startswith("https://"):
+        ws_scheme, http_scheme = "wss", "https"
+        host = host[len("https://") :]
+        explicit_scheme = True
+    elif host.startswith("http://"):
+        ws_scheme, http_scheme = "ws", "http"
+        host = host[len("http://") :]
+        explicit_scheme = True
+    else:
+        ws_scheme, http_scheme = "ws", "http"
+    base = host if (port is None or explicit_scheme) else f"{host}:{port}"
+    return f"{ws_scheme}://{base}/ws", f"{http_scheme}://{base}"
 
 
 class BidirectionalWebsocket:
@@ -28,28 +54,18 @@ class BidirectionalWebsocket:
         host: str = "0.0.0.0",
         port: Optional[int] = None,
         api_key: Optional[str] = None,
+        control_hz: float = 10.0,
     ) -> None:
         self._robot_id = robot_id
-        explicit_scheme = False
-        if host.startswith("https://"):
-            ws_scheme, http_scheme = "wss", "https"
-            host = host[len("https://") :]
-            explicit_scheme = True
-        elif host.startswith("http://"):
-            ws_scheme, http_scheme = "ws", "http"
-            host = host[len("http://") :]
-            explicit_scheme = True
-        else:
-            ws_scheme, http_scheme = "ws", "http"
-        base = host if (port is None or explicit_scheme) else f"{host}:{port}"
-        self._ws_uri = f"{ws_scheme}://{base}/ws?robot_id={robot_id}"
-        self._http_base = f"{http_scheme}://{base}"
+        self._ws_uri, self._http_base = _parse_urls(host, port)
         self._api_key = api_key
         self._server_metadata = self._wait_for_server()
         if self._server_metadata.tunnel_url:
             tunnel_host = self._server_metadata.tunnel_url.replace("https://", "", 1)
-            self._ws_uri = f"wss://{tunnel_host}/ws?robot_id={robot_id}"
+            self._ws_uri = f"wss://{tunnel_host}/ws"
         self._ws = self._connect_ws()
+        self._handshake(control_hz)
+        self._warmup()
 
     @property
     def server_metadata(self) -> ServerMetadata:
@@ -59,14 +75,31 @@ class BidirectionalWebsocket:
         logging.info(f"Waiting for server at {self._http_base}...")
         while True:
             try:
-                req = urllib.request.Request(f"{self._http_base}/metadata")
-                if self._api_key:
-                    req.add_header("Authorization", f"Api-Key {self._api_key}")
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    return ServerMetadata(**json.loads(resp.read()))
-            except (urllib.error.URLError, OSError):
+                resp = requests.get(
+                    f"{self._http_base}/metadata",
+                    headers={"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None,
+                    timeout=5,
+                )
+                resp.raise_for_status()
+                return ServerMetadata(**resp.json())
+            except requests.exceptions.RequestException:
                 logging.info("Still waiting for server...")
                 time.sleep(5)
+
+    def _handshake(self, control_hz: float) -> None:
+        """Send ConnectRequest with robot_id, wait for server acknowledgment."""
+        self._ws.send(msgpack_numpy.packb(asdict(ConnectRequest(robot_id=self._robot_id, control_hz=control_hz))))
+        msgpack_numpy.unpackb(self._ws.recv())  # ConnectResponse ack
+        logger.info("Connected as robot_id=%s", self._robot_id)
+
+    def _warmup(self) -> None:
+        """Perform num_warmup ping/pong round trips to seed server LatencyTracker."""
+        for _ in range(NUM_WARMUP):
+            ping = WarmupPing(client_timestamp=time.time(), payload=bytes(WARMUP_OBS_BYTES))
+            self._ws.send(msgpack_numpy.packb(asdict(ping)))
+            pong = WarmupPong(**msgpack_numpy.unpackb(self._ws.recv()))
+            ack = WarmupAck(server_send_time=pong.server_send_time, client_receive_time=time.time())
+            self._ws.send(msgpack_numpy.packb(asdict(ack)))
 
     def _connect_ws(self) -> websockets.sync.client.ClientConnection:
         headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
@@ -84,39 +117,28 @@ class BidirectionalWebsocket:
         self,
         obs: Observation,
         deadline: float,
-        use_rtc: bool = False,
-        prev_action: Optional[np.ndarray] = None,
-        s_param: Optional[int] = None,
-        d_param: Optional[int] = None,
-        noise: Optional[np.ndarray] = None,
+        action_start_step: int,
+        infer_type: messages.InferType = messages.InferType.SYNC,
         min_execution_horizon: int = 0,
+        noise: Optional[np.ndarray] = None,
     ) -> None:
-        infer_type = messages.InferType.SYNC
-        params = None
-        if use_rtc:
-            assert s_param is not None
-            assert d_param is not None
-            assert prev_action is not None
-            infer_type = messages.InferType.INFERENCE_TIME_RTC
-            params = messages.RTCParams(prev_action=prev_action, s_param=s_param, d_param=d_param)
         request = messages.InferRequest(
             request_timestamp=time.time(),
-            start_step=obs.step,
+            observation_step=obs.step,
+            action_start_step=action_start_step,
             robot_id=self._robot_id,
             observation=asdict(obs),
             deadline=deadline,
             infer_type=infer_type,
-            params=params,
             noise=noise,
             min_execution_horizon=min_execution_horizon,
         )
         data = msgpack_numpy.packb(asdict(request))
-
         self._ws.send(data)  # type: ignore
 
     def receive(
         self,
-    ) -> ActionChunk:  # noqa: UP006
+    ) -> messages.InferResponse:  # noqa: UP006
         response = self._ws.recv()
 
         response = msgpack_numpy.unpackb(response)
@@ -124,20 +146,15 @@ class BidirectionalWebsocket:
             # we're expecting bytes; if the server sends a string, it's an error.
             raise RuntimeError(f"Error in inference server:\n{response}")
 
-        infer_response = messages.InferResponse(**response)
-        response_timestamp = time.time()
-        ack = messages.ResponseAck(request_id=infer_response.request_id, receive_time=response_timestamp)
-        self._ws.send(msgpack_numpy.packb(asdict(ack)))
+        return messages.InferResponse(**response)
 
-        action_chunk = ActionChunk(
-            actions=infer_response.actions,
-            request_timestamp=infer_response.request_timestamp,
-            response_timestamp=response_timestamp,
-            start_step=infer_response.start_step,
-            execution_horizon=infer_response.execution_horizon,
-            noise=infer_response.noise,
+    def send_ack(self, request_id: int, receive_time: float, execution_start_step: int) -> None:
+        ack = messages.ResponseAck(
+            request_id=request_id,
+            receive_time=receive_time,
+            execution_start_step=execution_start_step,
         )
-        return action_chunk
+        self._ws.send(msgpack_numpy.packb(asdict(ack)))
 
     def reset(self) -> None:
         data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))

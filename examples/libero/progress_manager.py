@@ -79,6 +79,7 @@ class ProgressManager:
         self,
         num_robots: int,
         total_jobs: int,
+        total_episodes: int = 0,
         max_steps: int = 300,
         update_interval: float = 0.1,
     ):
@@ -88,6 +89,7 @@ class ProgressManager:
         Args:
             num_robots: Number of robot workers
             total_jobs: Total number of jobs to complete
+            total_episodes: Total number of episodes across all jobs
             max_steps: Maximum steps per episode
             update_interval: How often to check queue (seconds)
         """
@@ -101,7 +103,7 @@ class ProgressManager:
 
         # State tracking
         self.robot_states: dict[int, RobotState] = {}
-        self.job_stats = JobStats(total_jobs=total_jobs)
+        self.job_stats = JobStats(total_jobs=total_jobs, total_episodes=total_episodes)
 
         # Rich Progress components
         self.progress: Optional[Progress] = None
@@ -302,7 +304,6 @@ class ProgressManager:
             )
 
         self.robot_states[robot_idx] = robot_state
-        self.job_stats.total_episodes += job_info["num_episodes"]
 
     def _handle_episode_start(self, message: dict):
         """Handle episode start message."""
@@ -569,7 +570,6 @@ class ConciseProgressManager(ProgressManager):
         )
 
         self.robot_states[robot_idx] = robot_state
-        self.job_stats.total_episodes += job_info["num_episodes"]
 
     def _handle_episode_start(self, message: dict):
         """Handle episode start message (no progress bar updates)."""
@@ -706,7 +706,6 @@ class LoggingProgressManager(ProgressManager):
         )
 
         self.robot_states[robot_idx] = robot_state
-        self.job_stats.total_episodes += job_info["num_episodes"]
 
     def _handle_episode_start(self, message: dict):
         """Handle episode start message."""
@@ -757,6 +756,7 @@ def get_progress_manager(
     progress_type: Literal["verbose", "concise", "logging", None],
     num_robots: int = 1,
     total_jobs: int = 1,
+    total_episodes: int = 0,
     max_steps: int = 300,
     update_interval: float = 0.1,
 ) -> ProgressManager:
@@ -767,6 +767,7 @@ def get_progress_manager(
         progress_type: Type of progress manager ("verbose", "concise", "logging", or None)
         num_robots: Number of robot workers
         total_jobs: Total number of jobs to complete
+        total_episodes: Total number of episodes across all jobs
         max_steps: Maximum steps per episode
         update_interval: How often to check queue (seconds)
 
@@ -774,14 +775,16 @@ def get_progress_manager(
         The appropriate progress manager or nullcontext if progress_type is None
     """
     if progress_type == "verbose":
-        return ProgressManager(num_robots, total_jobs, max_steps, update_interval)
+        return ProgressManager(
+            num_robots, total_jobs, total_episodes, max_steps, update_interval
+        )
     elif progress_type == "concise":
         return ConciseProgressManager(
-            num_robots, total_jobs, max_steps, update_interval
+            num_robots, total_jobs, total_episodes, max_steps, update_interval
         )
     elif progress_type == "logging":
         return LoggingProgressManager(
-            num_robots, total_jobs, max_steps, update_interval
+            num_robots, total_jobs, total_episodes, max_steps, update_interval
         )
     else:
         return nullcontext()
