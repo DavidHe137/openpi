@@ -37,13 +37,14 @@ class TrainTimeRTCParams:
 class InferRequest:
     robot_id: str
     observation: dict
-    start_step: int  # TODO: can maybe fold into observation after typing
+    observation_step: int
+    action_start_step: int
     request_timestamp: float
     deadline: float
+    min_execution_horizon: int
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
-    min_execution_horizon: int = 0  # minimum steps to execute before server will re-infer this robot
     type: Literal["infer"] = "infer"
 
 
@@ -57,7 +58,8 @@ class ResetRequest:
 class InferResponse:
     robot_id: str
     request_id: int  # for routing response to correct connection
-    start_step: int  # from request
+    observation_step: int  # from request
+    action_start_step: int  # from request
     request_timestamp: float  # from request
     actions: Float[np.ndarray, "1 action_horizon action_dim"]  # TODO: check the type on this
     execution_horizon: int
@@ -73,4 +75,40 @@ class InferResponse:
 class ResponseAck:
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt
+    execution_start_step: int  # client step when new chunk became available
     type: Literal["ack"] = "ack"
+
+
+@dataclass(frozen=True)
+class ConnectRequest:
+    robot_id: str
+    control_hz: float
+    type: Literal["connect"] = "connect"
+
+
+@dataclass(frozen=True)
+class ConnectResponse:
+    type: Literal["connect_response"] = "connect_response"
+
+
+@dataclass(frozen=True)
+class WarmupPing:
+    client_timestamp: float
+    payload: bytes  # dummy bytes, same size as a typical packed InferRequest
+    type: Literal["warmup_ping"] = "warmup_ping"
+
+
+@dataclass(frozen=True)
+class WarmupPong:
+    client_timestamp: float  # echoed from WarmupPing
+    server_receive_time: float
+    server_send_time: float
+    payload: bytes  # dummy bytes, same size as a typical packed InferResponse
+    type: Literal["warmup_pong"] = "warmup_pong"
+
+
+@dataclass(frozen=True)
+class WarmupAck:
+    server_send_time: float  # echoed from WarmupPong, so server can compute delivery latency
+    client_receive_time: float
+    type: Literal["warmup_ack"] = "warmup_ack"

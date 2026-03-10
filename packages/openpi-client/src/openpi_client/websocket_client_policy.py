@@ -79,7 +79,7 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             params = messages.RTCParams(s_param=s_param, d_param=d_param)  # type: ignore
         request = messages.InferRequest(
             request_timestamp=time.time(),
-            start_step=obs.step,
+            observation_step=obs.step,
             robot_id=self._robot_id,
             observation=asdict(obs),
             deadline=deadline,

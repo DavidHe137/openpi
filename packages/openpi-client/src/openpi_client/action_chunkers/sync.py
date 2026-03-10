@@ -1,5 +1,3 @@
-import time
-
 from openpi_client.schemas import Observation
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
 from openpi_client.client import BidirectionalWebsocket
@@ -18,14 +16,16 @@ class SyncBroker(ActionChunkBroker):
         ws_client: BidirectionalWebsocket,
         control_hz: int,
         realtime: bool = True,
+        min_execution_horizon: int = 0,
     ):
-        super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
-        self.reset()
-        self._background_thread.start()
+        super().__init__(
+            ws_client=ws_client, control_hz=control_hz, realtime=realtime, min_execution_horizon=min_execution_horizon
+        )
+        assert self._min_execution_horizon == self._ws_client.server_metadata.action_horizon
 
     @override
     def _infer(self, obs: Observation) -> None:
-        chunk = self.current_action_chunk
-        min_horizon = chunk.execution_horizon if chunk else self._ws_client.server_metadata.action_horizon
-        deadline = time.time() + len(self._action_queue) * self._step_duration
-        self._ws_client.send(obs, deadline=deadline, min_execution_horizon=min_horizon)
+        if len(self._action_queue) > 0:
+            return
+
+        self._ws_client.send(obs, self.deadline, self._action_step, min_execution_horizon=self._min_execution_horizon)

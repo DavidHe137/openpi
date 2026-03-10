@@ -2,11 +2,18 @@ from abc import ABC
 from abc import abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
+import dataclasses
 import multiprocessing as mp
 import time
 
+from openpi.scheduling.latency import LatencyTracker
+from openpi.serving.schemas import AckNotification
+from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
+
+# FIXME: Robots should send control frequency to the server
+_STEP_MS = 50.0
 
 
 class RequestScheduler(ABC):
@@ -24,20 +31,38 @@ class RequestScheduler(ABC):
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
         self._timing_samples: list[SchedulerTimingSample] = []
+        self.latency = LatencyTracker()
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
         if request.deadline is not None and request.deadline > self._deadlines.get(request.robot_id, 0):
             self._deadlines[request.robot_id] = request.deadline
+        self.latency.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
+
+    def update_completion(self, notification: CompletionNotification) -> None:
+        self.latency.update_infer(notification.batch_size, notification.inference_duration_ms)
+
+    def update_ack(self, notification: AckNotification) -> None:
+        self.latency.update_action_delivery(
+            notification.robot_id,
+            notification.receive_time,
+            notification.server_send_time,
+        )
 
     def schedule(self) -> None:
         """Return a list of batches of requests to be sent to the GPU."""
         batches = self.get_next_batches()
         for batch in batches:
+            batch_size = len(batch)
+            annotated = []
             for request in batch:
                 self._deadlines[request.robot_id] = request.deadline
                 self._latest_scheduled_requests[request.robot_id] = request
-            self._batch_queue.put_nowait(batch)
+                d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
+                d_steps = round(d_ms / _STEP_MS) if d_ms is not None else 0
+                annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
+
+            self._batch_queue.put_nowait(annotated)
 
     @abstractmethod
     def get_next_batches(self) -> list[list[SlotRequest]]:
@@ -47,6 +72,7 @@ class RequestScheduler(ABC):
         self._deadlines.pop(robot_id, None)
         self._latest_requests.pop(robot_id, None)
         self._latest_scheduled_requests.pop(robot_id, None)
+        self.latency.reset_robot(robot_id)
 
     @contextmanager
     def record_timing(self, metric_name: str) -> Generator[None, None, None]:
@@ -76,7 +102,7 @@ class RequestScheduler(ABC):
             last = self._latest_scheduled_requests.get(req.robot_id)
             if last is req:
                 continue
-            if last is not None and req.start_step < last.start_step + last.min_execution_horizon:
+            if last is not None and req.action_start_step < last.action_start_step + last.min_execution_horizon:
                 continue
             result.append(req)
         return result

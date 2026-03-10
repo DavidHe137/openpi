@@ -16,9 +16,9 @@ class BrokerConfig:
 
     ws_client: BidirectionalWebsocket
     control_hz: int
+    min_execution_horizon: int
     # Optional parameters for specific brokers
     m_param: float = 1.0  # For temporal_ensembling: exponential decay rate
-    delay_buffer_size: int = 10  # For rtc: delay buffer size
 
 
 # Mappings outside the enum to avoid conflicts

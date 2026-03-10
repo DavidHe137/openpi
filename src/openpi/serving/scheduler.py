@@ -13,8 +13,11 @@ from openpi.scheduling.baselines import GreedyScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
 from openpi.scheduling.lookahead import LookaheadScheduler
+from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import BatchProfile
+from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SlotRequest
+from openpi.serving.schemas import WarmupSeed
 from openpi.shared import logging_config
 
 logger = logging.getLogger(__name__)
@@ -105,6 +108,7 @@ def _run_scheduler(
 
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)
+    poller.register(result_sock, zmq.POLLIN)
 
     ready_event.set()
     logger.info("Scheduler ready")
@@ -120,6 +124,29 @@ def _run_scheduler(
             elif isinstance(msg, SlotRequest):
                 scheduler.update(msg)
                 logger.debug("Received slot request: %s", msg)
+            elif isinstance(msg, AckNotification):
+                scheduler.update_ack(msg)
+                logger.debug("Received ack notification: %s", msg)
+            elif isinstance(msg, WarmupSeed):
+                for arrival_ts, request_ts in msg.obs_samples:
+                    scheduler.latency.update_obs(msg.robot_id, arrival_ts, request_ts)
+                for client_receive_time, server_send_time in msg.delivery_samples:
+                    scheduler.latency.update_action_delivery(msg.robot_id, client_receive_time, server_send_time)
+                logger.info(
+                    "Seeded latency for robot %s from warmup, obs_network_ms: %f, action_delivery_ms: %f",
+                    msg.robot_id,
+                    scheduler.latency.obs_network_ms(msg.robot_id),
+                    scheduler.latency.action_delivery_ms(msg.robot_id),
+                )
+            else:
+                logger.warning("Unknown message type: %s", type(msg).__name__)
+
+        while result_sock.poll(0):
+            msg = result_sock.recv_pyobj(zmq.NOBLOCK)
+            if isinstance(msg, list):
+                for item in msg:
+                    if isinstance(item, CompletionNotification):
+                        scheduler.update_completion(item)
 
         if not batch_queue.full():
             scheduler.schedule()
