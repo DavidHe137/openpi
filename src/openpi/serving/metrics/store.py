@@ -92,8 +92,9 @@ class MetricsStore:
         if state is not None:
             state.last_server_send_times[request_id] = server_send_time
 
-    def record_ack(self, robot_id: str, request_id: int, receive_time: float) -> None:
+    def record_ack(self, robot_id: str, request_id: int, receive_time: float, execution_start_step: int) -> None:
         """Called when client sends ResponseAck."""
+        # FIXME: need to use execution_start_step
         state = self.robot_states.get(robot_id)
         if state is None:
             return
