@@ -1,4 +1,3 @@
-import dataclasses
 from dataclasses import dataclass
 from dataclasses import field
 import itertools
@@ -7,6 +6,7 @@ from typing import Any
 
 import numpy as np
 from openpi_client.messages import InferResponse
+from openpi_client.schemas import JSONDataclass
 
 from openpi.serving.schemas import SchedulerTimingSample
 
@@ -44,7 +44,7 @@ class RobotState:
 
 
 @dataclass
-class MetricsStore:
+class MetricsStore(JSONDataclass):
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
     batches: list[BatchSummary] = field(default_factory=list)
@@ -226,38 +226,3 @@ class MetricsStore:
             "outbound_delays_ms": outbound,
             "scheduler_timings_ms": scheduler_timings,
         }
-
-    def reset(self) -> None:
-        """Clear all accumulated metrics and reset counters."""
-        self.batches.clear()
-        self.scheduler_timings.clear()
-        self.robot_states.clear()
-        self.start_time = time.time()
-        self.batch_counter = 0
-
-    def dump(self) -> dict[str, Any]:
-        """JSON-serializable dump of all raw state, suitable for full reconstruction via from_dump()."""
-        return {
-            "start_time": self.start_time,
-            "batch_counter": self.batch_counter,
-            "batches": [dataclasses.asdict(b) for b in self.batches],
-            "robot_states": {k: dataclasses.asdict(v) for k, v in self.robot_states.items()},
-            "scheduler_timings": [dataclasses.asdict(s) for s in self.scheduler_timings],
-        }
-
-    @classmethod
-    def from_dump(cls, data: dict) -> "MetricsStore":
-        """Reconstruct a MetricsStore from a dump produced by dump()."""
-        store = cls()
-        store.start_time = data["start_time"]
-        store.batch_counter = data["batch_counter"]
-        store.batches = [BatchSummary(**b) for b in data["batches"]]
-        store.robot_states = {
-            k: RobotState(
-                last_server_send_times={int(req_id): t for req_id, t in v["last_server_send_times"].items()},
-                ack_pairs=[tuple(p) for p in v["ack_pairs"]],
-            )
-            for k, v in data["robot_states"].items()
-        }
-        store.scheduler_timings = [SchedulerTimingSample(**s) for s in data["scheduler_timings"]]
-        return store
