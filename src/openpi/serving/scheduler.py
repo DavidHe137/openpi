@@ -140,6 +140,8 @@ def _run_scheduler(
                     scheduler.latency.obs_network_ms(msg.robot_id),
                     scheduler.latency.action_delivery_ms(msg.robot_id),
                 )
+            else:
+                logger.warning("Unknown message type: %s", type(msg).__name__)
 
         while result_sock.poll(0):
             msg = result_sock.recv_pyobj(zmq.NOBLOCK)

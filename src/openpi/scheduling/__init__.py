@@ -102,7 +102,7 @@ class RequestScheduler(ABC):
             last = self._latest_scheduled_requests.get(req.robot_id)
             if last is req:
                 continue
-            if req.action_start_step < last.action_start_step + last.min_execution_horizon:
+            if last is not None and req.action_start_step < last.action_start_step + last.min_execution_horizon:
                 continue
             result.append(req)
         return result

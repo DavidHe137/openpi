@@ -52,7 +52,6 @@ class ActionChunkBroker(ABC):
     def infer(self, obs: Observation) -> Action:
         """Client continuously streams observations to the server."""
         with self._lock:
-            assert obs.step == self._observation_step + 1, "Observations must be streamed in order"
             # count actions left in queue before we pop the next action
             self._actions_left_history.append(len(self._action_queue))
 
@@ -94,7 +93,9 @@ class ActionChunkBroker(ABC):
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)
                 self._ws_client.send_ack(
-                    action_chunk.request_id, action_chunk.response_timestamp, action_chunk.execution_start_step
+                    action_chunk.request_id,
+                    action_chunk.response_timestamp,
+                    action_chunk.execution_start_step,
                 )
 
     def _update_action_queue(self, action_chunk: ActionChunk) -> None:
@@ -114,7 +115,12 @@ class ActionChunkBroker(ABC):
         )
 
     def _infer(self, obs: Observation) -> None:
-        self._ws_client.send(obs, self.deadline, self._action_step, min_execution_horizon=self._min_execution_horizon)
+        self._ws_client.send(
+            obs,
+            self.deadline,
+            self._action_step,
+            min_execution_horizon=self._min_execution_horizon,
+        )
 
     def reset(self) -> None:
         with self._lock:

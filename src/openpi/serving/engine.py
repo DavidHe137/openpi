@@ -117,6 +117,7 @@ def _run_gpu_worker(
                 observation=sd.obs,
                 observation_step=sd.observation_step,
                 action_start_step=sd.action_start_step,
+                min_execution_horizon=sd.min_execution_horizon,
                 request_timestamp=sd.request_timestamp,
                 deadline=sd.deadline,
                 infer_type=sd.infer_type,
@@ -168,11 +169,11 @@ def _run_gpu_worker(
             [
                 CompletionNotification(
                     robot_id=sr.robot_id,
-                    start_step=sd.start_step,
+                    action_start_step=sd.action_start_step,
                     request_id=sd.request_id,
                     batch_size=len(slot_reqs),
                     inference_duration_ms=inference_duration_ms,
                 )
                 for sr, sd in zip(slot_reqs, slot_datas, strict=True)
-            ]
+            ],
         )

@@ -92,16 +92,21 @@ async def _router_task(
     metrics_store: MetricsStore,
 ) -> None:
     """Reads batches of InferResponses directly from GPU and dispatches to per-robot queues."""
+    logger.info("Router task starting")
     while True:
-        responses: list[InferResponse] = await response_sock.recv_pyobj()
-        metrics_store.record_batch(responses)
-        for response in responses:
-            queue = response_queues.get(response.robot_id)
-            logger.debug("Dispatching response to robot %s", response.robot_id)
-            if queue is not None:
-                await queue.put(response)
-            else:
-                logger.debug("No active connection for robot %s, dropping response", response.robot_id)
+        try:
+            responses: list[InferResponse] = await response_sock.recv_pyobj()
+            metrics_store.record_batch(responses)
+            for response in responses:
+                queue = response_queues.get(response.robot_id)
+                if queue is not None:
+                    await queue.put(response)
+                else:
+                    logger.info("No active connection for robot %s, dropping response", response.robot_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Router task error")
 
 
 async def _ws_handshake(
@@ -412,7 +417,6 @@ def create_app(
                         noise=req.noise,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
-                    logger.debug("Sent slot request to scheduler: %s", slot_req)
             except WebSocketDisconnect:
                 logger.debug("Robot %s disconnected", robot_id)
 

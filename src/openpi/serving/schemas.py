@@ -37,7 +37,7 @@ class CompletionNotification:
     """Sent from GPU to scheduler after inference so the scheduler can update its state."""
 
     robot_id: str
-    start_step: int
+    action_start_step: int
     request_id: int
     batch_size: int
     inference_duration_ms: float

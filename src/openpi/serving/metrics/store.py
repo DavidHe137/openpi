@@ -23,7 +23,8 @@ class BatchSummary:
     inference_start_time: float  # same for all requests in the batch
     inference_end_time: float  # same for all requests in the batch
     execution_horizons: list[int]
-    start_steps: list[int]
+    observation_steps: list[int]
+    action_start_steps: list[int]
 
     @property
     def gpu_time_ms(self) -> float:
@@ -67,7 +68,8 @@ class MetricsStore:
             inference_start_time=responses[0].inference_start_time,
             inference_end_time=responses[0].inference_end_time,
             execution_horizons=[r.execution_horizon for r in responses],
-            start_steps=[r.start_step for r in responses],
+            observation_steps=[r.observation_step for r in responses],
+            action_start_steps=[r.action_start_step for r in responses],
         )
         self.batches.append(batch)
 
@@ -80,8 +82,9 @@ class MetricsStore:
         if state is not None:
             state.last_server_send_times[request_id] = server_send_time
 
-    def record_ack(self, robot_id: str, request_id: int, receive_time: float) -> None:
+    def record_ack(self, robot_id: str, request_id: int, receive_time: float, execution_start_step: int) -> None:
         """Called when client sends ResponseAck."""
+        # TODO: use execution_start_step
         state = self.robot_states.get(robot_id)
         if state is None:
             return
@@ -131,7 +134,7 @@ class MetricsStore:
         per_robot: dict[str, Any] = {}
         for robot_id, state in self.robot_states.items():
             robot_steps = [
-                (b.start_steps[i], b.execution_horizons[i])
+                (b.action_start_steps[i], b.execution_horizons[i])
                 for b in self.batches
                 for i, rid in enumerate(b.robot_ids)
                 if rid == robot_id
@@ -175,13 +178,24 @@ class MetricsStore:
                 per_req.append(
                     {
                         "robot_id": rid,
-                        "inbound_ms": round((b.server_arrival_times[j] - b.request_timestamps[j]) * 1000, 2),
-                        "queue_ms": round((b.inference_start_time - b.server_arrival_times[j]) * 1000, 2),
+                        "inbound_ms": round(
+                            (b.server_arrival_times[j] - b.request_timestamps[j]) * 1000,
+                            2,
+                        ),
+                        "queue_ms": round(
+                            (b.inference_start_time - b.server_arrival_times[j]) * 1000,
+                            2,
+                        ),
                         "infer_ms": round(b.gpu_time_ms, 2),
                     }
                 )
             idle_before_ms = (
-                round((b.inference_start_time - batches[i - 1].inference_end_time) * 1000, 2) if i > 0 else 0.0
+                round(
+                    (b.inference_start_time - batches[i - 1].inference_end_time) * 1000,
+                    2,
+                )
+                if i > 0
+                else 0.0
             )
             batch_data.append(
                 {
