@@ -166,6 +166,14 @@ class LiberoSimEnvironment(_environment.Environment):
     def control_hz(self) -> float:
         return self._control_hz
 
+    @property
+    def max_episode_steps(self) -> int:
+        return self._max_episode_steps
+
+    @property
+    def total_episodes(self) -> int:
+        return len(self._initial_states)
+
     @override
     def close(self) -> None:
         self._env.close()

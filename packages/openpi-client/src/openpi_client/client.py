@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Literal
 from typing import Optional
 
 import numpy as np
@@ -159,3 +160,34 @@ class BidirectionalWebsocket:
     def reset(self) -> None:
         data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))
         self._ws.send(data)
+
+    def send_task_update(
+        self,
+        task_suite_name: str,
+        task_id: int,
+        episode_idx: int,
+        current_step: int,
+        max_episode_steps: int,
+        phase: Literal["progress", "result"] = "progress",
+        task_language: Optional[str] = None,
+        total_episodes: Optional[int] = None,
+        success: Optional[bool] = None,
+        duration_s: Optional[float] = None,
+        steps_taken: Optional[int] = None,
+        max_duration_s: Optional[float] = None,
+    ) -> None:
+        payload = messages.TaskUpdate(
+            task_suite_name=task_suite_name,
+            task_id=task_id,
+            episode_idx=episode_idx,
+            current_step=current_step,
+            max_episode_steps=max_episode_steps,
+            phase=phase,
+            task_language=task_language,
+            total_episodes=total_episodes,
+            success=success,
+            duration_s=duration_s,
+            steps_taken=steps_taken,
+            max_duration_s=max_duration_s,
+        )
+        self._ws.send(msgpack_numpy.packb(asdict(payload)))  # type: ignore

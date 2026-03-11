@@ -114,6 +114,16 @@ _BTN_PRIMARY = {
     "fontFamily": "inherit",
     "fontSize": "0.85em",
 }
+_BTN_ACTIVE = {
+    "background": "#14351f",
+    "border": "1px solid #66bb6a",
+    "color": "#b9f6ca",
+    "padding": "6px 16px",
+    "borderRadius": "4px",
+    "cursor": "pointer",
+    "fontFamily": "inherit",
+    "fontSize": "0.85em",
+}
 _CFG = {"displaylogo": False, "responsive": True}
 
 
@@ -127,17 +137,17 @@ def _section(title: str, *children: object) -> html.Div:
     )
 
 
-def _stat_card(value: str, label: str) -> html.Div:
+def _stat_card(value: str, label: str, *, value_color: str = "#4fc3f7") -> html.Div:
     return html.Div(
         style=_STAT_CARD,
         children=[
-            html.Div(value, style={"fontSize": "1.9em", "fontWeight": 700, "color": "#4fc3f7", "lineHeight": "1.1"}),
+            html.Div(value, style={"fontSize": "1.9em", "fontWeight": 700, "color": value_color, "lineHeight": "1.1"}),
             html.Div(label, style={"color": "#555", "fontSize": "0.72em", "marginTop": "5px"}),
         ],
     )
 
 
-def _robot_table(robots: dict) -> html.Element:
+def _robot_table(robots: dict, sla_pct: float) -> html.Element:
     if not robots:
         return html.Div("No robots yet.", style={"color": "#444", "padding": "12px"})
     th = {
@@ -155,7 +165,10 @@ def _robot_table(robots: dict) -> html.Element:
                 html.Tr(
                     [
                         html.Th("Robot", style=th),
-                        html.Th("Starvations", style=th),
+                        html.Th("Starved / Obs", style=th),
+                        html.Th("Starvation (%)", style=th),
+                        html.Th("Healthy", style=th),
+                        html.Th("TP (suc/sec/robot)", style=th),
                         html.Th("Avg Net Delay (ms)", style=th),
                     ]
                 )
@@ -166,12 +179,32 @@ def _robot_table(robots: dict) -> html.Element:
                         [
                             html.Td(rid, style={**td_base, "color": "#ccc"}),
                             html.Td(
-                                str(r["total_starvations"]),
+                                f"{r.get('starved_steps', 0):,} / {r.get('observed_steps', 0):,}",
                                 style={
                                     **td_base,
-                                    "color": "#ff8a65" if r["total_starvations"] > 0 else "#4fc3f7",
+                                    "color": "#ff8a65" if r.get("starved_steps", 0) > 0 else "#4fc3f7",
                                     "fontWeight": 600,
                                 },
+                            ),
+                            html.Td(
+                                f"{r.get('starvation_rate_pct', 0.0):.2f}",
+                                style={
+                                    **td_base,
+                                    "color": "#ff8a65" if r.get("starvation_rate_pct", 0.0) > sla_pct else "#4fc3f7",
+                                    "fontWeight": 600,
+                                },
+                            ),
+                            html.Td(
+                                "yes" if r.get("healthy", False) else "no",
+                                style={
+                                    **td_base,
+                                    "color": "#81c784" if r.get("healthy", False) else "#ef9a9a",
+                                    "fontWeight": 600,
+                                },
+                            ),
+                            html.Td(
+                                f"{r.get('tp_suc_per_sec_robot', 0.0):.3f}",
+                                style={**td_base, "color": "#4fc3f7", "fontWeight": 600},
                             ),
                             html.Td(
                                 f"{r['avg_network_delay_ms']:.2f}",
@@ -184,6 +217,236 @@ def _robot_table(robots: dict) -> html.Element:
             ),
         ],
     )
+
+
+def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: list[dict], title: str) -> go.Figure:
+    fig = go.Figure()
+    if not task_events and not task_progress:
+        fig.update_layout(
+            **_layout(
+                title={"text": title, "font": {"size": 12, "color": "#888"}},
+                xaxis={"title": "Episode"},
+                yaxis={"title": "Task / Robot"},
+                showlegend=False,
+            )
+        )
+        return fig
+
+    # Row key = "{robot_id}-{task_id} . averages"
+    row_events: dict[str, dict[int, dict]] = {}
+    row_total_episodes: dict[str, int] = {}
+
+    for event in task_events:
+        label = f"{event['robot_id']}-{int(event['task_id'])} . avg"
+        row_events.setdefault(label, {})[int(event["episode_idx"])] = event
+        row_total_episodes[label] = max(
+            row_total_episodes.get(label, 0),
+            int(event.get("total_episodes") or 0),
+            int(event["episode_idx"]),
+        )
+
+    for prog in task_progress:
+        label = f"{prog['robot_id']}-{int(prog['task_id'])} . avg"
+        row_events.setdefault(label, {})
+        row_total_episodes[label] = max(
+            row_total_episodes.get(label, 0),
+            int(prog.get("total_episodes") or 0),
+            int(prog["episode_idx"]),
+        )
+
+    row_order = sorted(row_events.keys())
+    max_episode = max(row_total_episodes.values(), default=1)
+    row_count = len(row_order)
+    row_ticktext: dict[str, str] = {}
+    for label in row_order:
+        completed = list(row_events[label].values())
+        if completed:
+            avg_duration_s = float(np.mean([float(event["duration_s"]) for event in completed]))
+            avg_steps = float(np.mean([float(event["steps_taken"]) for event in completed]))
+            row_ticktext[label] = (
+                f"{label}  "
+                f"<span style='color:#4fc3f7;font-weight:700'>{avg_duration_s:.1f}s</span> / "
+                f"<span style='color:#ffb74d;font-weight:700'>{avg_steps:.0f}st</span>"
+            )
+        else:
+            row_ticktext[label] = (
+                f"{label}  <span style='color:#6b7280'>--s</span> / <span style='color:#6b7280'>--st</span>"
+            )
+
+    z: list[list[float | None]] = []
+    text: list[list[str]] = []
+    hover_text: list[list[str]] = []
+    border_x: list[int] = []
+    border_y: list[str] = []
+    border_color: list[str] = []
+
+    for label in row_order:
+        row_z: list[float | None] = []
+        row_text: list[str] = []
+        row_hover: list[str] = []
+        for episode_idx in range(1, max_episode + 1):
+            if episode_idx > row_total_episodes[label]:
+                row_z.append(None)
+                row_text.append("")
+                row_hover.append("")
+                continue
+
+            event = row_events[label].get(episode_idx)
+            border_x.append(episode_idx)
+            border_y.append(label)
+            if event is None:
+                row_z.append(0.0)
+                row_text.append("")
+                row_hover.append(f"{label}<br>episode: {episode_idx}<br>status: pending")
+                border_color.append("#374151")
+                continue
+
+            duration = float(event["duration_s"])
+            steps = float(event["steps_taken"])
+            row_z.append(2.0 if event["success"] else 1.0)
+            row_text.append(f"{duration:.1f} s / {steps:.0f} st")
+            row_hover.append(
+                f"{label}<br>episode: {episode_idx}<br>duration: {duration:.3f} s<br>"
+                f"steps: {steps:.0f} st<br>success: {event['success']}"
+            )
+            border_color.append("#22c55e" if event["success"] else "#ef4444")
+
+        z.append(row_z)
+        text.append(row_text)
+        hover_text.append(row_hover)
+
+    fig.add_trace(
+        go.Heatmap(
+            x=list(range(1, max_episode + 1)),
+            y=row_order,
+            z=z,
+            text=text,
+            customdata=hover_text,
+            hovertemplate="%{customdata}<extra></extra>",
+            texttemplate="%{text}",
+            textfont={"size": 10, "color": "#111"},
+            zmin=0.0,
+            zmax=2.0,
+            colorscale=[
+                [0.0, "#1f2937"],
+                [0.333, "#1f2937"],
+                [0.334, "#dc2626"],
+                [0.666, "#dc2626"],
+                [0.667, "#22c55e"],
+                [1.0, "#22c55e"],
+            ],
+            showscale=False,
+            xgap=2,
+            ygap=2,
+        )
+    )
+
+    cell_size = max(14, min(46, int(760 / max(max_episode, row_count, 1))))
+    fig.add_trace(
+        go.Scatter(
+            x=border_x,
+            y=border_y,
+            mode="markers",
+            hoverinfo="skip",
+            marker={
+                "symbol": "square-open",
+                "size": cell_size,
+                "color": "rgba(0,0,0,0)",
+                "line": {"width": 2, "color": border_color},
+            },
+            showlegend=False,
+        )
+    )
+
+    fig.update_layout(
+        **_layout(
+            title={"text": title, "font": {"size": 12, "color": "#888"}},
+            xaxis={"title": "Episode", "dtick": 1},
+            yaxis={
+                "title": "Robot / Task",
+                "categoryorder": "array",
+                "categoryarray": row_order,
+                "tickmode": "array",
+                "tickvals": row_order,
+                "ticktext": [row_ticktext[row] for row in row_order],
+                "autorange": "reversed",
+                "ticklabelstandoff": 20,
+                "automargin": True,
+            },
+            showlegend=False,
+            height=max(440, row_count * 56 + 120),
+            margin={"t": 40, "r": 18, "b": 70, "l": 430},
+        )
+    )
+    return fig
+
+
+def _sla_capacity_curve_fig(sla_capacity_curve: list[dict], sla_pct: float) -> go.Figure:
+    fig = go.Figure()
+    if sla_capacity_curve:
+        xs = [point["sla_pct"] for point in sla_capacity_curve]
+        ys = [point["healthy_robot_count"] for point in sla_capacity_curve]
+        active = [point["active_robot_count"] for point in sla_capacity_curve]
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines+markers",
+                line={"color": "#ce93d8", "width": 2},
+                marker={"size": 5},
+                customdata=active,
+                hovertemplate="SLA %{x:.0f}%<br>healthy %{y} / %{customdata}<extra></extra>",
+                name="healthy robots",
+            )
+        )
+        fig.add_vline(x=sla_pct, line_width=1, line_dash="dot", line_color="#4fc3f7")
+    fig.update_layout(
+        **_layout(
+            title={"text": "SLA Capacity Curve", "font": {"size": 12, "color": "#888"}},
+            xaxis={"title": "SLA threshold (%)", "range": [0, 20], "dtick": 2},
+            yaxis={"title": "Healthy robots"},
+            height=320,
+            showlegend=False,
+        )
+    )
+    return fig
+
+
+def _healthy_robots_over_time_fig(series: list[dict], sla_pct: float) -> go.Figure:
+    fig = go.Figure()
+    if series:
+        xs = [point["t"] for point in series]
+        healthy = [point["healthy_robot_count"] for point in series]
+        active = [point["active_robot_count"] for point in series]
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=healthy,
+                mode="lines+markers",
+                line={"color": "#81c784", "width": 2},
+                marker={"size": 4},
+                name="healthy robots",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=active,
+                mode="lines",
+                line={"color": "#607d8b", "width": 1.5, "dash": "dot"},
+                name="active robots",
+            )
+        )
+    fig.update_layout(
+        **_layout(
+            title={"text": f"Healthy Robots Over Time @ {sla_pct:.0f}% SLA", "font": {"size": 12, "color": "#888"}},
+            xaxis={"title": "Time since server start (s)"},
+            yaxis={"title": "Robots"},
+            height=320,
+            showlegend=True,
+        )
+    )
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +470,9 @@ def _gpu_dist_fig(batches: list[dict]) -> go.Figure:
                 line_width=1.5,
             )
         )
-    fig.update_layout(**_layout(xaxis={"title": "Batch size"}, yaxis={"title": "GPU time (ms)"}, showlegend=False))
+    fig.update_layout(
+        **_layout(xaxis={"title": "Batch size"}, yaxis={"title": "GPU time (ms)"}, height=320, showlegend=False)
+    )
     return fig
 
 
@@ -268,7 +533,7 @@ def _stage_figs(hist: dict, robot: str) -> tuple[go.Figure, go.Figure, go.Figure
     od = hist.get("outbound_delays_ms", {})
     outbound = list(od.get(robot) or []) if robot != "all" else [d for v in od.values() for d in v]
 
-    small = {**_DARK, "margin": {"t": 36, "r": 8, "b": 44, "l": 48}}
+    small = {**_DARK, "margin": {"t": 36, "r": 8, "b": 44, "l": 48}, "height": 280}
     figs = []
     for data, color, title in [
         (inbound, "#4fc3f7", "Inbound Network"),
@@ -299,6 +564,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         __name__,
         url_base_pathname="/dashboard/",
         title="openpi · metrics",
+        prevent_initial_callbacks="initial_duplicate",
         suppress_callback_exceptions=True,
     )
 
@@ -314,6 +580,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         children=[
             dcc.Store(id="store-session", storage_type="session"),
             dcc.Store(id="store-xrange"),
+            dcc.Store(id="store-auto-refresh-enabled", data=False),
+            dcc.Interval(id="interval-refresh", interval=5000, disabled=True, n_intervals=0),
             # Header
             html.H1(
                 "openpi · metrics",
@@ -335,6 +603,25 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                 },
                 children=[
                     html.Button("⟳ Refresh", id="btn-refresh", n_clicks=0, style=_BTN_PRIMARY),
+                    html.Button("▶ Auto", id="btn-auto-refresh", n_clicks=0, style=_BTN_PRIMARY),
+                    html.Label("every", style={"color": "#555", "fontSize": "0.85em"}),
+                    dcc.Dropdown(
+                        id="dd-auto-refresh-seconds",
+                        options=[
+                            {"label": "1", "value": 1},
+                            {"label": "2", "value": 2},
+                            {"label": "5", "value": 5},
+                            {"label": "10", "value": 10},
+                            {"label": "15", "value": 15},
+                            {"label": "30", "value": 30},
+                            {"label": "60", "value": 60},
+                        ],
+                        value=5,
+                        clearable=False,
+                        searchable=False,
+                        style={"width": "84px", "fontSize": "0.9em"},
+                    ),
+                    html.Label("seconds", style={"color": "#555", "fontSize": "0.85em"}),
                     html.Label("Last", style={"color": "#555", "fontSize": "0.85em"}),
                     dcc.Input(
                         id="input-window",
@@ -365,12 +652,20 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             # Charts
             _section(
                 "Charts",
+                # Combined episode heatmap
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Episode Progress Heatmap", style=_CARD_HDR),
+                        dcc.Graph(id="graph-task-heatmap", config=_CFG),
+                    ],
+                ),
                 # GPU inference dist
                 html.Div(
                     style=_CARD,
                     children=[
                         html.Div("GPU Inference Time by Batch Size", style=_CARD_HDR),
-                        dcc.Graph(id="graph-gpu-dist", config=_CFG),
+                        dcc.Graph(id="graph-gpu-dist", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # Stage latency
@@ -394,12 +689,52 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         html.Div(
                             style={"display": "grid", "gridTemplateColumns": "repeat(4, 1fr)"},
                             children=[
-                                dcc.Graph(id="graph-inbound", config=_CFG),
-                                dcc.Graph(id="graph-queue", config=_CFG),
-                                dcc.Graph(id="graph-infer", config=_CFG),
-                                dcc.Graph(id="graph-outbound", config=_CFG),
+                                dcc.Graph(id="graph-inbound", config=_CFG, style={"height": "280px"}),
+                                dcc.Graph(id="graph-queue", config=_CFG, style={"height": "280px"}),
+                                dcc.Graph(id="graph-infer", config=_CFG, style={"height": "280px"}),
+                                dcc.Graph(id="graph-outbound", config=_CFG, style={"height": "280px"}),
                             ],
                         ),
+                    ],
+                ),
+                # SLA capacity curve
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("SLA Capacity Curve", style=_CARD_HDR),
+                        html.Div(
+                            style={"padding": "10px 14px 0 14px"},
+                            children=[
+                                html.Div(
+                                    "SLA threshold (%)",
+                                    style={"color": "#666", "fontSize": "0.8em", "marginBottom": "4px"},
+                                ),
+                                dcc.Slider(
+                                    id="slider-sla-pct",
+                                    min=0,
+                                    max=20,
+                                    step=1,
+                                    value=10,
+                                    marks={
+                                        0: {"label": "0%", "style": {"color": "#fff"}},
+                                        5: {"label": "5%", "style": {"color": "#fff"}},
+                                        10: {"label": "10%", "style": {"color": "#fff"}},
+                                        15: {"label": "15%", "style": {"color": "#fff"}},
+                                        20: {"label": "20%", "style": {"color": "#fff"}},
+                                    },
+                                    tooltip={"placement": "bottom"},
+                                ),
+                            ],
+                        ),
+                        dcc.Graph(id="graph-sla-capacity", config=_CFG, style={"height": "320px"}),
+                    ],
+                ),
+                # Healthy robots over time
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Healthy Robots Over Time", style=_CARD_HDR),
+                        dcc.Graph(id="graph-healthy-robots", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # Batch sizes (resampled)
@@ -407,7 +742,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                     style=_CARD,
                     children=[
                         html.Div("Batch Sizes Over Time", style=_CARD_HDR),
-                        dcc.Graph(id="graph-batch", config=_CFG),
+                        dcc.Graph(id="graph-batch", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # GPU busy (resampled)
@@ -415,7 +750,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                     style=_CARD,
                     children=[
                         html.Div("GPU Busy (%)", style=_CARD_HDR),
-                        dcc.Graph(id="graph-busy", config=_CFG),
+                        dcc.Graph(id="graph-busy", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
                 # Gantt
@@ -437,6 +772,30 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     def _init_session(data: dict | None) -> dict:
         return data if data else {"id": str(uuid.uuid4())}
 
+    @app.callback(
+        Output("store-auto-refresh-enabled", "data"),
+        Output("btn-auto-refresh", "children"),
+        Output("btn-auto-refresh", "style"),
+        Output("interval-refresh", "disabled"),
+        Output("interval-refresh", "interval"),
+        Input("btn-auto-refresh", "n_clicks"),
+        Input("dd-auto-refresh-seconds", "value"),
+        State("store-auto-refresh-enabled", "data"),
+    )
+    def _configure_auto_refresh(
+        n_clicks: int,
+        seconds: int | None,
+        enabled: bool | None,
+    ) -> tuple[bool, str, dict, bool, int]:
+        _ = n_clicks
+        is_enabled = bool(enabled)
+        if ctx.triggered_id == "btn-auto-refresh":
+            is_enabled = not is_enabled
+        refresh_seconds = max(1, int(seconds) if seconds is not None else 5)
+        btn_label = f"⏸ Auto ({refresh_seconds}s)" if is_enabled else "▶ Auto"
+        btn_style = _BTN_ACTIVE if is_enabled else _BTN_PRIMARY
+        return is_enabled, btn_label, btn_style, (not is_enabled), refresh_seconds * 1000
+
     # -------------------------------------------------------------------------
     # Main refresh: stats, robots, GPU dist, Gantt
     # -------------------------------------------------------------------------
@@ -445,19 +804,32 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("div-stats", "children"),
         Output("div-robots", "children"),
         Output("graph-gpu-dist", "figure"),
+        Output("graph-task-heatmap", "figure"),
+        Output("graph-sla-capacity", "figure"),
+        Output("graph-healthy-robots", "figure"),
         Output("graph-gantt", "figure"),
         Output("dd-robot", "options"),
         Output("span-status", "children"),
         Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
+        Input("slider-sla-pct", "value"),
         State("input-window", "value"),
     )
     def _refresh_main(
         n_clicks: int,
+        n_intervals: int,
+        sla_pct: float | None,
         window_s: float | None,
     ) -> tuple:
-        snap = metrics_store.snapshot(window_s)
-        hist = metrics_store.history(window_s)
+        _ = n_clicks, n_intervals
+        sla_pct = float(sla_pct) if sla_pct is not None else 10.0
+        snap = metrics_store.snapshot(window_s, sla_pct=sla_pct)
+        hist = metrics_store.history(window_s, sla_pct=sla_pct)
         batches = hist["batches"]
+        task_events = hist.get("task_events", [])
+        task_progress = hist.get("task_progress", [])
+        sla_capacity_curve = hist.get("sla_capacity_curve", [])
+        healthy_robots_over_time = hist.get("healthy_robots_over_time", [])
 
         def f(v: float) -> str:
             return f"{v:.1f}"
@@ -475,19 +847,39 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             ("GPU busy (%)", f"{snap['gpu_busy_pct']:.1f}%"),
             ("avg queue delay (ms)", f(snap["avg_queue_delay_ms"])),
             ("total batches", f"{snap['total_batches']:,}"),
+            ("task success (%)", f(snap["task_success_rate_pct"])),
+            ("TP (suc/sec/all)", f"{snap.get('tp_suc_per_sec_all', 0.0):.3f}"),
         ]
         stat_cards = [_stat_card(v, lbl) for lbl, v in stats]
 
         robots = snap.get("per_robot", {})
-        robot_el = _robot_table(robots)
+        robot_el = _robot_table(robots, sla_pct)
 
         gpu_fig = _gpu_dist_fig(batches)
+        task_heatmap_fig = _combined_task_episode_heatmap_fig(
+            task_events,
+            task_progress,
+            title="Success, Completion Time Metrics",
+        )
+        sla_capacity_fig = _sla_capacity_curve_fig(sla_capacity_curve, sla_pct)
+        healthy_robots_fig = _healthy_robots_over_time_fig(healthy_robots_over_time, sla_pct)
         gantt = _gantt_fig(batches, float(window_s) if window_s else float("inf"))
 
         robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in robots]
         status = "last refresh: " + datetime.datetime.now(datetime.UTC).astimezone().strftime("%H:%M:%S")
 
-        return subtitle, stat_cards, robot_el, gpu_fig, gantt, robot_opts, status
+        return (
+            subtitle,
+            stat_cards,
+            robot_el,
+            gpu_fig,
+            task_heatmap_fig,
+            sla_capacity_fig,
+            healthy_robots_fig,
+            gantt,
+            robot_opts,
+            status,
+        )
 
     # -------------------------------------------------------------------------
     # Batch sizes: initial load (resampled)
@@ -495,10 +887,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     @app.callback(
         Output("graph-batch", "figure"),
         Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
         State("input-window", "value"),
         State("store-session", "data"),
     )
-    def _load_batch(n_clicks: int, window_s: float | None, session_data: dict | None) -> FigureResampler:
+    def _load_batch(
+        n_clicks: int,
+        n_intervals: int,
+        window_s: float | None,
+        session_data: dict | None,
+    ) -> FigureResampler:
+        _ = n_clicks, n_intervals
         sid = (session_data or {}).get("id", "default")
         hist = metrics_store.history(window_s)
         batches = hist["batches"]
@@ -512,7 +911,9 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                 hf_x=times,
                 hf_y=sizes,
             )
-        fr.update_layout(**_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Batch size"}))
+        fr.update_layout(
+            **_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Batch size"}, height=320)
+        )
         _resamplers.setdefault(sid, {})["batch"] = fr
         return fr
 
@@ -536,10 +937,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     @app.callback(
         Output("graph-busy", "figure"),
         Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
         State("input-window", "value"),
         State("store-session", "data"),
     )
-    def _load_busy(n_clicks: int, window_s: float | None, session_data: dict | None) -> FigureResampler:
+    def _load_busy(
+        n_clicks: int,
+        n_intervals: int,
+        window_s: float | None,
+        session_data: dict | None,
+    ) -> FigureResampler:
+        _ = n_clicks, n_intervals
         sid = (session_data or {}).get("id", "default")
         hist = metrics_store.history(window_s)
         batches = hist["batches"]
@@ -572,7 +980,9 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             )
         fr.update_layout(
             **_layout(
-                xaxis={"title": "Time since server start (s)"}, yaxis={"title": "GPU busy (%)", "range": [0, 100]}
+                xaxis={"title": "Time since server start (s)"},
+                yaxis={"title": "GPU busy (%)", "range": [0, 100]},
+                height=320,
             )
         )
         _resamplers.setdefault(sid, {})["busy"] = fr
@@ -623,9 +1033,13 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     def _apply_xrange(xrange: list | None) -> tuple:
         if not xrange:
             raise dash.exceptions.PreventUpdate
-        p = Patch()
-        p["layout"]["xaxis"]["range"] = xrange
-        return p, p, p
+        p_batch = Patch()
+        p_batch["layout"]["xaxis"]["range"] = xrange
+        p_busy = Patch()
+        p_busy["layout"]["xaxis"]["range"] = xrange
+        p_gantt = Patch()
+        p_gantt["layout"]["xaxis"]["range"] = xrange
+        return p_batch, p_busy, p_gantt
 
     # -------------------------------------------------------------------------
     # Stage latency distributions
@@ -636,14 +1050,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("graph-infer", "figure"),
         Output("graph-outbound", "figure"),
         Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
         Input("dd-robot", "value"),
         State("input-window", "value"),
     )
     def _update_stage(
         n_clicks: int,
+        n_intervals: int,
         robot: str,
         window_s: float | None,
     ) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
+        _ = n_clicks, n_intervals
         hist = metrics_store.history(window_s)
         return _stage_figs(hist, robot or "all")
 
@@ -652,10 +1069,13 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         @app.callback(
             Output(gid, "figure", allow_duplicate=True),
             Input(gid, "relayoutData"),
+            State(gid, "figure"),
             prevent_initial_call=True,
         )
-        def _zoom_histogram(relay: dict | None) -> Patch:
+        def _zoom_histogram(relay: dict | None, figure: dict | None) -> Patch:
             if not relay or "xaxis.range[0]" not in relay:
+                raise dash.exceptions.PreventUpdate
+            if not figure or not figure.get("data"):
                 raise dash.exceptions.PreventUpdate
             x0 = float(relay["xaxis.range[0]"])
             x1 = float(relay["xaxis.range[1]"])
