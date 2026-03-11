@@ -46,6 +46,10 @@ class ResponseRecord:
     execution_start_step: int = 0  # client: ResponseAck.execution_start_step
     first_executed_index: int = 0  # client: index within chunk where execution started
 
+    def __post_init__(self) -> None:
+        if isinstance(self.request, dict):
+            self.request = RequestRecord(**self.request)
+
     @property
     def queue_delay_ms(self) -> float:
         return (self.inference_start_time - self.request.server_arrival_time) * 1000
@@ -76,6 +80,8 @@ class Episode:
     success: bool | None = None
 
     def __post_init__(self) -> None:
+        self.requests = [RequestRecord(**r) if isinstance(r, dict) else r for r in self.requests]
+        self.responses = [ResponseRecord(**r) if isinstance(r, dict) else r for r in self.responses]
         assert all(r.observation_step == i for i, r in enumerate(self.requests))
         assert all(
             next_request.action_start_step > prev_request.action_start_step
@@ -94,19 +100,13 @@ class Episode:
     def actions_left_history(self) -> np.ndarray[int, " num_steps"]:
         actions_left_history = np.zeros(self.num_steps, dtype=np.int32)
         for response in self.responses:
-            execution_end_step = min(
-                response.request.action_start_step + response.request.execution_horizon,
-                self.num_steps,
-            )
-            # TODO: fix this calculation
-            actions_left = [
-                response.request.execution_horizon - response.first_executed_index
-                for _ in range(
-                    response.request.action_start_step,
-                    response.request.action_start_step + response.request.execution_horizon,
-                )
-            ]
-
+            # At execution_start_step the robot is on action first_executed_index of the chunk,
+            # so it has (execution_horizon - first_executed_index) actions remaining, counting
+            # down by 1 each step until the chunk is exhausted or the episode ends.
+            remaining = response.request.execution_horizon - response.first_executed_index
+            execution_end_step = min(response.execution_start_step + remaining, self.num_steps)
+            n = execution_end_step - response.execution_start_step
+            actions_left = np.arange(remaining, remaining - n, -1)
             actions_left_history[response.execution_start_step : execution_end_step] = np.maximum(
                 actions_left_history[response.execution_start_step : execution_end_step],
                 actions_left,
@@ -130,9 +130,7 @@ class Robot:
     episodes: list[Episode]
 
     def __post_init__(self) -> None:
-        # TODO: how to make these not saved in asdict but just in memory?
-        self.requests: dict[int, RequestRecord] = {}
-        self.responses: dict[int, ResponseRecord] = {}
+        self.episodes = [Episode(**e) if isinstance(e, dict) else e for e in self.episodes]
 
     @property
     def current_episode(self) -> Episode:
@@ -179,6 +177,14 @@ class BatchSummary(NamedTuple):
     inference_start_time: float
     inference_end_time: float
 
+    @classmethod
+    def from_json(cls, data: BatchSummary | dict | list) -> BatchSummary:
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, dict):
+            return cls(**data)
+        return cls(*data)
+
     @property
     def gpu_time_ms(self) -> float:
         return (self.inference_end_time - self.inference_start_time) * 1000
@@ -196,17 +202,16 @@ class MetricsStore(JSONDataclass):
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def __post_init__(self):
-        # FIXME: have dataclasses implement their own coercion
-        # Coerce from JSON: dicts (old format) or lists (NamedTuple → JSON array)
-        self.batches = [
-            BatchSummary(**b) if isinstance(b, dict) else BatchSummary(*b) if not isinstance(b, BatchSummary) else b
-            for b in self.batches
-        ]
-        # TODO: doesn't work right now
-        self.robots = {robot_id: Robot(robot_id=robot_id, episodes=[]) for robot_id in self.robots}
-        self.scheduler_timings = [
-            SchedulerTimingSample(**s) if isinstance(s, dict) else s for s in self.scheduler_timings
-        ]
+        self.batches = [BatchSummary.from_json(b) for b in self.batches]
+        self.robots = {
+            robot_id: v
+            if isinstance(v, Robot)
+            else Robot(**v)
+            if isinstance(v, dict)
+            else Robot(robot_id=robot_id, episodes=[])
+            for robot_id, v in self.robots.items()
+        }
+        self.scheduler_timings = [SchedulerTimingSample.from_json(s) for s in self.scheduler_timings]
 
     # scheduler updates
 
@@ -229,7 +234,7 @@ class MetricsStore(JSONDataclass):
             self.scheduler_timings.extend(samples)
 
     # request/response lifecycle
-    # TODO: look in server, think about how to map requests to responses elegantly
+
     def record_request(self, robot_id: str, request: SlotRequest) -> None:
         """Called when client sends InferRequest."""
         with self._lock:
@@ -257,8 +262,8 @@ class MetricsStore(JSONDataclass):
                 ResponseRecord(
                     request=request_record,
                     batch_id=batch.batch_id,
-                    inference_start_time=batch.inference_start_time if batch else 0.0,
-                    inference_end_time=batch.inference_end_time if batch else 0.0,
+                    inference_start_time=batch.inference_start_time,
+                    inference_end_time=batch.inference_end_time,
                     server_send_time=ack.server_send_time,
                     receive_time=ack.receive_time,
                     execution_start_step=ack.execution_start_step,
