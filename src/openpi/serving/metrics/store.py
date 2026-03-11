@@ -84,7 +84,7 @@ class Episode:
         self.responses = [ResponseRecord(**r) if isinstance(r, dict) else r for r in self.responses]
         assert all(r.observation_step == i for i, r in enumerate(self.requests))
         assert all(
-            next_request.action_start_step > prev_request.action_start_step
+            next_request.action_start_step >= prev_request.action_start_step
             for prev_request, next_request in zip(self.requests[:-1], self.requests[1:], strict=True)
         )
 
@@ -167,6 +167,14 @@ class Robot:
         # search backward on current request
         return next(r for r in reversed(self.current_episode.requests) if r.request_id == request_id)
 
+    @property
+    def total_steps(self) -> int:
+        return sum(e.num_steps for e in self.episodes)
+
+    @property
+    def total_starved_steps(self) -> int:
+        return sum(np.sum(e.actions_left_history == 0) for e in self.episodes)
+
 
 class StarvationIntervalEvent(NamedTuple):
     robot_id: str
@@ -195,6 +203,11 @@ class BatchSummary(NamedTuple):
         return (self.inference_end_time - self.inference_start_time) * 1000
 
 
+# TODO: figure out if locking is necessary, if we can get away without it
+# temporary hack to not serialize the lock in metrics store
+lock: threading.RLock = threading.RLock()
+
+
 @dataclass
 class MetricsStore(JSONDataclass):
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
@@ -202,9 +215,6 @@ class MetricsStore(JSONDataclass):
     robots: dict[RobotID, Robot] = field(default_factory=dict)
     batches: list[BatchSummary] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
-
-    # TODO: figure out if locking is necessary, if we can get away without it
-    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def __post_init__(self):
         self.batches = [BatchSummary.from_json(b) for b in self.batches]
@@ -222,7 +232,7 @@ class MetricsStore(JSONDataclass):
 
     def record_batch(self, responses: list[InferResponse]) -> None:
         """Called once per batch by _router_task."""
-        with self._lock:
+        with lock:
             self.batches.append(
                 BatchSummary(
                     batch_id=len(self.batches),
@@ -235,14 +245,14 @@ class MetricsStore(JSONDataclass):
 
     def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
         """Called from the server process when the scheduler publishes timing samples."""
-        with self._lock:
+        with lock:
             self.scheduler_timings.extend(samples)
 
     # request/response lifecycle
 
     def record_request(self, robot_id: str, request: SlotRequest) -> None:
         """Called when client sends InferRequest."""
-        with self._lock:
+        with lock:
             record = RequestRecord(
                 robot_id=robot_id,
                 request_id=request.request_id,
@@ -260,7 +270,7 @@ class MetricsStore(JSONDataclass):
         ack: ResponseAck,
     ) -> None:
         """Called when client sends ResponseAck."""
-        with self._lock:
+        with lock:
             request_record = self.robots[robot_id].get_request(ack.request_id)
             batch = next(b for b in reversed(self.batches) if ack.request_id in b.request_ids)
             self.robots[robot_id].add_response(
@@ -284,7 +294,7 @@ class MetricsStore(JSONDataclass):
         episode_start: EpisodeStart,
     ) -> None:
         """Called when client streams an in-progress task step count."""
-        with self._lock:
+        with lock:
             if robot_id not in self.robots:
                 self.robots[robot_id] = Robot(robot_id=robot_id, episodes=[])
             self.robots[robot_id].start_episode(episode_start)
@@ -295,7 +305,7 @@ class MetricsStore(JSONDataclass):
         episode_end: EpisodeEnd,
     ) -> None:
         """Called when client streams an in-progress task step count."""
-        with self._lock:
+        with lock:
             self.robots[robot_id].end_episode(episode_end)
 
     # metrics
@@ -337,38 +347,28 @@ class MetricsStore(JSONDataclass):
 
     def _build_robot_sla_rollup(
         self,
-        robot_ids: set[str],
-        intervals: list[StarvationIntervalEvent],
         sla_pct: float,
     ) -> tuple[dict[str, dict[str, Any]], int, int, float]:
+        # TODO: make concise/efficient
         per_robot: dict[str, dict[str, Any]] = {
-            robot_id: {"observed_steps": 0, "starved_steps": 0} for robot_id in robot_ids
+            robot_id: {
+                "observed_steps": robot.total_steps,
+                "starved_steps": robot.total_starved_steps,
+                "starvation_rate_pct": (robot.total_starved_steps / robot.total_steps * 100)
+                if robot.total_steps > 0
+                else 0.0,
+                "active": robot.total_steps > 0,
+                "healthy": robot.total_starved_steps <= sla_pct * robot.total_steps,
+            }
+            for robot_id, robot in self.robots.items()
         }
-        for interval in intervals:
-            row = per_robot.setdefault(interval.robot_id, {"observed_steps": 0, "starved_steps": 0})
-            row["observed_steps"] += interval.observed_steps
-            row["starved_steps"] += interval.starved_steps
 
-        active_robot_count = 0
-        healthy_robot_count = 0
-        total_observed_steps = 0
-        total_starved_steps = 0
-        for row in per_robot.values():
-            observed_steps = row["observed_steps"]
-            starved_steps = row["starved_steps"]
-            total_observed_steps += observed_steps
-            total_starved_steps += starved_steps
-            starvation_rate_pct = (starved_steps / observed_steps * 100) if observed_steps > 0 else 0.0
-            active = observed_steps > 0
-            healthy = active and starvation_rate_pct <= sla_pct
-            row["starvation_rate_pct"] = starvation_rate_pct
-            row["active"] = active
-            row["healthy"] = healthy
-            if active:
-                active_robot_count += 1
-            if healthy:
-                healthy_robot_count += 1
-
+        active_robot_count = sum(1 for robot in self.robots.values() if robot.total_steps > 0)
+        healthy_robot_count = sum(
+            1 for robot in self.robots.values() if robot.total_starved_steps <= sla_pct * robot.total_steps
+        )
+        total_starved_steps = sum(robot["starved_steps"] for robot in per_robot.values())
+        total_observed_steps = sum(robot["observed_steps"] for robot in per_robot.values())
         global_starvation_rate_pct = (
             (total_starved_steps / total_observed_steps * 100) if total_observed_steps > 0 else 0.0
         )
@@ -435,13 +435,12 @@ class MetricsStore(JSONDataclass):
 
     def snapshot(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> dict[str, Any]:
         """JSON-serializable summary of current metrics."""
-        with self._lock:
+        with lock:
             now = time.time()
             uptime_s = now - self._start_time
             cutoff = now - window_s if window_s is not None else None
 
             batches = self._window_filter(self.batches, lambda b: b.inference_end_time, cutoff)
-            starvation_intervals = self._starvation_intervals(cutoff)
 
             total_requests = sum(len(b.robot_ids) for b in batches)
 
@@ -483,8 +482,6 @@ class MetricsStore(JSONDataclass):
                 healthy_robot_count,
                 global_starvation_rate_pct,
             ) = self._build_robot_sla_rollup(
-                set(self.robots.keys()),
-                starvation_intervals,
                 sla_pct,
             )
 
@@ -576,7 +573,7 @@ class MetricsStore(JSONDataclass):
 
     def history(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> dict[str, Any]:
         """Per-batch time-series data for Plotly charts in the dashboard."""
-        with self._lock:
+        with lock:
             now = time.time()
             cutoff = now - window_s if window_s is not None else None
             batches = self._window_filter(self.batches, lambda b: b.inference_end_time, cutoff)
@@ -648,7 +645,7 @@ class MetricsStore(JSONDataclass):
                 metric_key = f"{sample.scheduler_name}.{sample.metric_name}"
                 scheduler_timings.setdefault(metric_key, []).append(round(sample.duration_ms, 3))
 
-            robot_rollup, _, _, _ = self._build_robot_sla_rollup(set(self.robots.keys()), starvation_intervals, sla_pct)
+            robot_rollup, _, _, _ = self._build_robot_sla_rollup(sla_pct)
             sla_capacity_curve = self._build_sla_capacity_curve(robot_rollup)
             healthy_robots_over_time = self._build_healthy_robots_over_time(
                 starvation_intervals,
@@ -731,7 +728,7 @@ class MetricsStore(JSONDataclass):
 
     def reset(self) -> None:
         """Clear all accumulated metrics and reset counters."""
-        with self._lock:
+        with lock:
             self.batches.clear()
             self.scheduler_timings.clear()
             self.robots.clear()

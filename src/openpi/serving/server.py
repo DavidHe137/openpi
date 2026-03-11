@@ -446,17 +446,18 @@ def create_app(
     async def server_metadata() -> dict:
         return asdict(metadata)
 
-    @app.get("/metrics")
+    @app.get("/")
     async def get_metrics(request: Request, window_s: float | None = None, sla_pct: float = 10.0) -> dict:
         return request.app.state.server.metrics_store.snapshot(window_s, sla_pct=sla_pct)
 
-    @app.get("/metrics/history")
-    async def get_metrics_history(request: Request, window_s: float | None = None, sla_pct: float = 10.0) -> dict:
-        return request.app.state.server.metrics_store.history(window_s, sla_pct=sla_pct)
+    @app.get("/save-metrics")
+    async def save_metrics(request: Request) -> dict:
+        return asdict(request.app.state.server.metrics_store)
 
-    @app.post("/reset-metrics")
+    @app.post("/reset")
     async def reset_metrics(request: Request) -> dict:
         request.app.state.server.metrics_store.reset()
+        # TODO: reset server state too
         return {"status": "ok"}
 
     dash_app = create_dash_app(metadata, metrics_store)
