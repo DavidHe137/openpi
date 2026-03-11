@@ -138,7 +138,6 @@ class Robot:
         return self.episodes[-1]
 
     def start_episode(self, episode_start: EpisodeStart) -> None:
-        assert len(self.episodes) == episode_start.episode_idx
         self.episodes.append(
             Episode(
                 task_suite_name=episode_start.task_suite_name,
@@ -155,7 +154,6 @@ class Robot:
         assert episode.task_suite_name == episode_end.task_suite_name
         assert episode.task_id == episode_end.task_id
         assert episode.num_steps == episode_end.steps_taken
-        assert len(self.episodes) - 1 == episode_end.episode_idx
         episode.success = episode_end.success
 
     def add_request(self, request: RequestRecord) -> None:
@@ -287,6 +285,8 @@ class MetricsStore(JSONDataclass):
     ) -> None:
         """Called when client streams an in-progress task step count."""
         with self._lock:
+            if robot_id not in self.robots:
+                self.robots[robot_id] = Robot(robot_id=robot_id, episodes=[])
             self.robots[robot_id].start_episode(episode_start)
 
     def record_episode_end(
@@ -734,5 +734,4 @@ class MetricsStore(JSONDataclass):
         with self._lock:
             self.batches.clear()
             self.scheduler_timings.clear()
-            for robot in self.robots.values():
-                robot.episodes.clear()
+            self.robots.clear()

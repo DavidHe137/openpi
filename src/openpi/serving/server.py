@@ -375,6 +375,7 @@ def create_app(
                             continue
                         case "episode_end":
                             state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
+                            continue
                         case "infer":
                             pass
                         case unknown:
