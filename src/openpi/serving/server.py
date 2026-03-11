@@ -359,14 +359,8 @@ def create_app(
                             continue
                         case "ack":
                             ack = ResponseAck(**msg)
-                            server_send_time = send_times.pop(ack.request_id, None)
-                            state.metrics_store.record_ack(
-                                ack.request_id,
-                                server_send_time,
-                                ack.receive_time,
-                                ack.execution_start_step,
-                                ack.first_executed_index,
-                            )
+                            server_send_time = send_times.pop(ack.request_id, 0.0)
+                            state.metrics_store.record_response(ack, server_send_time)
                             if server_send_time is not None:
                                 await state.scheduler_sock.send_pyobj(
                                     AckNotification(
@@ -422,7 +416,7 @@ def create_app(
                         control_hz=state.robot_metadata[robot_id].control_hz,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
-                    state.metrics_store.record_arrival(robot_id, req.observation_step, arrival_timestamp)
+                    state.metrics_store.record_request(slot_req)
             except WebSocketDisconnect:
                 logger.debug("Robot %s disconnected", robot_id)
 
