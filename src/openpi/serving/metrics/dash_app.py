@@ -230,7 +230,7 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
         row_total_episodes[label] = max(
             row_total_episodes.get(label, 0),
             int(event.get("total_episodes") or 0),
-            int(event["episode_idx"]),
+            int(event["episode_idx"]) + 1,
         )
 
     for prog in task_progress:
@@ -239,7 +239,7 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
         row_total_episodes[label] = max(
             row_total_episodes.get(label, 0),
             int(prog.get("total_episodes") or 0),
-            int(prog["episode_idx"]),
+            int(prog["episode_idx"]) + 1,
         )
 
     row_order = sorted(row_events.keys())
@@ -272,8 +272,8 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
         row_z: list[float | None] = []
         row_text: list[str] = []
         row_hover: list[str] = []
-        for episode_idx in range(1, max_episode + 1):
-            if episode_idx > row_total_episodes[label]:
+        for episode_idx in range(max_episode):
+            if episode_idx >= row_total_episodes[label]:
                 row_z.append(None)
                 row_text.append("")
                 row_hover.append("")
@@ -305,7 +305,7 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
 
     fig.add_trace(
         go.Heatmap(
-            x=list(range(1, max_episode + 1)),
+            x=list(range(max_episode)),
             y=row_order,
             z=z,
             text=text,
@@ -440,26 +440,46 @@ def _healthy_robots_over_time_fig(series: list[dict], sla_pct: float) -> go.Figu
 # ---------------------------------------------------------------------------
 # Figure builders
 # ---------------------------------------------------------------------------
+_PALETTE = [
+    "#4fc3f7",
+    "#81c784",
+    "#ff8a65",
+    "#ce93d8",
+    "#ffb74d",
+    "#f06292",
+    "#4db6ac",
+    "#aed581",
+    "#7986cb",
+    "#4dd0e1",
+]
+
+
 def _gpu_dist_fig(batches: list[dict]) -> go.Figure:
     fig = go.Figure()
     by_size: dict[int, list[float]] = {}
     for b in batches:
         by_size.setdefault(b["batch_size"], []).append(b["gpu_time_ms"])
-    for s in sorted(by_size):
+    for i, s in enumerate(sorted(by_size)):
+        color = _PALETTE[i % len(_PALETTE)]
         fig.add_trace(
-            go.Box(
-                y=by_size[s],
+            go.Histogram(
+                x=by_size[s],
                 name=str(s),
-                boxpoints="outliers",
-                jitter=0.4,
-                pointpos=0,
-                marker_size=3,
-                marker_opacity=0.5,
-                line_width=1.5,
+                nbinsx=60,
+                marker_color=color,
+                marker_opacity=0.6,
+                legendgroup=str(s),
             )
         )
     fig.update_layout(
-        **_layout(xaxis={"title": "Batch size"}, yaxis={"title": "GPU time (ms)"}, height=320, showlegend=False)
+        **_layout(
+            barmode="overlay",
+            xaxis={"title": "GPU time (ms)"},
+            yaxis={"title": "Count"},
+            height=320,
+            showlegend=True,
+            legend={"title": {"text": "Batch size"}, **_DARK["legend"]},
+        )
     )
     return fig
 
