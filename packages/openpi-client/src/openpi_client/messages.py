@@ -81,6 +81,23 @@ class ResponseAck:
 
 
 @dataclass(frozen=True)
+class TaskUpdate:
+    task_suite_name: str
+    task_id: int
+    episode_idx: int
+    current_step: int
+    max_episode_steps: int
+    phase: Literal["progress", "result"] = "progress"
+    task_language: Optional[str] = None
+    total_episodes: Optional[int] = None
+    success: Optional[bool] = None
+    duration_s: Optional[float] = None
+    steps_taken: Optional[int] = None
+    max_duration_s: Optional[float] = None
+    type: Literal["task_update"] = "task_update"
+
+
+@dataclass(frozen=True)
 class ConnectRequest:
     robot_id: str
     control_hz: float
