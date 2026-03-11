@@ -95,6 +95,7 @@ class ActionChunkBroker(ABC):
                 first_executed_index = max(0, self._action_step - action_chunk.action_start_step)
                 self._ws_client.send_ack(
                     action_chunk.request_id,
+                    infer_response.server_send_time,
                     action_chunk.response_timestamp,
                     action_chunk.execution_start_step,
                     first_executed_index,

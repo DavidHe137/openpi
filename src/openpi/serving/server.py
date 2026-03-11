@@ -347,7 +347,6 @@ def create_app(
 
         # Normal operation
         response_queue: asyncio.Queue = state.response_queues[robot_id]
-        send_times: dict[int, float] = {}  # request_id → server_send_time
 
         async def recv():
             try:
@@ -361,17 +360,15 @@ def create_app(
                             continue
                         case "ack":
                             ack = ResponseAck(**msg)
-                            server_send_time = send_times.pop(ack.request_id, 0.0)
-                            state.metrics_store.record_response(robot_id, slot_request, ack, server_send_time)
-                            if server_send_time is not None:
-                                await state.scheduler_sock.send_pyobj(
-                                    AckNotification(
-                                        robot_id=robot_id,
-                                        request_id=ack.request_id,
-                                        receive_time=ack.receive_time,
-                                        server_send_time=server_send_time,
-                                    )
+                            state.metrics_store.record_response(robot_id, ack)
+                            await state.scheduler_sock.send_pyobj(
+                                AckNotification(
+                                    robot_id=robot_id,
+                                    request_id=ack.request_id,
+                                    receive_time=ack.receive_time,
+                                    server_send_time=ack.server_send_time,
                                 )
+                            )
                             continue
                         case "episode_start":
                             state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
@@ -430,9 +427,7 @@ def create_app(
         async def send():
             while True:
                 response: InferResponse = await response_queue.get()
-                send_time = time.time()
-                send_times[response.request_id] = send_time
-                stamped = dataclasses.replace(response, server_send_time=send_time)
+                stamped = dataclasses.replace(response, server_send_time=time.time())
                 await websocket.send_bytes(msgpack_numpy.packb(asdict(stamped)))
 
         recv_task = asyncio.create_task(recv())

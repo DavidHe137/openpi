@@ -151,11 +151,13 @@ class BidirectionalWebsocket:
     def send_ack(
         self,
         request_id: int,
+        server_send_time: float,
         receive_time: float,
         execution_start_step: int,
         first_executed_index: int = 0,
     ) -> None:
         ack = messages.ResponseAck(
+            server_send_time=server_send_time,
             request_id=request_id,
             receive_time=receive_time,
             execution_start_step=execution_start_step,

@@ -91,13 +91,14 @@ class Episode:
         return len(self.requests)
 
     @property
-    def actions_left_history(self) -> np.ndarray:
+    def actions_left_history(self) -> np.ndarray[int, " num_steps"]:
         actions_left_history = np.zeros(self.num_steps, dtype=np.int32)
         for response in self.responses:
             execution_end_step = min(
                 response.request.action_start_step + response.request.execution_horizon,
                 self.num_steps,
             )
+            # TODO: fix this calculation
             actions_left = [
                 response.request.execution_horizon - response.first_executed_index
                 for _ in range(
@@ -128,6 +129,11 @@ class Robot:
     robot_id: str
     episodes: list[Episode]
 
+    def __post_init__(self) -> None:
+        # TODO: how to make these not saved in asdict but just in memory?
+        self.requests: dict[int, RequestRecord] = {}
+        self.responses: dict[int, ResponseRecord] = {}
+
     @property
     def current_episode(self) -> Episode:
         assert len(self.episodes) > 0
@@ -150,8 +156,7 @@ class Robot:
         episode = self.current_episode
         assert episode.task_suite_name == episode_end.task_suite_name
         assert episode.task_id == episode_end.task_id
-        assert episode.max_episode_steps == episode_end.max_episode_steps
-        assert episode.task_language == episode_end.task_language
+        assert episode.num_steps == episode_end.steps_taken
         assert len(self.episodes) - 1 == episode_end.episode_idx
         episode.success = episode_end.success
 
@@ -160,6 +165,11 @@ class Robot:
 
     def add_response(self, response: ResponseRecord) -> None:
         self.current_episode.responses.append(response)
+
+    def get_request(self, request_id: int) -> RequestRecord:
+        # NOTE: can only be called when store is live
+        # search backward on current request
+        return next(r for r in reversed(self.current_episode.requests) if r.request_id == request_id)
 
 
 class BatchSummary(NamedTuple):
@@ -237,32 +247,19 @@ class MetricsStore(JSONDataclass):
     def record_response(
         self,
         robot_id: str,
-        request: SlotRequest,
         ack: ResponseAck,
-        server_send_time: float = 0.0,
     ) -> None:
         """Called when client sends ResponseAck."""
         with self._lock:
-            req_record = RequestRecord(
-                robot_id=robot_id,
-                request_id=request.request_id,
-                observation_step=request.observation_step,
-                action_start_step=request.action_start_step,
-                execution_horizon=request.min_execution_horizon,
-                request_timestamp=request.request_timestamp,
-                server_arrival_time=request.arrival_timestamp,
-            )
-            batch = next(
-                (b for b in reversed(self.batches) if request.request_id in b.request_ids),
-                None,
-            )
+            request_record = self.robots[robot_id].get_request(ack.request_id)
+            batch = next(b for b in reversed(self.batches) if ack.request_id in b.request_ids)
             self.robots[robot_id].add_response(
                 ResponseRecord(
-                    request=req_record,
-                    batch_id=batch.batch_id if batch else -1,
+                    request=request_record,
+                    batch_id=batch.batch_id,
                     inference_start_time=batch.inference_start_time if batch else 0.0,
                     inference_end_time=batch.inference_end_time if batch else 0.0,
-                    server_send_time=server_send_time,
+                    server_send_time=ack.server_send_time,
                     receive_time=ack.receive_time,
                     execution_start_step=ack.execution_start_step,
                     first_executed_index=ack.first_executed_index,
