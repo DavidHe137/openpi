@@ -580,36 +580,27 @@ def _gantt_fig(batches: list[dict], window_s: float) -> go.Figure:
     return fig
 
 
-def _actions_left_heatmap_fig(series: dict) -> go.Figure:
-    """Heatmap of actions_left: robots on y-axis, concatenated steps on x-axis.
+def _actions_left_heatmap_fig(robot_actions_left: dict[str, np.ndarray]) -> go.Figure:
+    """Heatmap of actions_left over time. Robots on y-axis, steps on x-axis.
 
-    Episodes are concatenated per robot with white vertical lines at boundaries.
+    Each robot's array is windowed episodes concatenated with nan separators,
+    so gaps in the heatmap mark episode boundaries naturally.
     """
-    robots = sorted(series.keys())
+    robots = sorted(robot_actions_left.keys())
+    fig = go.Figure()
     if not robots:
-        fig = go.Figure()
         fig.update_layout(**_layout(xaxis={"title": "Step"}, yaxis={"title": "Robot"}))
         return fig
 
-    robot_vals: list[list[float | None]] = []
-    episode_boundaries: list[list[int]] = []
-
+    max_len = max(len(arr) for arr in robot_actions_left.values())
+    matrix: list[list[float | None]] = []
     for rid in robots:
-        vals: list[float | None] = []
-        bounds: list[int] = []
-        for ep in series[rid]:
-            bounds.append(len(vals))
-            vals.extend(float(v) for v in ep)
-        robot_vals.append(vals)
-        episode_boundaries.append(bounds)
+        arr = robot_actions_left[rid]
+        padded = np.full(max_len, np.nan)
+        padded[: len(arr)] = arr
+        matrix.append(padded.tolist())
 
-    max_len = max(len(v) for v in robot_vals)
-    matrix = [[None] * max_len for _ in range(len(robots))]
-    for i, vals in enumerate(robot_vals):
-        for j, v in enumerate(vals):
-            matrix[i][j] = v
-
-    fig = go.Figure(
+    fig.add_trace(
         go.Heatmap(
             z=matrix,
             y=robots,
@@ -618,29 +609,10 @@ def _actions_left_heatmap_fig(series: dict) -> go.Figure:
             colorbar={"title": "Actions left"},
         )
     )
-
-    # White vertical lines at episode boundaries (skip the first boundary at 0)
-    shapes = []
-    for i, bounds in enumerate(episode_boundaries):
-        shapes.extend(
-            {
-                "type": "line",
-                "x0": b - 0.5,
-                "x1": b - 0.5,
-                "y0": i - 0.4,
-                "y1": i + 0.4,
-                "line": {"color": "white", "width": 1},
-                "xref": "x",
-                "yref": "y",
-            }
-            for b in bounds[1:]
-        )
-
     fig.update_layout(
         **_layout(
-            xaxis={"title": "Step (episodes concatenated; white lines = boundaries)"},
+            xaxis={"title": "Step (nans = episode boundaries)"},
             yaxis={"title": "Robot"},
-            shapes=shapes,
         )
     )
     return fig
@@ -949,35 +921,31 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         _ = n_clicks, n_intervals
         sla_pct = float(sla_pct) if sla_pct is not None else 10.0
         snap = metrics_store.snapshot(window_s, sla_pct=sla_pct)
-        hist = metrics_store.history(window_s, sla_pct=sla_pct)
+        hist = metrics_store.history(window_s)
         batches = hist["batches"]
         task_events = hist.get("task_events", [])
         task_progress = hist.get("task_progress", [])
-        sla_capacity_curve = hist.get("sla_capacity_curve", [])
-        healthy_robots_over_time = hist.get("healthy_robots_over_time", [])
 
         def f(v: float) -> str:
             return f"{v:.1f}"
 
-        subtitle = (
-            f"uptime {f(snap['uptime_s'])}s · {snap['total_requests']:,} requests · {snap['total_batches']:,} batches"
-        )
+        subtitle = f"uptime {f(snap.uptime_s)}s · {snap.total_requests:,} requests · {snap.total_batches:,} batches"
 
         stats = [
-            ("total requests", f"{snap['total_requests']:,}"),
-            ("req / s", f(snap["requests_per_second"])),
-            ("p50 latency (ms)", f(snap["p50_latency_ms"])),
-            ("p99 latency (ms)", f(snap["p99_latency_ms"])),
-            ("avg GPU time (ms)", f(snap["avg_gpu_time_ms"])),
-            ("GPU busy (%)", f"{snap['gpu_busy_pct']:.1f}%"),
-            ("avg queue delay (ms)", f(snap["avg_queue_delay_ms"])),
-            ("total batches", f"{snap['total_batches']:,}"),
-            ("task success (%)", f(snap["task_success_rate_pct"])),
-            ("TP (suc/sec/all)", f"{snap.get('tp_suc_per_sec_all', 0.0):.3f}"),
+            ("total requests", f"{snap.total_requests:,}"),
+            ("req / s", f(snap.requests_per_second)),
+            ("p50 latency (ms)", f(snap.p50_latency_ms)),
+            ("p99 latency (ms)", f(snap.p99_latency_ms)),
+            ("avg GPU time (ms)", f(snap.avg_gpu_time_ms)),
+            ("GPU busy (%)", f"{snap.gpu_busy_pct:.1f}%"),
+            ("avg queue delay (ms)", f(snap.avg_queue_delay_ms)),
+            ("total batches", f"{snap.total_batches:,}"),
+            ("task success (%)", f(snap.task_success_rate_pct)),
+            ("TP (suc/sec/all)", f"{snap.tp_suc_per_sec_all:.3f}"),
         ]
         stat_cards = [_stat_card(v, lbl) for lbl, v in stats]
 
-        robots = snap.get("per_robot", {})
+        robots = snap.per_robot
         robot_el = _robot_table(robots, sla_pct)
 
         gpu_fig = _gpu_dist_fig(batches)
@@ -986,8 +954,8 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
             task_progress,
             title="Success, Completion Time Metrics",
         )
-        sla_capacity_fig = _sla_capacity_curve_fig(sla_capacity_curve, sla_pct)
-        healthy_robots_fig = _healthy_robots_over_time_fig(healthy_robots_over_time, sla_pct)
+        sla_capacity_fig = _sla_capacity_curve_fig(snap.sla_capacity_curve, sla_pct)
+        healthy_robots_fig = _healthy_robots_over_time_fig(snap.healthy_robots_over_time, sla_pct)
         gantt = _gantt_fig(batches, float(window_s) if window_s else float("inf"))
 
         robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in robots]
@@ -1180,5 +1148,23 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
 
     for _gid in ["graph-inbound", "graph-queue", "graph-infer", "graph-outbound"]:
         _register_histogram_zoom(_gid)
+
+    # -------------------------------------------------------------------------
+    # Actions left heatmap
+    # -------------------------------------------------------------------------
+    @app.callback(
+        Output("graph-actions-left", "figure"),
+        Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
+        State("input-window", "value"),
+    )
+    def _load_actions_left(
+        n_clicks: int,
+        n_intervals: int,
+        window_s: float | None,
+    ) -> go.Figure:
+        _ = n_clicks, n_intervals
+        snap = metrics_store.snapshot(window_s)
+        return _actions_left_heatmap_fig(snap.robot_actions_left)
 
     return app

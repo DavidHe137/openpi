@@ -129,6 +129,13 @@ class Episode:
     def get_responses(self, start_timestamp: float, end_timestamp: float) -> list[ResponseRecord]:
         return window_filter(self.responses, lambda r: r.receive_time, (start_timestamp, end_timestamp))
 
+    def get_windowed_actions_left(self, start_ts: float, end_ts: float) -> np.ndarray:
+        """Slice of actions_left_history for steps with request_timestamp in [start_ts, end_ts)."""
+        timestamps = [r.request_timestamp for r in self.requests]
+        start_idx = next((i for i, t in enumerate(timestamps) if t >= start_ts), len(timestamps))
+        end_idx = next((i for i, t in enumerate(timestamps) if t >= end_ts), len(timestamps))
+        return self.actions_left_history[start_idx:end_idx].astype(float)
+
 
 @dataclass
 class Robot:
@@ -193,24 +200,22 @@ class Robot:
             itertools.chain.from_iterable(e.get_responses(start_timestamp, end_timestamp) for e in self.episodes)
         )
 
-    def get_actions_left_history(
-        self, start_timestamp: float, end_timestamp: float
-    ) -> np.ndarray[int, " steps_since_start_timestamp"]:
-        # FIXME: hardcoded hz for now
-        total_steps = int(end_timestamp - start_timestamp / 20.0)
-        actions_left_history = np.full(total_steps, fill_value=np.nan, dtype=np.int32)
-        # TODO: make this correct
-        for episode in self.episodes:
-            start_time = max(episode.start_time, start_timestamp)
-            end_time = min(episode.end_time, end_timestamp)
-            if start_time >= end_time:
-                continue
+    def get_actions_left_concatenated(self, start_ts: float, end_ts: float) -> np.ndarray:
+        """Concatenate windowed episode actions_left slices with nan separators.
 
-            start_index = int((start_time - start_timestamp) / 20.0)
-            end_index = int((end_time - start_timestamp) / 20.0)
-            actions_left_history_slice = actions_left_history[start_index:end_index]
-            actions_left_history_slice[:] = episode.actions_left_history
-        return actions_left_history
+        Each episode contributes the steps whose request_timestamp falls in [start_ts, end_ts).
+        Episodes with no steps in the window are skipped. Nans mark episode boundaries.
+        """
+        parts: list[np.ndarray] = []
+        sep = np.array([np.nan])
+        for episode in self.episodes:
+            arr = episode.get_windowed_actions_left(start_ts, end_ts)
+            if len(arr) == 0:
+                continue
+            if parts:
+                parts.append(sep)
+            parts.append(arr)
+        return np.concatenate(parts) if parts else np.array([], dtype=float)
 
 
 class BatchSummary(NamedTuple):
