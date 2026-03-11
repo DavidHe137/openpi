@@ -56,7 +56,7 @@ class Args:
     port: int = 8080
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
-    min_execution_horizon: int = 10
+    min_execution_horizon: int = 0
     latency_ms: List[float] = field(
         default_factory=list
     )  # Optional per-robot artificial latency (ms); length <= num_robots
