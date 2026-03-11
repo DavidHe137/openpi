@@ -362,7 +362,7 @@ def create_app(
                         case "ack":
                             ack = ResponseAck(**msg)
                             server_send_time = send_times.pop(ack.request_id, 0.0)
-                            state.metrics_store.record_response(robot_id, slot_request, ack)
+                            state.metrics_store.record_response(robot_id, slot_request, ack, server_send_time)
                             if server_send_time is not None:
                                 await state.scheduler_sock.send_pyobj(
                                     AckNotification(

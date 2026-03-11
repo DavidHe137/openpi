@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
@@ -9,9 +11,11 @@ import numpy as np
 from openpi_client.messages import EpisodeEnd
 from openpi_client.messages import EpisodeStart
 from openpi_client.messages import InferResponse
+from openpi_client.messages import ResponseAck
 from openpi_client.schemas import JSONDataclass
 
 from openpi.serving.schemas import SchedulerTimingSample
+from openpi.serving.schemas import SlotRequest
 
 RobotID: TypeAlias = str
 T = TypeVar("T")
@@ -72,7 +76,6 @@ class Episode:
     success: bool | None = None
 
     def __post_init__(self) -> None:
-        assert len(self.requests) > 0
         assert all(r.observation_step == i for i, r in enumerate(self.requests))
         assert all(
             next_request.action_start_step > prev_request.action_start_step
@@ -220,17 +223,51 @@ class MetricsStore(JSONDataclass):
     def record_request(self, robot_id: str, request: SlotRequest) -> None:
         """Called when client sends InferRequest."""
         with self._lock:
-            self.robots[request.robot_id].add_request(request)
+            record = RequestRecord(
+                robot_id=robot_id,
+                request_id=request.request_id,
+                observation_step=request.observation_step,
+                action_start_step=request.action_start_step,
+                execution_horizon=request.min_execution_horizon,
+                request_timestamp=request.request_timestamp,
+                server_arrival_time=request.arrival_timestamp,
+            )
+            self.robots[robot_id].add_request(record)
 
     def record_response(
         self,
         robot_id: str,
         request: SlotRequest,
-        response: InferResponse,
+        ack: ResponseAck,
+        server_send_time: float = 0.0,
     ) -> None:
         """Called when client sends ResponseAck."""
         with self._lock:
-            self.robots[ack.robot_id].add_response(ResponseRecord(request=request, response=response))
+            req_record = RequestRecord(
+                robot_id=robot_id,
+                request_id=request.request_id,
+                observation_step=request.observation_step,
+                action_start_step=request.action_start_step,
+                execution_horizon=request.min_execution_horizon,
+                request_timestamp=request.request_timestamp,
+                server_arrival_time=request.arrival_timestamp,
+            )
+            batch = next(
+                (b for b in reversed(self.batches) if request.request_id in b.request_ids),
+                None,
+            )
+            self.robots[robot_id].add_response(
+                ResponseRecord(
+                    request=req_record,
+                    batch_id=batch.batch_id if batch else -1,
+                    inference_start_time=batch.inference_start_time if batch else 0.0,
+                    inference_end_time=batch.inference_end_time if batch else 0.0,
+                    server_send_time=server_send_time,
+                    receive_time=ack.receive_time,
+                    execution_start_step=ack.execution_start_step,
+                    first_executed_index=ack.first_executed_index,
+                )
+            )
 
     # episode lifecycle
 
