@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
+import itertools
 import threading
 import time
 from typing import Any, NamedTuple, TypeAlias, TypeVar
@@ -17,6 +18,8 @@ from openpi_client.schemas import JSONDataclass
 from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
 
+# TODO: make sure nans are nans and not 0s
+# TODO: make sure s, ms, and ns are consistent
 RobotID: TypeAlias = str
 T = TypeVar("T")
 
@@ -68,6 +71,11 @@ class ResponseRecord:
         return (self.receive_time - self.server_send_time) * 1000
 
 
+def window_filter(items: list[T], event_time_getter: Callable[[T], float], window_s: tuple[float, float]) -> list[T]:
+    start_timestamp, end_timestamp = window_s
+    return [item for item in items if start_timestamp <= event_time_getter(item) < end_timestamp]
+
+
 @dataclass
 class Episode:
     task_suite_name: str
@@ -91,6 +99,11 @@ class Episode:
     @property
     def start_time(self) -> float:
         return self.requests[0].request_timestamp
+
+    @property
+    def end_time(self) -> float:
+        # TODO: approximately correct
+        return self.requests[-1].request_timestamp
 
     @property
     def num_steps(self) -> int:
@@ -120,6 +133,12 @@ class Episode:
 
     def add_response(self, response: ResponseRecord) -> None:
         self.responses.append(response)
+
+    def get_requests(self, start_timestamp: float, end_timestamp: float) -> list[RequestRecord]:
+        return window_filter(self.requests, lambda r: r.request_timestamp, (start_timestamp, end_timestamp))
+
+    def get_responses(self, start_timestamp: float, end_timestamp: float) -> list[ResponseRecord]:
+        return window_filter(self.responses, lambda r: r.receive_time, (start_timestamp, end_timestamp))
 
 
 @dataclass
@@ -175,6 +194,35 @@ class Robot:
     def total_starved_steps(self) -> int:
         return sum(np.sum(e.actions_left_history == 0) for e in self.episodes)
 
+    def get_requests(self, start_timestamp: float, end_timestamp: float) -> list[RequestRecord]:
+        return list(
+            itertools.chain.from_iterable(e.get_requests(start_timestamp, end_timestamp) for e in self.episodes)
+        )
+
+    def get_responses(self, start_timestamp: float, end_timestamp: float) -> list[ResponseRecord]:
+        return list(
+            itertools.chain.from_iterable(e.get_responses(start_timestamp, end_timestamp) for e in self.episodes)
+        )
+
+    def get_actions_left_history(
+        self, start_timestamp: float, end_timestamp: float
+    ) -> dict[RobotID, np.ndarray[int, " steps_since_start_timestamp"]]:
+        # FIXME: hardcoded hz for now
+        total_steps = end_timestamp - start_timestamp / 20.0
+        actions_left_history = np.full(total_steps, fill_value=np.nan, dtype=np.int32)
+        # TODO: make this correct
+        for episode in self.episodes:
+            if episode.end_time < start_timestamp:
+                continue
+            actions_left_history_slice = actions_left_history[
+                episode.start_time - start_timestamp : episode.end_time - start_timestamp
+            ]
+
+            actions_left_history[episode.start_time - start_timestamp : episode.end_time - start_timestamp] = (
+                episode.actions_left_history
+            )
+        return actions_left_history
+
 
 class StarvationIntervalEvent(NamedTuple):
     robot_id: str
@@ -209,6 +257,39 @@ lock: threading.RLock = threading.RLock()
 
 
 @dataclass
+class Snapshot:
+    start_timestamp: float
+    end_timestamp: float
+    robot_actions_left: dict[RobotID, np.ndarray[int, " steps_since_start_timestamp"]]
+    successes: dict[RobotID, int]  # TODO: should store additional metadata for success heatmap
+    requests: list[RequestRecord]
+    responses: list[ResponseRecord]
+    batches: list[BatchSummary]
+
+    @property
+    def duration_s(self) -> float:
+        return self.end_timestamp - self.start_timestamp
+
+    @property
+    def total_batches(self) -> int:
+        return len(self.batches)
+
+    @property
+    def total_requests(self) -> int:
+        return len(self.requests)
+
+    @property
+    def gpu_times_ms(self) -> list[float]:
+        return [batch.gpu_time_ms for batch in self.batches]
+
+    @property
+    def queue_delays_ms(self) -> list[float]:
+        return [response.queue_delay_ms for response in self.responses]
+
+    # TODO: task success rate stuff
+
+
+@dataclass
 class MetricsStore(JSONDataclass):
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
@@ -227,8 +308,6 @@ class MetricsStore(JSONDataclass):
             for robot_id, v in self.robots.items()
         }
         self.scheduler_timings = [SchedulerTimingSample.from_json(s) for s in self.scheduler_timings]
-
-    # scheduler updates
 
     def record_batch(self, responses: list[InferResponse]) -> None:
         """Called once per batch by _router_task."""
@@ -286,8 +365,6 @@ class MetricsStore(JSONDataclass):
                 )
             )
 
-    # episode lifecycle
-
     def record_episode_start(
         self,
         robot_id: str,
@@ -308,48 +385,50 @@ class MetricsStore(JSONDataclass):
         with lock:
             self.robots[robot_id].end_episode(episode_end)
 
-    # metrics
-
+    # FIXME: need to decide whether ot use first request, first inference, or even just startup
     @property
-    def _start_time(self) -> float:
+    def start_time(self) -> float:
         if self.batches:
             return self.batches[0].inference_start_time
         return time.time()
 
-    def _starvation_intervals(self, cutoff: float | None) -> list[StarvationIntervalEvent]:
-        events = []
-        for robot_id, robot in self.robots.items():
-            for episode in robot.episodes:
-                if episode.success is None:
-                    continue
-                if not episode.requests:
-                    continue
-                event_time = episode.requests[-1].request_timestamp
-                if cutoff is not None and event_time < cutoff:
-                    continue
-                observed = episode.num_steps
-                starved = int(np.sum(episode.actions_left_history == 0))
-                events.append(
-                    StarvationIntervalEvent(
-                        robot_id=robot_id,
-                        observed_steps=observed,
-                        starved_steps=starved,
-                        event_time=event_time,
-                    )
-                )
-        return events
+    def snapshot(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> Snapshot:
+        """JSON-serializable summary of current metrics."""
+        with lock:
+            end_timestamp = time.time()
+            start_timestamp = time.time() - window_s if window_s is not None else self.start_time
 
-    @staticmethod
-    def _window_filter(items: list[T], event_time_getter: Callable[[T], float], cutoff: float | None) -> list[T]:
-        if cutoff is None:
-            return items
-        return [item for item in items if event_time_getter(item) >= cutoff]
+            batches = window_filter(self.batches, lambda b: b.inference_end_time, (start_timestamp, end_timestamp))
+            requests = itertools.chain.from_iterable(
+                robot.get_requests(start_timestamp, end_timestamp) for robot in self.robots.values()
+            )
+            responses = itertools.chain.from_iterable(
+                robot.get_responses(start_timestamp, end_timestamp) for robot in self.robots.values()
+            )
+            robot_actions_left = {
+                robot_id: robot.get_actions_left_history(start_timestamp, end_timestamp)
+                for robot_id, robot in self.robots.items()
+            }
+
+            successes = {
+                robot_id: sum(1 for r in robot.responses if r.success) for robot_id, robot in self.robots.items()
+            }
+
+            return Snapshot(
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                batches=batches,
+                robot_actions_left=robot_actions_left,
+                requests=requests,
+                responses=responses,
+                successes=successes,
+            )
 
     def _build_robot_sla_rollup(
         self,
         sla_pct: float,
     ) -> tuple[dict[str, dict[str, Any]], int, int, float]:
-        # TODO: make concise/efficient
+        # TODO claude: make this concise/efficient by calling robot actions_left_history
         per_robot: dict[str, dict[str, Any]] = {
             robot_id: {
                 "observed_steps": robot.total_steps,
@@ -433,152 +512,13 @@ class MetricsStore(JSONDataclass):
             )
         return points
 
-    def snapshot(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> dict[str, Any]:
-        """JSON-serializable summary of current metrics."""
-        with lock:
-            now = time.time()
-            uptime_s = now - self._start_time
-            cutoff = now - window_s if window_s is not None else None
-
-            batches = self._window_filter(self.batches, lambda b: b.inference_end_time, cutoff)
-
-            total_requests = sum(len(b.robot_ids) for b in batches)
-
-            gpu_times = [b.gpu_time_ms for b in batches]
-            avg_gpu_time_ms = float(np.mean(gpu_times)) if gpu_times else 0.0
-
-            if len(batches) >= 2:
-                wall_s = (
-                    window_s
-                    if window_s is not None
-                    else (batches[-1].inference_end_time - batches[0].inference_start_time)
-                )
-                total_busy_ms = sum(gpu_times)
-                gpu_busy_pct = min(100.0, total_busy_ms / (wall_s * 1000) * 100) if wall_s > 0 else 0.0
-            else:
-                gpu_busy_pct = 0.0
-
-            # Collect latency and queue delay from ResponseRecords in the window
-            latencies_ms: list[float] = []
-            queue_delays: list[float] = []
-            batch_ids_in_window = {b.batch_id for b in batches}
-            for robot in self.robots.values():
-                for episode in robot.episodes:
-                    for resp in episode.responses:
-                        if resp.batch_id in batch_ids_in_window:
-                            latencies_ms.append(resp.total_latency_ms)
-                            queue_delays.append(resp.queue_delay_ms)
-
-            p50_latency_ms = float(np.percentile(latencies_ms, 50)) if latencies_ms else 0.0
-            p99_latency_ms = float(np.percentile(latencies_ms, 99)) if latencies_ms else 0.0
-            avg_queue_delay_ms = float(np.mean(queue_delays)) if queue_delays else 0.0
-
-            span_s = window_s if window_s is not None else uptime_s
-            requests_per_second = total_requests / span_s if span_s > 0 else 0.0
-
-            (
-                robot_rollup,
-                active_robot_count,
-                healthy_robot_count,
-                global_starvation_rate_pct,
-            ) = self._build_robot_sla_rollup(
-                sla_pct,
-            )
-
-            # Collect completed episodes in window
-            task_successes_by_robot: dict[str, int] = {}
-            total_task_episodes = 0
-            durations_s: list[float] = []
-            steps: list[int] = []
-            for robot_id, robot in self.robots.items():
-                for episode in robot.episodes:
-                    if episode.success is None:
-                        continue
-                    if not episode.requests:
-                        continue
-                    event_time = episode.requests[-1].request_timestamp
-                    if cutoff is not None and event_time < cutoff:
-                        continue
-                    total_task_episodes += 1
-                    if episode.success:
-                        task_successes_by_robot[robot_id] = task_successes_by_robot.get(robot_id, 0) + 1
-                    durations_s.append(episode.requests[-1].request_timestamp - episode.start_time)
-                    steps.append(episode.num_steps)
-
-            total_task_successes = sum(task_successes_by_robot.values())
-            tp_suc_per_sec_all = (total_task_successes / span_s) if span_s > 0 else 0.0
-
-            per_robot: dict[str, Any] = {}
-            for robot_id in sorted(set(self.robots.keys()) | set(robot_rollup.keys()) | set(task_successes_by_robot)):
-                robot = self.robots.get(robot_id)
-                rollup = robot_rollup.get(
-                    robot_id,
-                    {
-                        "observed_steps": 0,
-                        "starved_steps": 0,
-                        "starvation_rate_pct": 0.0,
-                        "active": False,
-                        "healthy": False,
-                    },
-                )
-                successes = task_successes_by_robot.get(robot_id, 0)
-                # Sum starved steps across all episodes for this robot
-                total_starvations = 0
-                if robot is not None:
-                    for episode in robot.episodes:
-                        total_starvations += int(np.sum(episode.actions_left_history == 0))
-                network_delays: list[float] = (
-                    [
-                        resp.outbound_ms
-                        for episode in robot.episodes
-                        for resp in episode.responses
-                        if resp.receive_time > 0
-                    ]
-                    if robot is not None
-                    else []
-                )
-                per_robot[robot_id] = {
-                    "total_starvations": total_starvations,
-                    "avg_network_delay_ms": float(np.mean(network_delays)) if network_delays else 0.0,
-                    "tp_suc_per_sec_robot": (successes / span_s) if span_s > 0 else 0.0,
-                    **rollup,
-                }
-
-            return {
-                "uptime_s": uptime_s,
-                "total_batches": len(self.batches),
-                "total_requests": total_requests,
-                "avg_gpu_time_ms": avg_gpu_time_ms,
-                "gpu_busy_pct": round(gpu_busy_pct, 1),
-                "p50_latency_ms": p50_latency_ms,
-                "p99_latency_ms": p99_latency_ms,
-                "avg_queue_delay_ms": avg_queue_delay_ms,
-                "requests_per_second": requests_per_second,
-                "sla_pct": float(sla_pct),
-                "healthy_robot_count": healthy_robot_count,
-                "active_robot_count": active_robot_count,
-                "healthy_robot_ratio_pct": (healthy_robot_count / active_robot_count * 100)
-                if active_robot_count > 0
-                else 0.0,
-                "global_starvation_rate_pct": global_starvation_rate_pct,
-                "per_robot": per_robot,
-                "total_task_episodes": total_task_episodes,
-                "task_success_rate_pct": (total_task_successes / total_task_episodes * 100)
-                if total_task_episodes
-                else 0.0,
-                "tp_suc_per_sec_all": tp_suc_per_sec_all,
-                "avg_task_duration_s": float(np.mean(durations_s)) if durations_s else 0.0,
-                "avg_task_steps": float(np.mean(steps)) if steps else 0.0,
-            }
-
     def history(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> dict[str, Any]:
         """Per-batch time-series data for Plotly charts in the dashboard."""
         with lock:
             now = time.time()
             cutoff = now - window_s if window_s is not None else None
-            batches = self._window_filter(self.batches, lambda b: b.inference_end_time, cutoff)
-            starvation_intervals = self._starvation_intervals(cutoff)
-            t0 = self._start_time
+            batches = window_filter(self.batches, lambda b: b.inference_end_time, cutoff)
+            t0 = self.start_time
 
             # Build a lookup from request_id -> ResponseRecord for per-request batch data
             response_by_id: dict[int, ResponseRecord] = {}
