@@ -776,9 +776,9 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     table.add_column("Task ID", style="magenta")
     table.add_column("Success Rate", style="green")
     assert "planner_starvation_steps" in summary.columns
-    table.add_column("Planner Starv.", style="yellow")
+    table.add_column("Planner Starvation Steps", style="yellow")
     assert "planner_starvation_rate" in summary.columns
-    table.add_column("Planner Starv. Rate", style="yellow")
+    table.add_column("Planner Starvation Rate", style="yellow")
 
     for _, row in summary.reset_index().iterrows():
         row_values = [

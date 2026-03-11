@@ -293,6 +293,72 @@ def _gantt_fig(batches: list[dict], window_s: float) -> go.Figure:
     return fig
 
 
+def _actions_left_heatmap_fig(series: dict) -> go.Figure:
+    """Heatmap of actions_left: robots on y-axis, concatenated steps on x-axis.
+
+    Episodes are concatenated per robot with white vertical lines at boundaries.
+    """
+    robots = sorted(series.keys())
+    if not robots:
+        fig = go.Figure()
+        fig.update_layout(**_layout(xaxis={"title": "Step"}, yaxis={"title": "Robot"}))
+        return fig
+
+    robot_vals: list[list[float | None]] = []
+    episode_boundaries: list[list[int]] = []
+
+    for rid in robots:
+        vals: list[float | None] = []
+        bounds: list[int] = []
+        for ep in series[rid]:
+            bounds.append(len(vals))
+            vals.extend(float(v) for v in ep)
+        robot_vals.append(vals)
+        episode_boundaries.append(bounds)
+
+    max_len = max(len(v) for v in robot_vals)
+    matrix = [[None] * max_len for _ in range(len(robots))]
+    for i, vals in enumerate(robot_vals):
+        for j, v in enumerate(vals):
+            matrix[i][j] = v
+
+    fig = go.Figure(
+        go.Heatmap(
+            z=matrix,
+            y=robots,
+            colorscale="RdYlGn",
+            zmin=0,
+            colorbar={"title": "Actions left"},
+        )
+    )
+
+    # White vertical lines at episode boundaries (skip the first boundary at 0)
+    shapes = []
+    for i, bounds in enumerate(episode_boundaries):
+        shapes.extend(
+            {
+                "type": "line",
+                "x0": b - 0.5,
+                "x1": b - 0.5,
+                "y0": i - 0.4,
+                "y1": i + 0.4,
+                "line": {"color": "white", "width": 1},
+                "xref": "x",
+                "yref": "y",
+            }
+            for b in bounds[1:]
+        )
+
+    fig.update_layout(
+        **_layout(
+            xaxis={"title": "Step (episodes concatenated; white lines = boundaries)"},
+            yaxis={"title": "Robot"},
+            shapes=shapes,
+        )
+    )
+    return fig
+
+
 def _stage_figs(hist: dict, robot: str) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
     inbound, queue_, infer_, outbound = [], [], [], []
     for b in hist["batches"]:
@@ -461,6 +527,14 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         dcc.Graph(id="graph-gantt", config=_CFG),
                     ],
                 ),
+                # Actions left heatmap
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Actions Left (server-side)", style=_CARD_HDR),
+                        dcc.Graph(id="graph-actions-left", config=_CFG),
+                    ],
+                ),
             ),
         ],
     )
@@ -536,5 +610,12 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     def _update_stage(n_clicks: int, robot: str, window_s: float | None) -> tuple:
         hist = metrics_store.history(window_s)
         return _stage_figs(hist, robot or "all")
+
+    @app.callback(
+        Output("graph-actions-left", "figure"),
+        Input("btn-refresh", "n_clicks"),
+    )
+    def _update_actions_left(n_clicks: int) -> go.Figure:
+        return _actions_left_heatmap_fig(metrics_store.actions_left_series())
 
     return app

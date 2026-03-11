@@ -2,13 +2,21 @@ from collections import defaultdict
 from dataclasses import dataclass
 from dataclasses import field
 import time
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from openpi_client.messages import InferResponse
 from openpi_client.schemas import JSONDataclass
 
 from openpi.serving.schemas import SchedulerTimingSample
+
+
+class Episode(NamedTuple):
+    """A single contiguous episode for one robot."""
+
+    start_time: float
+    end_time: float  # exclusive; float("inf") for the current episode
+    num_steps: int  # obs steps run 0 .. num_steps-1
 
 
 @dataclass
@@ -49,10 +57,7 @@ class RequestRecord:
         return (self.receive_time - self.server_send_time) * 1000
 
 
-@dataclass
-class BatchSummary:
-    """Stored once per completed GPU batch."""
-
+class BatchSummary(NamedTuple):
     batch_id: int
     inference_start_time: float
     inference_end_time: float
@@ -64,8 +69,6 @@ class BatchSummary:
 
 @dataclass
 class MetricsStore(JSONDataclass):
-    """Single-call-site metrics store. All updates go through record_batch / record_ack."""
-
     batches: list[BatchSummary] = field(default_factory=list)
     requests: list[RequestRecord] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
@@ -75,8 +78,11 @@ class MetricsStore(JSONDataclass):
     batch_counter: int = field(default=0)
 
     def __post_init__(self):
-        # Coerce dicts into typed dataclasses when loading from JSON
-        self.batches = [BatchSummary(**b) if isinstance(b, dict) else b for b in self.batches]
+        # Coerce from JSON: dicts (old format) or lists (NamedTuple → JSON array)
+        self.batches = [
+            BatchSummary(**b) if isinstance(b, dict) else BatchSummary(*b) if not isinstance(b, BatchSummary) else b
+            for b in self.batches
+        ]
         self.requests = [RequestRecord(**r) if isinstance(r, dict) else r for r in self.requests]
         self.scheduler_timings = [
             SchedulerTimingSample(**s) if isinstance(s, dict) else s for s in self.scheduler_timings
@@ -117,27 +123,42 @@ class MetricsStore(JSONDataclass):
 
     def record_ack(
         self,
-        robot_id: str,
         request_id: int,
         server_send_time: float | None,
         receive_time: float,
         execution_start_step: int,
         first_executed_index: int = 0,
     ) -> None:
-        """Called when client sends ResponseAck."""
-        if record := self._pending.pop(request_id, None):
-            record.server_send_time = server_send_time or 0.0
-            record.receive_time = receive_time
-            record.execution_start_step = execution_start_step
-            record.first_executed_index = first_executed_index
+        record = self._pending.pop(request_id)
+        record.server_send_time = server_send_time or 0.0
+        record.receive_time = receive_time
+        record.execution_start_step = execution_start_step
+        record.first_executed_index = first_executed_index
 
     def record_arrival(self, robot_id: str, observation_step: int, arrival_timestamp: float) -> None:
-        """Called on every infer request arrival to track episode boundaries."""
         self.arrivals.append((robot_id, observation_step, arrival_timestamp))
 
     def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
-        """Called from the server process when the scheduler publishes timing samples."""
         self.scheduler_timings.extend(samples)
+
+    def actions_left_series(self) -> dict[str, list[list[int]]]:
+        """Returns per-robot, per-episode actions_left arrays for dashboard plotting.
+
+        Result shape: {robot_id: [[actions_left per step], ...]}
+        Uses full history (not windowed) so episode boundaries are correct.
+        """
+        result: dict[str, list[list[int]]] = {}
+        for robot_id in {r for r, _, _ in self.arrivals}:
+            episodes = self._episodes(robot_id)
+            acked_all = [r for r in self.requests if r.robot_id == robot_id and r.receive_time > 0.0]
+            robot_eps = []
+            for ep in episodes:
+                if ep.num_steps == 0:
+                    continue
+                ep_chunks = [r for r in acked_all if ep.start_time <= r.server_arrival_time < ep.end_time]
+                robot_eps.append(self._compute_actions_left(ep, ep_chunks).tolist())
+            result[robot_id] = robot_eps
+        return result
 
     # --- windowed views ---
 
@@ -171,27 +192,42 @@ class MetricsStore(JSONDataclass):
             return 0.0, 0.0
         return float(np.percentile(latencies_ms, 50)), float(np.percentile(latencies_ms, 99))
 
-    def _episodes(self, robot_id: str) -> list[tuple[float, float, list[int]]]:
-        """Returns list of (start_time, end_time_excl, obs_steps) per episode."""
-        robot_arr = [(s, t) for r, s, t in self.arrivals if r == robot_id]
+    def _episodes(self, robot_id: str) -> list[Episode]:
+        """Returns one Episode per contiguous run for this robot."""
+        robot_arr = [
+            (observation_step, arrival_timestamp)
+            for arrival_robot_id, observation_step, arrival_timestamp in self.arrivals
+            if arrival_robot_id == robot_id
+        ]
         if not robot_arr:
             return []
-        episodes: list[tuple[float, float, list[int]]] = []
-        current_steps: list[int] = []
+        episodes: list[Episode] = []
         current_start = -1.0
+        num_steps = 0
         last_step = -1
         for obs_step, timestamp in robot_arr:
             if last_step >= 0 and obs_step < last_step:  # episode reset
-                episodes.append((current_start, timestamp, current_steps))
-                current_steps = []
+                episodes.append(Episode(current_start, timestamp, num_steps))
+                num_steps = 0
+            if num_steps == 0:
                 current_start = timestamp
-            if not current_steps:
-                current_start = timestamp
-            current_steps.append(obs_step)
+            num_steps = max(num_steps, obs_step + 1)
             last_step = obs_step
-        if current_steps:
-            episodes.append((current_start, float("inf"), current_steps))
+        if num_steps > 0:
+            episodes.append(Episode(current_start, float("inf"), num_steps))
         return episodes
+
+    def _compute_actions_left(self, ep: Episode, ep_chunks: list[RequestRecord]) -> np.ndarray:
+        """Returns actions_left[0..num_steps-1] for one episode."""
+        actions_left = np.zeros(ep.num_steps, dtype=np.int32)
+        for r in ep_chunks:
+            start = r.action_start_step + r.first_executed_index
+            end = min(r.action_start_step + r.execution_horizon, ep.num_steps)
+            if start < end:
+                steps = np.arange(start, end)
+                avail = r.action_start_step + r.execution_horizon - steps
+                actions_left[start:end] = np.maximum(actions_left[start:end], avail)
+        return actions_left
 
     def _per_robot_stats(self, requests: list[RequestRecord]) -> dict[str, Any]:
         """Returns per-robot starvation and network delay stats."""
@@ -201,22 +237,12 @@ class MetricsStore(JSONDataclass):
             acked_all = [r for r in self.requests if r.robot_id == robot_id and r.receive_time > 0.0]
 
             total_starvations = 0
-            for ep_start, ep_end, obs_steps in episodes:
-                ep_chunks = [r for r in acked_all if ep_start <= r.server_arrival_time < ep_end]
-                obs = np.array(obs_steps, dtype=np.int64)
-                if len(obs) == 0:
+            for ep in episodes:
+                if ep.num_steps == 0:
                     continue
-                max_step = int(obs.max())
-                actions_left = np.zeros(max_step + 1, dtype=np.int32)
-                for r in ep_chunks:
-                    start = r.action_start_step + r.first_executed_index
-                    end = min(r.action_start_step + r.execution_horizon, max_step + 1)
-                    if start < end:
-                        steps = np.arange(start, end)
-                        avail = r.action_start_step + r.execution_horizon - steps
-                        actions_left[start:end] = np.maximum(actions_left[start:end], avail)
-                valid = obs[obs <= max_step]
-                total_starvations += int(np.sum(actions_left[valid] == 0))
+                ep_chunks = [r for r in acked_all if ep.start_time <= r.server_arrival_time < ep.end_time]
+                actions_left = self._compute_actions_left(ep, ep_chunks)
+                total_starvations += int(np.sum(actions_left == 0))
 
             acked_windowed = [r for r in requests if r.robot_id == robot_id and r.receive_time > 0.0]
             network_delays_ms = [r.outbound_ms for r in acked_windowed]
@@ -325,7 +351,6 @@ class MetricsStore(JSONDataclass):
         }
 
     def reset(self) -> None:
-        """Reset all metrics."""
         self.batches.clear()
         self.requests.clear()
         self.scheduler_timings.clear()

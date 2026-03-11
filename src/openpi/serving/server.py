@@ -361,7 +361,6 @@ def create_app(
                             ack = ResponseAck(**msg)
                             server_send_time = send_times.pop(ack.request_id, None)
                             state.metrics_store.record_ack(
-                                robot_id,
                                 ack.request_id,
                                 server_send_time,
                                 ack.receive_time,
