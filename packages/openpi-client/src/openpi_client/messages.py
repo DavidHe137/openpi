@@ -81,20 +81,24 @@ class ResponseAck:
 
 
 @dataclass(frozen=True)
-class TaskUpdate:
+class EpisodeStart:
     task_suite_name: str
     task_id: int
     episode_idx: int
-    current_step: int
     max_episode_steps: int
-    phase: Literal["progress", "result"] = "progress"
-    task_language: Optional[str] = None
-    total_episodes: Optional[int] = None
-    success: Optional[bool] = None
-    duration_s: Optional[float] = None
-    steps_taken: Optional[int] = None
-    max_duration_s: Optional[float] = None
-    type: Literal["task_update"] = "task_update"
+    task_language: str
+    type: Literal["episode_start"] = "episode_start"
+
+
+@dataclass(frozen=True)
+class EpisodeEnd:
+    task_suite_name: str
+    task_id: int
+    episode_idx: int
+    success: bool
+    duration_s: float
+    steps_taken: int
+    type: Literal["episode_end"] = "episode_end"
 
 
 @dataclass(frozen=True)

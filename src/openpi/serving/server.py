@@ -40,11 +40,12 @@ from fastapi.concurrency import asynccontextmanager
 from openpi_client import msgpack_numpy
 from openpi_client.messages import ConnectRequest
 from openpi_client.messages import ConnectResponse
+from openpi_client.messages import EpisodeEnd
+from openpi_client.messages import EpisodeStart
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
 from openpi_client.messages import ResponseAck
-from openpi_client.messages import TaskUpdate
 from openpi_client.messages import WarmupPong
 from openpi_client.schemas import ServerMetadata
 from starlette.middleware.wsgi import WSGIMiddleware
@@ -361,7 +362,7 @@ def create_app(
                         case "ack":
                             ack = ResponseAck(**msg)
                             server_send_time = send_times.pop(ack.request_id, 0.0)
-                            state.metrics_store.record_response(ack, server_send_time)
+                            state.metrics_store.record_response(robot_id, slot_request, ack)
                             if server_send_time is not None:
                                 await state.scheduler_sock.send_pyobj(
                                     AckNotification(
@@ -372,25 +373,11 @@ def create_app(
                                     )
                                 )
                             continue
-                        case "task_update":
-                            task_update = TaskUpdate(**msg)
-                            state.metrics_store.record_task_update(
-                                robot_id=robot_id,
-                                task_suite_name=task_update.task_suite_name,
-                                task_id=task_update.task_id,
-                                episode_idx=task_update.episode_idx,
-                                current_step=task_update.current_step,
-                                max_episode_steps=task_update.max_episode_steps,
-                                phase=task_update.phase,
-                                task_language=task_update.task_language,
-                                total_episodes=task_update.total_episodes,
-                                success=task_update.success,
-                                duration_s=task_update.duration_s,
-                                steps_taken=task_update.steps_taken,
-                                max_duration_s=task_update.max_duration_s,
-                                event_time=time.time(),
-                            )
+                        case "episode_start":
+                            state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
                             continue
+                        case "episode_end":
+                            state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
                         case "infer":
                             pass
                         case unknown:
@@ -436,7 +423,7 @@ def create_app(
                         control_hz=state.robot_metadata[robot_id].control_hz,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
-                    state.metrics_store.record_request(slot_req)
+                    state.metrics_store.record_request(robot_id, slot_req)
             except WebSocketDisconnect:
                 logger.debug("Robot %s disconnected", robot_id)
 

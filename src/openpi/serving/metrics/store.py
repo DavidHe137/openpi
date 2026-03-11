@@ -6,13 +6,14 @@ import time
 from typing import Any, NamedTuple, TypeAlias, TypeVar
 
 import numpy as np
+from openpi_client.messages import EpisodeEnd
+from openpi_client.messages import EpisodeStart
 from openpi_client.messages import InferResponse
 from openpi_client.schemas import JSONDataclass
 
 from openpi.serving.schemas import SchedulerTimingSample
 
 RobotID: TypeAlias = str
-
 T = TypeVar("T")
 
 
@@ -61,11 +62,14 @@ class ResponseRecord:
 
 @dataclass
 class Episode:
-    """A single contiguous episode for one robot."""
+    task_suite_name: str
+    task_id: int
+    max_episode_steps: int
+    task_language: str
 
-    robot_id: RobotID
     requests: list[RequestRecord]
     responses: list[ResponseRecord]
+    success: bool | None = None
 
     def __post_init__(self) -> None:
         assert len(self.requests) > 0
@@ -74,8 +78,6 @@ class Episode:
             next_request.action_start_step > prev_request.action_start_step
             for prev_request, next_request in zip(self.requests[:-1], self.requests[1:], strict=True)
         )
-        assert all(r.robot_id == self.robot_id for r in self.requests)
-        assert all(r.request in set(self.requests) for r in self.responses)
 
     @property
     def start_time(self) -> float:
@@ -108,9 +110,59 @@ class Episode:
 
         return actions_left_history
 
+    def add_request(self, request: RequestRecord) -> None:
+        assert request.observation_step == len(self.requests)
+        self.requests.append(request)
+
+    def add_response(self, response: ResponseRecord) -> None:
+        self.responses.append(response)
+
+
+@dataclass
+class Robot:
+    """Per-robot mutable state tracked during inference."""
+
+    robot_id: str
+    episodes: list[Episode]
+
+    @property
+    def current_episode(self) -> Episode:
+        assert len(self.episodes) > 0
+        return self.episodes[-1]
+
+    def start_episode(self, episode_start: EpisodeStart) -> None:
+        assert len(self.episodes) == episode_start.episode_idx
+        self.episodes.append(
+            Episode(
+                task_suite_name=episode_start.task_suite_name,
+                task_id=episode_start.task_id,
+                max_episode_steps=episode_start.max_episode_steps,
+                task_language=episode_start.task_language,
+                requests=[],
+                responses=[],
+            )
+        )
+
+    def end_episode(self, episode_end: EpisodeEnd) -> None:
+        episode = self.current_episode
+        assert episode.task_suite_name == episode_end.task_suite_name
+        assert episode.task_id == episode_end.task_id
+        assert episode.max_episode_steps == episode_end.max_episode_steps
+        assert episode.task_language == episode_end.task_language
+        assert len(self.episodes) - 1 == episode_end.episode_idx
+        episode.success = episode_end.success
+
+    def add_request(self, request: RequestRecord) -> None:
+        self.current_episode.requests.append(request)
+
+    def add_response(self, response: ResponseRecord) -> None:
+        self.current_episode.responses.append(response)
+
 
 class BatchSummary(NamedTuple):
     batch_id: int
+    robot_ids: list[RobotID]
+    request_ids: list[int]
     inference_start_time: float
     inference_end_time: float
 
@@ -120,289 +172,88 @@ class BatchSummary(NamedTuple):
 
 
 @dataclass
-class StarvationIntervalEvent:
-    """One observed interval for starvation-rate accounting."""
-
-    robot_id: str
-    observed_steps: int
-    starved_steps: int
-    event_time: float
-
-
-@dataclass
-class TaskEpisodeEvent:
-    """One downstream task completion event from a client runtime."""
-
-    robot_id: str
-    task_suite_name: str
-    task_id: int
-    episode_idx: int
-    success: bool
-    duration_s: float
-    steps_taken: int
-    event_time: float
-    task_language: str | None = None
-    total_episodes: int | None = None
-    max_episode_steps: int | None = None
-    max_duration_s: float | None = None
-
-
-@dataclass
-class RobotState:
-    """Per-robot mutable state tracked during inference."""
-
-    last_start_step: int = 0
-    last_execution_horizon: int = 0
-    total_starvations: int = 0
-    last_server_send_times: dict = field(default_factory=dict)
-    network_delays_ms: list = field(default_factory=list)
-
-
-@dataclass
-class TaskEpisodeProgress:
-    """Latest in-progress step count for a downstream task episode."""
-
-    robot_id: str
-    task_suite_name: str
-    task_id: int
-    episode_idx: int
-    current_step: int
-    max_episode_steps: int
-    update_time: float
-    task_language: str | None = None
-    total_episodes: int | None = None
-
-
-@dataclass
 class MetricsStore(JSONDataclass):
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
+    robots: dict[RobotID, Robot] = field(default_factory=dict)
     batches: list[BatchSummary] = field(default_factory=list)
-    requests: list[RequestRecord] = field(default_factory=list)
-    responses: list[ResponseRecord] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
-    arrivals: list[tuple[RobotID, int, float]] = field(default_factory=list)
-    # (robot_id, observation_step, arrival_timestamp)
-    robot_states: dict[str, RobotState] = field(default_factory=dict)
-    starvation_intervals: list[StarvationIntervalEvent] = field(default_factory=list)
-    task_events: list[TaskEpisodeEvent] = field(default_factory=list)
-    task_progress: dict[tuple[str, str, int, int], TaskEpisodeProgress] = field(default_factory=dict)
-    start_time: float = field(default_factory=time.time)
-    _batch_counter: int = field(default=0, init=False)
+
+    # TODO: figure out if locking is necessary, if we can get away without it
     _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def __post_init__(self):
+        # FIXME: have dataclasses implement their own coercion
         # Coerce from JSON: dicts (old format) or lists (NamedTuple → JSON array)
         self.batches = [
             BatchSummary(**b) if isinstance(b, dict) else BatchSummary(*b) if not isinstance(b, BatchSummary) else b
             for b in self.batches
         ]
-        self.requests = [RequestRecord(**r) if isinstance(r, dict) else r for r in self.requests]
-        self.responses = [
-            ResponseRecord(
-                request=RequestRecord(**r["request"]) if isinstance(r.get("request"), dict) else r["request"],
-                **{k: v for k, v in r.items() if k != "request"},
-            )
-            if isinstance(r, dict)
-            else r
-            for r in self.responses
-        ]
+        # TODO: doesn't work right now
+        self.robots = {robot_id: Robot(robot_id=robot_id, episodes=[]) for robot_id in self.robots}
         self.scheduler_timings = [
             SchedulerTimingSample(**s) if isinstance(s, dict) else s for s in self.scheduler_timings
         ]
-        # JSON round-trips tuples as lists; coerce back
-        self.arrivals = [(r, s, t) for r, s, t in self.arrivals]
 
-        # Transient indices: not serialized
-        self._requests_by_id: dict[int, RequestRecord] = {r.request_id: r for r in self.requests}
-        self._pending: dict[int, tuple[int, InferResponse]] = {}  # request_id → (batch_id, InferResponse)
-        self._batch_counter: int = max((b.batch_id for b in self.batches), default=0)
+    # scheduler updates
 
     def record_batch(self, responses: list[InferResponse]) -> None:
         """Called once per batch by _router_task."""
-        if not responses:
-            return
         with self._lock:
-            self._batch_counter += 1
-            batch = BatchSummary(
-                batch_id=self._batch_counter,
-                robot_ids=[r.robot_id for r in responses],
-                request_ids=[r.request_id for r in responses],
-                request_timestamps=[r.request_timestamp for r in responses],
-                server_arrival_times=[r.server_arrival_time for r in responses],
-                inference_start_time=responses[0].inference_start_time,
-                inference_end_time=responses[0].inference_end_time,
-                execution_horizons=[r.execution_horizon for r in responses],
-                start_steps=[r.action_start_step for r in responses],
+            self.batches.append(
+                BatchSummary(
+                    batch_id=len(self.batches),
+                    robot_ids=[r.robot_id for r in responses],
+                    request_ids=[r.request_id for r in responses],
+                    inference_start_time=responses[0].inference_start_time,
+                    inference_end_time=responses[0].inference_end_time,
+                )
             )
-            self.batches.append(batch)
-
-            for response in responses:
-                state = self.robot_states.setdefault(response.robot_id, RobotState())
-
-                if state.last_execution_horizon > 0:
-                    delta = response.action_start_step - state.last_start_step
-                    if delta > 0:
-                        starved_steps = max(0, delta - state.last_execution_horizon)
-                        self.starvation_intervals.append(
-                            StarvationIntervalEvent(
-                                robot_id=response.robot_id,
-                                observed_steps=delta,
-                                starved_steps=starved_steps,
-                                event_time=response.inference_end_time,
-                            )
-                        )
-                        state.total_starvations += starved_steps
-
-                state.last_start_step = response.action_start_step
-                state.last_execution_horizon = response.execution_horizon
-
-    def record_send(self, robot_id: str, request_id: int, server_send_time: float) -> None:
-        """Called from send() just before websocket.send_bytes()."""
-        with self._lock:
-            state = self.robot_states.get(robot_id)
-            if state is not None:
-                state.last_server_send_times[request_id] = server_send_time
-
-    def record_ack(
-        self,
-        robot_id: str,
-        request_id: int,
-        receive_time: float,
-        execution_start_step: int,
-    ) -> None:
-        """Called when client sends ResponseAck."""
-        with self._lock:
-            state = self.robot_states.get(robot_id)
-            if state is None:
-                return
-            server_send_time = state.last_server_send_times.pop(request_id, None)
-            if server_send_time is not None:
-                delay_ms = (receive_time - server_send_time) * 1000
-                state.network_delays_ms.append(delay_ms)
 
     def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
         """Called from the server process when the scheduler publishes timing samples."""
         with self._lock:
             self.scheduler_timings.extend(samples)
 
-    def record_task_progress(
+    # request/response lifecycle
+    # TODO: look in server, think about how to map requests to responses elegantly
+    def record_request(self, robot_id: str, request: SlotRequest) -> None:
+        """Called when client sends InferRequest."""
+        with self._lock:
+            self.robots[request.robot_id].add_request(request)
+
+    def record_response(
         self,
         robot_id: str,
-        task_suite_name: str,
-        task_id: int,
-        episode_idx: int,
-        *,
-        current_step: int,
-        max_episode_steps: int,
-        task_language: str | None = None,
-        total_episodes: int | None = None,
-        update_time: float | None = None,
+        request: SlotRequest,
+        response: InferResponse,
+    ) -> None:
+        """Called when client sends ResponseAck."""
+        with self._lock:
+            self.robots[ack.robot_id].add_response(ResponseRecord(request=request, response=response))
+
+    # episode lifecycle
+
+    def record_episode_start(
+        self,
+        robot_id: str,
+        episode_start: EpisodeStart,
     ) -> None:
         """Called when client streams an in-progress task step count."""
         with self._lock:
-            key = (robot_id, task_suite_name, task_id, episode_idx)
-            existing = self.task_progress.get(key)
-            step = max(current_step, existing.current_step if existing is not None else 0)
-            self.task_progress[key] = TaskEpisodeProgress(
-                robot_id=robot_id,
-                task_suite_name=task_suite_name,
-                task_id=task_id,
-                episode_idx=episode_idx,
-                current_step=step,
-                max_episode_steps=max_episode_steps,
-                task_language=task_language or (existing.task_language if existing is not None else None),
-                total_episodes=total_episodes or (existing.total_episodes if existing is not None else None),
-                update_time=time.time() if update_time is None else update_time,
-            )
+            self.robots[robot_id].start_episode(episode_start)
 
-    def record_task_result(
+    def record_episode_end(
         self,
         robot_id: str,
-        task_suite_name: str,
-        task_id: int,
-        episode_idx: int,
-        *,
-        success: bool,
-        duration_s: float,
-        steps_taken: int,
-        task_language: str | None = None,
-        total_episodes: int | None = None,
-        max_episode_steps: int | None = None,
-        max_duration_s: float | None = None,
-        event_time: float | None = None,
+        episode_end: EpisodeEnd,
     ) -> None:
-        """Called when client sends a downstream task completion event."""
+        """Called when client streams an in-progress task step count."""
         with self._lock:
-            key = (robot_id, task_suite_name, task_id, episode_idx)
-            self.task_progress.pop(key, None)
-            self.task_events.append(
-                TaskEpisodeEvent(
-                    robot_id=robot_id,
-                    task_suite_name=task_suite_name,
-                    task_id=task_id,
-                    episode_idx=episode_idx,
-                    success=success,
-                    duration_s=duration_s,
-                    steps_taken=steps_taken,
-                    task_language=task_language,
-                    total_episodes=total_episodes,
-                    max_episode_steps=max_episode_steps,
-                    max_duration_s=max_duration_s,
-                    event_time=time.time() if event_time is None else event_time,
-                )
-            )
+            self.robots[robot_id].end_episode(episode_end)
 
-    def record_task_update(
-        self,
-        robot_id: str,
-        task_suite_name: str,
-        task_id: int,
-        episode_idx: int,
-        *,
-        current_step: int,
-        max_episode_steps: int,
-        phase: str,
-        task_language: str | None = None,
-        total_episodes: int | None = None,
-        success: bool | None = None,
-        duration_s: float | None = None,
-        steps_taken: int | None = None,
-        max_duration_s: float | None = None,
-        event_time: float | None = None,
-    ) -> None:
-        """Record a downstream task update (in-progress or terminal result)."""
-        if phase == "progress":
-            self.record_task_progress(
-                robot_id=robot_id,
-                task_suite_name=task_suite_name,
-                task_id=task_id,
-                episode_idx=episode_idx,
-                current_step=current_step,
-                max_episode_steps=max_episode_steps,
-                task_language=task_language,
-                total_episodes=total_episodes,
-                update_time=event_time,
-            )
-            return
-
-        if phase == "result":
-            if success is None or duration_s is None:
-                return
-            self.record_task_result(
-                robot_id=robot_id,
-                task_suite_name=task_suite_name,
-                task_id=task_id,
-                episode_idx=episode_idx,
-                success=success,
-                duration_s=duration_s,
-                steps_taken=current_step if steps_taken is None else steps_taken,
-                task_language=task_language,
-                total_episodes=total_episodes,
-                max_episode_steps=max_episode_steps,
-                max_duration_s=max_duration_s,
-                event_time=event_time,
-            )
+    # metrics
+    # FIXME: everything after here is still a work in progress
 
     @staticmethod
     def _window_filter(items: list[T], event_time_getter: Callable[[T], float], cutoff: float | None) -> list[T]:
