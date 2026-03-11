@@ -20,7 +20,7 @@ ZMQ topology (all ipc://, unique per server instance):
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 import dataclasses
 from dataclasses import asdict
 from dataclasses import dataclass
@@ -74,27 +74,6 @@ socket_addresses = {
     "gpu_out_ep": f"ipc:///tmp/openpi_gpu_out_{_uid}",
     "result_ep": f"ipc:///tmp/openpi_result_{_uid}",
 }
-
-
-# FIXME: shouldn't need to be a sepatate function, should be able to do easily with fastapi
-def _parse_metrics_query_params(query_params: Mapping[str, str]) -> tuple[float | None, float]:
-    window_raw = query_params.get("window_s")
-    sla_raw = query_params.get("sla_pct")
-
-    window_s: float | None = None
-    if window_raw:
-        try:
-            window_s = float(window_raw)
-        except ValueError:
-            window_s = None
-
-    sla_pct = 10.0
-    if sla_raw:
-        try:
-            sla_pct = float(sla_raw)
-        except ValueError:
-            sla_pct = 10.0
-    return window_s, sla_pct
 
 
 @dataclass
@@ -485,14 +464,11 @@ def create_app(
         return asdict(metadata)
 
     @app.get("/metrics")
-    async def get_metrics(request: Request) -> dict:
-        window_s, sla_pct = _parse_metrics_query_params(request.query_params)
+    async def get_metrics(request: Request, window_s: float | None = None, sla_pct: float = 10.0) -> dict:
         return request.app.state.server.metrics_store.snapshot(window_s, sla_pct=sla_pct)
 
     @app.get("/metrics/history")
-    async def get_metrics_history(request: Request) -> dict:
-        # return asdict(request.app.state.server.metrics_store)
-        window_s, sla_pct = _parse_metrics_query_params(request.query_params)
+    async def get_metrics_history(request: Request, window_s: float | None = None, sla_pct: float = 10.0) -> dict:
         return request.app.state.server.metrics_store.history(window_s, sla_pct=sla_pct)
 
     @app.post("/reset-metrics")
