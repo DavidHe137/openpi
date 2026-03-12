@@ -34,7 +34,7 @@ lock: threading.RLock = threading.RLock()
 class Snapshot:
     """Windowed metrics snapshot. All stats, SLA, and starvation computed here."""
 
-    server_start_time: float
+    start_time: float
     start_timestamp: float
     end_timestamp: float
     sla_pct: float
@@ -56,7 +56,7 @@ class Snapshot:
 
     @property
     def uptime_s(self) -> float:
-        return self.end_timestamp - self.server_start_time
+        return self.end_timestamp - self.start_time
 
     @property
     def duration_s(self) -> float:
@@ -125,6 +125,7 @@ class Snapshot:
 class MetricsStore(JSONDataclass):
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
+    start_time: float = 0.0
     robots: dict[RobotID, Robot] = field(default_factory=dict)
     batches: list[BatchSummary] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
@@ -171,9 +172,11 @@ class MetricsStore(JSONDataclass):
                 action_start_step=request.action_start_step,
                 min_execution_horizon=request.min_execution_horizon,
                 request_timestamp=request.request_timestamp,
-                server_arrival_time=request.arrival_timestamp,
+                server_arrival_time=request.arrival_timestamp,  # FIXME: make timestamp/arrival time naming convention consistent
             )
             self.robots[robot_id].add_request(record)
+
+            self.start_time = min(self.start_time, request.request_timestamp)
 
     def record_response(
         self,
@@ -219,12 +222,6 @@ class MetricsStore(JSONDataclass):
         with lock:
             self.robots[robot_id].end_episode(episode_end)
 
-    @property
-    def start_time(self) -> float:
-        if self.batches:
-            return self.batches[0].inference_start_time
-        return time.time()
-
     def snapshot(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> Snapshot:
         """Single source of truth for the dashboard. Computes all stats, SLA, and chart data."""
         from collections import deque
@@ -234,7 +231,11 @@ class MetricsStore(JSONDataclass):
             start_timestamp = end_timestamp - window_s if window_s is not None else self.start_time
             t0 = self.start_time
 
-            batches = window_filter(self.batches, lambda b: b.inference_end_time, (start_timestamp, end_timestamp))
+            batches = window_filter(
+                self.batches,
+                lambda b: b.inference_end_time,
+                (start_timestamp, end_timestamp),
+            )
             requests = list(
                 itertools.chain.from_iterable(
                     robot.get_requests(start_timestamp, end_timestamp) for robot in self.robots.values()
@@ -249,7 +250,10 @@ class MetricsStore(JSONDataclass):
             robot_actions_left = {}
             for robot_id, robot in self.robots.items():
                 times, values = robot.get_actions_left_timed(start_timestamp, end_timestamp)
-                robot_actions_left[robot_id] = (times - t0 if len(times) > 0 else times, values)
+                robot_actions_left[robot_id] = (
+                    times - t0 if len(times) > 0 else times,
+                    values,
+                )
 
             completed_episodes: list[tuple[RobotID, Episode]] = [
                 (robot_id, episode)
@@ -330,7 +334,11 @@ class MetricsStore(JSONDataclass):
                 active_count = len(_windows)
                 healthy_count = sum(1 for w in _windows.values() if sum(v == 0 for v in w) / len(w) * 100 <= sla_pct)
                 healthy_robots_over_time.append(
-                    {"t": round(ts - t0, 3), "healthy_robot_count": healthy_count, "active_robot_count": active_count}
+                    {
+                        "t": round(ts - t0, 3),
+                        "healthy_robot_count": healthy_count,
+                        "active_robot_count": active_count,
+                    }
                 )
 
             # ---- batch history for charts ----
@@ -347,9 +355,13 @@ class MetricsStore(JSONDataclass):
                     resp = response_by_id.get(req_id)
                     if resp is not None:
                         inbound_ms = round(
-                            (resp.request.server_arrival_time - resp.request.request_timestamp) * 1000, 2
+                            (resp.request.server_arrival_time - resp.request.request_timestamp) * 1000,
+                            2,
                         )
-                        queue_ms = round((b.inference_start_time - resp.request.server_arrival_time) * 1000, 2)
+                        queue_ms = round(
+                            (b.inference_start_time - resp.request.server_arrival_time) * 1000,
+                            2,
+                        )
                     else:
                         inbound_ms = queue_ms = 0.0
                     per_req.append(
@@ -365,7 +377,10 @@ class MetricsStore(JSONDataclass):
                         "t": round(b.inference_end_time - t0, 3),
                         "batch_size": len(b.robot_ids),
                         "gpu_time_ms": round(b.gpu_time_ms, 2),
-                        "idle_before_ms": round((b.inference_start_time - batches[i - 1].inference_end_time) * 1000, 2)
+                        "idle_before_ms": round(
+                            (b.inference_start_time - batches[i - 1].inference_end_time) * 1000,
+                            2,
+                        )
                         if i > 0
                         else 0.0,
                         "inference_start_t": round(b.inference_start_time - t0, 3),
@@ -413,7 +428,10 @@ class MetricsStore(JSONDataclass):
                             "task_language": episode.task_language,
                             "episode_idx": ep_idx,
                             "success": episode.success,
-                            "duration_s": round(episode.requests[-1].request_timestamp - episode.start_time, 3),
+                            "duration_s": round(
+                                episode.requests[-1].request_timestamp - episode.start_time,
+                                3,
+                            ),
                             "steps_taken": episode.num_steps,
                             "total_episodes": len(robot.episodes),
                             "max_episode_steps": episode.max_episode_steps,
@@ -449,7 +467,7 @@ class MetricsStore(JSONDataclass):
                 )
 
             return Snapshot(
-                server_start_time=t0,
+                start_time=t0,
                 start_timestamp=start_timestamp,
                 end_timestamp=end_timestamp,
                 sla_pct=sla_pct,
