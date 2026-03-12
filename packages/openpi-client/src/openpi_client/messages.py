@@ -74,7 +74,6 @@ class InferResponse:
 @dataclass(frozen=True)
 class ResponseAck:
     request_id: int  # matches InferResponse.request_id
-    server_send_time: float  # time.time() on server at send
     receive_time: float  # time.time() on client at receipt
     execution_start_step: int  # client step when new chunk became available
     first_executed_index: int = 0  # index within chunk where actual execution started

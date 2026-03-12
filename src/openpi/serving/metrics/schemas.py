@@ -21,7 +21,7 @@ class RequestRecord:
     request_id: int
     observation_step: int
     action_start_step: int
-    execution_horizon: int
+    min_execution_horizon: int
     request_timestamp: float  # client: when request was created
     server_arrival_time: float  # server: when observation arrived
 
@@ -30,13 +30,13 @@ class RequestRecord:
 class ResponseRecord:
     request: RequestRecord
     batch_id: int
-
     inference_start_time: float  # gpu: before infer_batch
     inference_end_time: float  # gpu: after infer_batch
     server_send_time: float = 0.0  # server: before websocket.send_bytes()
     receive_time: float = 0.0  # client: ResponseAck.receive_time
     execution_start_step: int = 0  # client: ResponseAck.execution_start_step
     first_executed_index: int = 0  # client: index within chunk where execution started
+    execution_horizon: int = 0  # client: how many actions were in the response chunk
 
     def __post_init__(self) -> None:
         if isinstance(self.request, dict):
@@ -60,7 +60,11 @@ class ResponseRecord:
         return (self.receive_time - self.server_send_time) * 1000
 
 
-def window_filter(items: list[T], event_time_getter: Callable[[T], float], window_s: tuple[float, float]) -> list[T]:
+def window_filter(
+    items: list[T],
+    event_time_getter: Callable[[T], float],
+    window_s: tuple[float, float],
+) -> list[T]:
     start_timestamp, end_timestamp = window_s
     return [item for item in items if start_timestamp <= event_time_getter(item) < end_timestamp]
 
@@ -105,7 +109,7 @@ class Episode:
             # At execution_start_step the robot is on action first_executed_index of the chunk,
             # so it has (execution_horizon - first_executed_index) actions remaining, counting
             # down by 1 each step until the chunk is exhausted or the episode ends.
-            remaining = response.request.execution_horizon - response.first_executed_index
+            remaining = response.execution_horizon - response.first_executed_index
             execution_end_step = min(response.execution_start_step + remaining, self.num_steps)
             n = execution_end_step - response.execution_start_step
             actions_left = np.arange(remaining, remaining - n, -1)
@@ -124,7 +128,11 @@ class Episode:
         self.responses.append(response)
 
     def get_requests(self, start_timestamp: float, end_timestamp: float) -> list[RequestRecord]:
-        return window_filter(self.requests, lambda r: r.request_timestamp, (start_timestamp, end_timestamp))
+        return window_filter(
+            self.requests,
+            lambda r: r.request_timestamp,
+            (start_timestamp, end_timestamp),
+        )
 
     def get_responses(self, start_timestamp: float, end_timestamp: float) -> list[ResponseRecord]:
         return window_filter(self.responses, lambda r: r.receive_time, (start_timestamp, end_timestamp))
@@ -135,6 +143,14 @@ class Episode:
         start_idx = next((i for i, t in enumerate(timestamps) if t >= start_ts), len(timestamps))
         end_idx = next((i for i, t in enumerate(timestamps) if t >= end_ts), len(timestamps))
         return self.actions_left_history[start_idx:end_idx].astype(float)
+
+    def get_windowed_steps(self, start_ts: float, end_ts: float) -> list[tuple[float, float]]:
+        """Return [(request_timestamp, actions_left), ...] for steps in [start_ts, end_ts)."""
+        return [
+            (r.request_timestamp, float(al))
+            for r, al in zip(self.requests, self.actions_left_history, strict=True)
+            if start_ts <= r.request_timestamp < end_ts
+        ]
 
 
 @dataclass

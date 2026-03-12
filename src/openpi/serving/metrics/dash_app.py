@@ -17,6 +17,7 @@ from openpi_client.schemas import ServerMetadata
 import plotly.graph_objects as go
 
 from openpi.serving.metrics.store import MetricsStore
+from openpi.serving.metrics.store import Snapshot
 
 # ---------------------------------------------------------------------------
 # Plotly dark theme helpers
@@ -200,7 +201,7 @@ def _robot_table(robots: dict, sla_pct: float) -> html.Element:
                             ),
                         ]
                     )
-                    for rid, r in robots.items()
+                    for rid, r in sorted(robots.items())
                 ]
             ),
         ],
@@ -618,16 +619,16 @@ def _actions_left_heatmap_fig(robot_actions_left: dict[str, np.ndarray]) -> go.F
     return fig
 
 
-def _stage_figs(hist: dict, robot: str) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
+def _stage_figs(snap: Snapshot, robot: str) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
     inbound, queue_, infer_, outbound = [], [], [], []
-    for b in hist["batches"]:
+    for b in snap.batch_history:
         for req in b["per_request"]:
             if robot != "all" and req["robot_id"] != robot:
                 continue
             inbound.append(req["inbound_ms"])
             queue_.append(req["queue_ms"])
             infer_.append(req["infer_ms"])
-    od = hist.get("outbound_delays_ms", {})
+    od = snap.outbound_delays_ms
     outbound = list(od.get(robot) or []) if robot != "all" else [d for v in od.values() for d in v]
 
     small = {**_DARK, "margin": {"t": 36, "r": 8, "b": 44, "l": 48}, "height": 280}
@@ -921,10 +922,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         _ = n_clicks, n_intervals
         sla_pct = float(sla_pct) if sla_pct is not None else 10.0
         snap = metrics_store.snapshot(window_s, sla_pct=sla_pct)
-        hist = metrics_store.history(window_s)
-        batches = hist["batches"]
-        task_events = hist.get("task_events", [])
-        task_progress = hist.get("task_progress", [])
+        batches = snap.batch_history
 
         def f(v: float) -> str:
             return f"{v:.1f}"
@@ -950,15 +948,15 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
 
         gpu_fig = _gpu_dist_fig(batches)
         task_heatmap_fig = _combined_task_episode_heatmap_fig(
-            task_events,
-            task_progress,
+            snap.task_events,
+            snap.task_progress,
             title="Success, Completion Time Metrics",
         )
         sla_capacity_fig = _sla_capacity_curve_fig(snap.sla_capacity_curve, sla_pct)
         healthy_robots_fig = _healthy_robots_over_time_fig(snap.healthy_robots_over_time, sla_pct)
         gantt = _gantt_fig(batches, float(window_s) if window_s else float("inf"))
 
-        robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in robots]
+        robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in sorted(robots)]
         status = "last refresh: " + datetime.datetime.now(datetime.UTC).astimezone().strftime("%H:%M:%S")
 
         return (
@@ -989,8 +987,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         window_s: float | None,
     ) -> go.Figure:
         _ = n_clicks, n_intervals
-        hist = metrics_store.history(window_s)
-        batches = hist["batches"]
+        batches = metrics_store.snapshot(window_s).batch_history
 
         fig = go.Figure()
         if batches:
@@ -1025,8 +1022,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         window_s: float | None,
     ) -> go.Figure:
         _ = n_clicks, n_intervals
-        hist = metrics_store.history(window_s)
-        batches = hist["batches"]
+        batches = metrics_store.snapshot(window_s).batch_history
 
         fig = go.Figure()
         if len(batches) >= 2:
@@ -1122,8 +1118,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         window_s: float | None,
     ) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
         _ = n_clicks, n_intervals
-        hist = metrics_store.history(window_s)
-        return _stage_figs(hist, robot or "all")
+        return _stage_figs(metrics_store.snapshot(window_s), robot or "all")
 
     # Histogram zoom: refine bin size when user zooms in
     def _register_histogram_zoom(gid: str) -> None:

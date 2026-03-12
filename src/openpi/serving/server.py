@@ -347,6 +347,7 @@ def create_app(
 
         # Normal operation
         response_queue: asyncio.Queue = state.response_queues[robot_id]
+        pending_responses: dict[int, InferResponse] = {}
 
         async def recv():
             try:
@@ -360,13 +361,14 @@ def create_app(
                             continue
                         case "ack":
                             ack = ResponseAck(**msg)
-                            state.metrics_store.record_response(robot_id, ack)
+                            response = pending_responses.pop(ack.request_id)
+                            state.metrics_store.record_response(robot_id, response, ack)
                             await state.scheduler_sock.send_pyobj(
                                 AckNotification(
                                     robot_id=robot_id,
                                     request_id=ack.request_id,
                                     receive_time=ack.receive_time,
-                                    server_send_time=ack.server_send_time,
+                                    server_send_time=response.server_send_time,
                                 )
                             )
                             continue
@@ -429,6 +431,7 @@ def create_app(
             while True:
                 response: InferResponse = await response_queue.get()
                 stamped = dataclasses.replace(response, server_send_time=time.time())
+                pending_responses[response.request_id] = stamped
                 await websocket.send_bytes(msgpack_numpy.packb(asdict(stamped)))
 
         recv_task = asyncio.create_task(recv())
