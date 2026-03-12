@@ -709,9 +709,9 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     assert "planner_starvation_steps" in df.columns
     assert "planner_starvation_rate" in df.columns
     assert "planner_starvation_seconds" in df.columns
-    aggregation_spec["planner_starvation_steps"] = "mean"
+    aggregation_spec["planner_starvation_steps"] = "sum"
     aggregation_spec["planner_starvation_rate"] = "mean"
-    aggregation_spec["planner_starvation_seconds"] = "mean"
+    aggregation_spec["planner_starvation_seconds"] = "sum"
 
     summary = df.groupby(["task_suite_name", "task_id"]).agg(aggregation_spec)
     summary.reset_index().to_csv(output_path / "summary.csv", index=False)
@@ -723,9 +723,9 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     table.add_column("Task ID", style="magenta")
     table.add_column("Success Rate", style="green")
     assert "planner_starvation_steps" in summary.columns
-    table.add_column("Planner Starvation Steps", style="yellow")
+    table.add_column("Total Starvation Steps", style="yellow")
     assert "planner_starvation_rate" in summary.columns
-    table.add_column("Planner Starvation Rate", style="yellow")
+    table.add_column("Starvation Rate", style="yellow")
 
     for _, row in summary.reset_index().iterrows():
         row_values = [
@@ -746,7 +746,7 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     assert "planner_starvation_steps" in df.columns
     total_starvation_steps = int(df["planner_starvation_steps"].sum())
     console.print(
-        f"[bold yellow]Planner starvation total: {total_starvation_steps} control steps[/bold yellow]"
+        f"[bold yellow]Total starvation steps: {total_starvation_steps} control steps[/bold yellow]"
     )
     assert "planner_starvation_rate" in df.columns
     console.print(
