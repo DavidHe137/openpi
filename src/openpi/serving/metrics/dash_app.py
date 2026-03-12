@@ -392,7 +392,7 @@ def _sla_capacity_curve_fig(sla_capacity_curve: list[dict], sla_pct: float) -> g
     fig.update_layout(
         **_layout(
             title={"text": "SLA Capacity Curve", "font": {"size": 12, "color": "#888"}},
-            xaxis={"title": "SLA threshold (%)", "range": [0, 20], "dtick": 2},
+            xaxis={"title": "SLA threshold (%)", "range": [0, 100], "dtick": 10},
             yaxis={"title": "Healthy robots"},
             height=320,
             showlegend=False,
@@ -824,15 +824,15 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                                 dcc.Slider(
                                     id="slider-sla-pct",
                                     min=0,
-                                    max=20,
+                                    max=100,
                                     step=1,
                                     value=10,
                                     marks={
                                         0: {"label": "0%", "style": {"color": "#fff"}},
-                                        5: {"label": "5%", "style": {"color": "#fff"}},
-                                        10: {"label": "10%", "style": {"color": "#fff"}},
-                                        15: {"label": "15%", "style": {"color": "#fff"}},
-                                        20: {"label": "20%", "style": {"color": "#fff"}},
+                                        25: {"label": "25%", "style": {"color": "#fff"}},
+                                        50: {"label": "50%", "style": {"color": "#fff"}},
+                                        75: {"label": "75%", "style": {"color": "#fff"}},
+                                        100: {"label": "100%", "style": {"color": "#fff"}},
                                     },
                                     tooltip={"placement": "bottom"},
                                 ),

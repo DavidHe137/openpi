@@ -310,7 +310,7 @@ class MetricsStore(JSONDataclass):
                     "active_robot_count": n_active,
                     "healthy_robot_ratio_pct": n_healthy / n_active * 100 if n_active > 0 else 0.0,
                 }
-                for thr in range(21)
+                for thr in range(101)
             ]
 
             # ---- healthy robots over time: rolling K-step window per robot ----
