@@ -40,6 +40,8 @@ from fastapi.concurrency import asynccontextmanager
 from openpi_client import msgpack_numpy
 from openpi_client.messages import ConnectRequest
 from openpi_client.messages import ConnectResponse
+from openpi_client.messages import EpisodeEnd
+from openpi_client.messages import EpisodeStart
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
@@ -345,7 +347,7 @@ def create_app(
 
         # Normal operation
         response_queue: asyncio.Queue = state.response_queues[robot_id]
-        send_times: dict[int, float] = {}  # request_id → server_send_time
+        pending_responses: dict[int, InferResponse] = {}
 
         async def recv():
             try:
@@ -359,19 +361,25 @@ def create_app(
                             continue
                         case "ack":
                             ack = ResponseAck(**msg)
-                            state.metrics_store.record_ack(
-                                robot_id, ack.request_id, ack.receive_time, ack.execution_start_step
-                            )
-                            server_send_time = send_times.pop(ack.request_id, None)
-                            if server_send_time is not None:
-                                await state.scheduler_sock.send_pyobj(
-                                    AckNotification(
-                                        robot_id=robot_id,
-                                        request_id=ack.request_id,
-                                        receive_time=ack.receive_time,
-                                        server_send_time=server_send_time,
-                                    )
+                            response = pending_responses.pop(ack.request_id)
+                            state.metrics_store.record_response(robot_id, response, ack)
+                            await state.scheduler_sock.send_pyobj(
+                                AckNotification(
+                                    robot_id=robot_id,
+                                    request_id=ack.request_id,
+                                    receive_time=ack.receive_time,
+                                    server_send_time=response.server_send_time,
                                 )
+                            )
+                            continue
+                        case "episode_start":
+                            state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
+                            continue
+                        case "episode_step":
+                            state.metrics_store.record_episode_step(robot_id, time.time())
+                            continue
+                        case "episode_end":
+                            state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
                             continue
                         case "infer":
                             pass
@@ -418,16 +426,15 @@ def create_app(
                         control_hz=state.robot_metadata[robot_id].control_hz,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
+                    state.metrics_store.record_request(robot_id, slot_req)
             except WebSocketDisconnect:
                 logger.debug("Robot %s disconnected", robot_id)
 
         async def send():
             while True:
                 response: InferResponse = await response_queue.get()
-                send_time = time.time()
-                send_times[response.request_id] = send_time
-                stamped = dataclasses.replace(response, server_send_time=send_time)
-                state.metrics_store.record_send(robot_id, response.request_id, send_time)
+                stamped = dataclasses.replace(response, server_send_time=time.time())
+                pending_responses[response.request_id] = stamped
                 await websocket.send_bytes(msgpack_numpy.packb(asdict(stamped)))
 
         recv_task = asyncio.create_task(recv())
@@ -445,18 +452,18 @@ def create_app(
     async def server_metadata() -> dict:
         return asdict(metadata)
 
-    @app.get("/metrics")
-    async def get_metrics(request: Request) -> dict:
-        window_s = request.query_params.get("window_s")
-        return request.app.state.server.metrics_store.snapshot(float(window_s) if window_s else None)
+    @app.get("/")
+    async def get_metrics(request: Request, window_s: float | None = None, sla_pct: float = 10.0) -> dict:
+        return request.app.state.server.metrics_store.snapshot(window_s, sla_pct=sla_pct)
 
-    @app.get("/metrics/history")
-    async def get_metrics_history(request: Request) -> dict:
-        return request.app.state.server.metrics_store.dump()
+    @app.get("/save-metrics")
+    async def save_metrics(request: Request) -> dict:
+        return asdict(request.app.state.server.metrics_store)
 
-    @app.post("/reset-metrics")
+    @app.post("/reset")
     async def reset_metrics(request: Request) -> dict:
         request.app.state.server.metrics_store.reset()
+        # TODO: reset server state too
         return {"status": "ok"}
 
     dash_app = create_dash_app(metadata, metrics_store)
@@ -479,14 +486,5 @@ class PolicyServer:
         self._log_queue = log_queue
 
     def serve_forever(self, host="0.0.0.0", port=8000):
-        try:
-            import requests as _requests
-
-            info = _requests.get("https://ipinfo.io/json", timeout=3).json()
-            location = f"{info.get('city', '?')}, {info.get('region', '?')}, {info.get('country', '?')}"
-        except Exception:
-            location = "unknown"
-        logger.info("Server location: %s", location)
-        self._metadata.location = location
         app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue)
         uvicorn.run(app, host=host, port=port)
