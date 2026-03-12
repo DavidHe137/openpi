@@ -90,11 +90,12 @@ class InferResponse:
     actions: Float[np.ndarray, "1 action_horizon action_dim"]  # TODO: check the type on this
     execution_horizon: int
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
-    # Lifecycle timestamps (filled by server, all time.time()):
-    server_arrival_time: float = 0.0  # WS: when observation arrived
-    inference_start_time: float = 0.0  # GPU: before infer_batch
-    inference_end_time: float = 0.0  # GPU: after infer_batch
-    server_send_time: float = 0.0  # WS: just before websocket.send_bytes()
+    # Lifecycle timestamps (server fields use server clock; receive_time_server uses client SyncedClock):
+    server_arrival_time: float = 0.0  # WS: when observation arrived (server clock)
+    inference_start_time: float = 0.0  # GPU: before infer_batch (server clock)
+    inference_end_time: float = 0.0  # GPU: after infer_batch (server clock)
+    server_send_time: float = 0.0  # WS: just before websocket.send_bytes() (server clock)
+    receive_time_server: float = 0.0  # client: when response was received, adjusted to server clock
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,20 @@ class ConnectRequest:
 @dataclass(frozen=True)
 class ConnectResponse:
     type: Literal["connect_response"] = "connect_response"
+
+
+@dataclass(frozen=True)
+class ClockSyncPing:
+    client_timestamp: float
+    type: Literal["clock_sync_ping"] = "clock_sync_ping"
+
+
+@dataclass(frozen=True)
+class ClockSyncPong:
+    client_timestamp: float  # echoed from ClockSyncPing
+    server_receive_time: float
+    server_send_time: float
+    type: Literal["clock_sync_pong"] = "clock_sync_pong"
 
 
 @dataclass(frozen=True)

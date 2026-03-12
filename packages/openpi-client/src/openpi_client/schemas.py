@@ -158,7 +158,6 @@ class ActionChunk(ParquetDataclass, CSVDataclass):
         cls,
         infer_response: messages.InferResponse,
         execution_start_step: int,
-        receive_time_server: float,
     ) -> "ActionChunk":
         # NOTE: copy attributes instead of composition to make it easier to serialize for parquet/csv
         return ActionChunk(
@@ -168,7 +167,7 @@ class ActionChunk(ParquetDataclass, CSVDataclass):
             actions=infer_response.actions,
             execution_horizon=infer_response.execution_horizon,
             request_timestamp=infer_response.request_timestamp,
-            response_timestamp=receive_time_server,
+            response_timestamp=infer_response.receive_time_server,
             request_id=infer_response.request_id,
             noise=infer_response.noise,
         )
