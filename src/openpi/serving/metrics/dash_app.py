@@ -1,14 +1,8 @@
-"""Dash-based metrics dashboard with plotly-resampler for dynamic chart resampling.
-
-FigureResampler is used for time-series scatter charts (batch sizes, GPU busy) so that
-the browser only receives ~2000 points on load, and re-samples to full resolution on zoom.
-Uses plotly-resampler 0.10+ API: construct_update_data_patch returns a Patch directly.
-"""
+"""Dash-based metrics dashboard."""
 
 from __future__ import annotations
 
 import datetime
-import uuid
 
 import dash
 from dash import Input
@@ -21,14 +15,9 @@ from dash import html
 import numpy as np
 from openpi_client.schemas import ServerMetadata
 import plotly.graph_objects as go
-from plotly_resampler import FigureResampler
 
 from openpi.serving.metrics.store import MetricsStore
-
-# ---------------------------------------------------------------------------
-# Server-side resampler cache  {session_id -> {chart_key -> FigureResampler}}
-# ---------------------------------------------------------------------------
-_resamplers: dict[str, dict[str, FigureResampler]] = {}
+from openpi.serving.metrics.store import Snapshot
 
 # ---------------------------------------------------------------------------
 # Plotly dark theme helpers
@@ -212,7 +201,7 @@ def _robot_table(robots: dict, sla_pct: float) -> html.Element:
                             ),
                         ]
                     )
-                    for rid, r in robots.items()
+                    for rid, r in sorted(robots.items())
                 ]
             ),
         ],
@@ -242,7 +231,7 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
         row_total_episodes[label] = max(
             row_total_episodes.get(label, 0),
             int(event.get("total_episodes") or 0),
-            int(event["episode_idx"]),
+            int(event["episode_idx"]) + 1,
         )
 
     for prog in task_progress:
@@ -251,7 +240,7 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
         row_total_episodes[label] = max(
             row_total_episodes.get(label, 0),
             int(prog.get("total_episodes") or 0),
-            int(prog["episode_idx"]),
+            int(prog["episode_idx"]) + 1,
         )
 
     row_order = sorted(row_events.keys())
@@ -284,8 +273,8 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
         row_z: list[float | None] = []
         row_text: list[str] = []
         row_hover: list[str] = []
-        for episode_idx in range(1, max_episode + 1):
-            if episode_idx > row_total_episodes[label]:
+        for episode_idx in range(max_episode):
+            if episode_idx >= row_total_episodes[label]:
                 row_z.append(None)
                 row_text.append("")
                 row_hover.append("")
@@ -317,7 +306,7 @@ def _combined_task_episode_heatmap_fig(task_events: list[dict], task_progress: l
 
     fig.add_trace(
         go.Heatmap(
-            x=list(range(1, max_episode + 1)),
+            x=list(range(max_episode)),
             y=row_order,
             z=z,
             text=text,
@@ -403,7 +392,7 @@ def _sla_capacity_curve_fig(sla_capacity_curve: list[dict], sla_pct: float) -> g
     fig.update_layout(
         **_layout(
             title={"text": "SLA Capacity Curve", "font": {"size": 12, "color": "#888"}},
-            xaxis={"title": "SLA threshold (%)", "range": [0, 20], "dtick": 2},
+            xaxis={"title": "SLA threshold (%)", "range": [0, 100], "dtick": 10},
             yaxis={"title": "Healthy robots"},
             height=320,
             showlegend=False,
@@ -450,28 +439,99 @@ def _healthy_robots_over_time_fig(series: list[dict], sla_pct: float) -> go.Figu
 
 
 # ---------------------------------------------------------------------------
-# Non-resampled figure builders
+# Figure builders
 # ---------------------------------------------------------------------------
+_PALETTE = [
+    "#4fc3f7",
+    "#81c784",
+    "#ff8a65",
+    "#ce93d8",
+    "#ffb74d",
+    "#f06292",
+    "#4db6ac",
+    "#aed581",
+    "#7986cb",
+    "#4dd0e1",
+]
+
+
 def _gpu_dist_fig(batches: list[dict]) -> go.Figure:
     fig = go.Figure()
     by_size: dict[int, list[float]] = {}
     for b in batches:
         by_size.setdefault(b["batch_size"], []).append(b["gpu_time_ms"])
-    for s in sorted(by_size):
+    for i, s in enumerate(sorted(by_size)):
+        color = _PALETTE[i % len(_PALETTE)]
         fig.add_trace(
-            go.Box(
-                y=by_size[s],
+            go.Histogram(
+                x=by_size[s],
                 name=str(s),
-                boxpoints="outliers",
-                jitter=0.4,
-                pointpos=0,
-                marker_size=3,
-                marker_opacity=0.5,
-                line_width=1.5,
+                nbinsx=60,
+                marker_color=color,
+                marker_opacity=0.6,
+                legendgroup=str(s),
             )
         )
     fig.update_layout(
-        **_layout(xaxis={"title": "Batch size"}, yaxis={"title": "GPU time (ms)"}, height=320, showlegend=False)
+        **_layout(
+            barmode="overlay",
+            xaxis={"title": "GPU time (ms)"},
+            yaxis={"title": "Count"},
+            height=320,
+            showlegend=True,
+            legend={"title": {"text": "Batch size"}, **_DARK["legend"]},
+        )
+    )
+    return fig
+
+
+def _batch_fig(batches: list[dict]) -> go.Figure:
+    fig = go.Figure()
+    if batches:
+        times = [b["t"] for b in batches]
+        sizes = [b["batch_size"] for b in batches]
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=sizes,
+                mode="markers",
+                name="batch size",
+                marker={"size": 4, "color": "#ce93d8", "opacity": 0.6},
+            )
+        )
+    fig.update_layout(**_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Batch size"}))
+    return fig
+
+
+def _busy_fig(batches: list[dict]) -> go.Figure:
+    fig = go.Figure()
+    if len(batches) >= 2:
+        t0 = batches[0]["inference_start_t"]
+        t1 = batches[-1]["inference_end_t"]
+        n = int(t1 - t0) + 1
+        pct = [0.0] * n
+        for b in batches:
+            s = b["inference_start_t"] - t0
+            e = b["inference_end_t"] - t0
+            lo, hi = int(s), min(int(e), n - 1)
+            for k in range(lo, hi + 1):
+                ov = min(e, k + 1) - max(s, k)
+                if ov > 0:
+                    pct[k] += ov * 100
+        times = np.array([t0 + i + 0.5 for i in range(n)], dtype=float)
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=pct,
+                mode="lines",
+                fill="tozeroy",
+                line={"color": "#4fc3f7", "width": 1.5},
+                fillcolor="rgba(79,195,247,0.12)",
+                name="busy %",
+            )
+        )
+    fig.update_layout(
+        **_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "GPU busy (%)", "range": [0, 100]})
     )
     return fig
 
@@ -505,7 +565,7 @@ def _gantt_fig(batches: list[dict], window_s: float) -> go.Figure:
             tmap[rid]["x"].append(dur)
             tmap[rid]["base"].append(b["inference_start_t"])
             tmap[rid]["y"].append(rid)
-    for rid, td in tmap.items():
+    for rid, td in sorted(tmap.items()):
         fig.add_trace(
             go.Bar(x=td["x"], base=td["base"], y=td["y"], orientation="h", name=rid, marker_color=td["color"])
         )
@@ -514,23 +574,76 @@ def _gantt_fig(batches: list[dict], window_s: float) -> go.Figure:
             barmode="overlay",
             height=max(200, len(all_robots) * 32 + 80),
             xaxis={"title": "Time since server start (s)"},
-            yaxis={"autorange": "reversed"},
+            yaxis={
+                "categoryorder": "array",
+                "categoryarray": all_robots,
+                "autorange": "reversed",
+            },
             showlegend=False,
+            margin={**_DARK["margin"], "l": 100},
         )
     )
     return fig
 
 
-def _stage_figs(hist: dict, robot: str) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
+def _actions_left_heatmap_fig(robot_actions_left: dict[str, tuple[np.ndarray, np.ndarray]]) -> go.Figure:
+    """Scatter of actions_left over time. Robots on y-axis, time on x-axis (aligned with batch/busy/gantt)."""
+    robots = sorted(robot_actions_left.keys())
+    fig = go.Figure()
+    if not robots:
+        fig.update_layout(**_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Robot"}))
+        return fig
+
+    row_h = 20
+    height = max(180, len(robots) * row_h + 80)
+    marker_size = row_h - 2
+
+    for i, rid in enumerate(robots):
+        times, values = robot_actions_left[rid]
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=[rid] * len(times),
+                mode="markers",
+                marker={
+                    "symbol": "square",
+                    "size": marker_size,
+                    "color": values,
+                    "colorscale": "RdYlGn",
+                    "cmin": 0,
+                    "showscale": i == len(robots) - 1,
+                    "colorbar": {"title": "Actions left", "thickness": 12},
+                },
+                name=rid,
+                showlegend=False,
+            )
+        )
+    fig.update_layout(
+        **_layout(
+            xaxis={"title": "Time since server start (s)"},
+            yaxis={
+                "title": "Robot",
+                "categoryorder": "array",
+                "categoryarray": robots,
+                "autorange": "reversed",
+            },
+            height=height,
+            margin={**_DARK["margin"], "l": 100},
+        )
+    )
+    return fig
+
+
+def _stage_figs(snap: Snapshot, robot: str) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
     inbound, queue_, infer_, outbound = [], [], [], []
-    for b in hist["batches"]:
+    for b in snap.batch_history:
         for req in b["per_request"]:
             if robot != "all" and req["robot_id"] != robot:
                 continue
             inbound.append(req["inbound_ms"])
             queue_.append(req["queue_ms"])
             infer_.append(req["infer_ms"])
-    od = hist.get("outbound_delays_ms", {})
+    od = snap.outbound_delays_ms
     outbound = list(od.get(robot) or []) if robot != "all" else [d for v in od.values() for d in v]
 
     small = {**_DARK, "margin": {"t": 36, "r": 8, "b": 44, "l": 48}, "height": 280}
@@ -562,7 +675,7 @@ def _stage_figs(hist: dict, robot: str) -> tuple[go.Figure, go.Figure, go.Figure
 def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> dash.Dash:
     app = dash.Dash(
         __name__,
-        url_base_pathname="/dashboard/",
+        url_base_pathname="/",
         title="openpi · metrics",
         prevent_initial_callbacks="initial_duplicate",
         suppress_callback_exceptions=True,
@@ -578,7 +691,6 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
     app.layout = html.Div(
         style=_BODY,
         children=[
-            dcc.Store(id="store-session", storage_type="session"),
             dcc.Store(id="store-xrange"),
             dcc.Store(id="store-auto-refresh-enabled", data=False),
             dcc.Interval(id="interval-refresh", interval=5000, disabled=True, n_intervals=0),
@@ -712,15 +824,15 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                                 dcc.Slider(
                                     id="slider-sla-pct",
                                     min=0,
-                                    max=20,
+                                    max=100,
                                     step=1,
                                     value=10,
                                     marks={
                                         0: {"label": "0%", "style": {"color": "#fff"}},
-                                        5: {"label": "5%", "style": {"color": "#fff"}},
-                                        10: {"label": "10%", "style": {"color": "#fff"}},
-                                        15: {"label": "15%", "style": {"color": "#fff"}},
-                                        20: {"label": "20%", "style": {"color": "#fff"}},
+                                        25: {"label": "25%", "style": {"color": "#fff"}},
+                                        50: {"label": "50%", "style": {"color": "#fff"}},
+                                        75: {"label": "75%", "style": {"color": "#fff"}},
+                                        100: {"label": "100%", "style": {"color": "#fff"}},
                                     },
                                     tooltip={"placement": "bottom"},
                                 ),
@@ -745,7 +857,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         dcc.Graph(id="graph-batch", config=_CFG, style={"height": "320px"}),
                     ],
                 ),
-                # GPU busy (resampled)
+                # GPU busy
                 html.Div(
                     style=_CARD,
                     children=[
@@ -761,16 +873,17 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                         dcc.Graph(id="graph-gantt", config=_CFG),
                     ],
                 ),
+                # Actions left heatmap
+                html.Div(
+                    style=_CARD,
+                    children=[
+                        html.Div("Actions Left (server-side)", style=_CARD_HDR),
+                        dcc.Graph(id="graph-actions-left", config=_CFG),
+                    ],
+                ),
             ),
         ],
     )
-
-    # -------------------------------------------------------------------------
-    # Session init
-    # -------------------------------------------------------------------------
-    @app.callback(Output("store-session", "data"), Input("store-session", "data"))
-    def _init_session(data: dict | None) -> dict:
-        return data if data else {"id": str(uuid.uuid4())}
 
     @app.callback(
         Output("store-auto-refresh-enabled", "data"),
@@ -824,48 +937,42 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         _ = n_clicks, n_intervals
         sla_pct = float(sla_pct) if sla_pct is not None else 10.0
         snap = metrics_store.snapshot(window_s, sla_pct=sla_pct)
-        hist = metrics_store.history(window_s, sla_pct=sla_pct)
-        batches = hist["batches"]
-        task_events = hist.get("task_events", [])
-        task_progress = hist.get("task_progress", [])
-        sla_capacity_curve = hist.get("sla_capacity_curve", [])
-        healthy_robots_over_time = hist.get("healthy_robots_over_time", [])
+        batches = snap.batch_history
 
         def f(v: float) -> str:
             return f"{v:.1f}"
 
-        subtitle = (
-            f"uptime {f(snap['uptime_s'])}s · {snap['total_requests']:,} requests · {snap['total_batches']:,} batches"
-        )
+        subtitle = f"uptime {f(snap.uptime_s)}s · {snap.total_requests:,} requests · {snap.total_batches:,} batches"
 
         stats = [
-            ("total requests", f"{snap['total_requests']:,}"),
-            ("req / s", f(snap["requests_per_second"])),
-            ("p50 latency (ms)", f(snap["p50_latency_ms"])),
-            ("p99 latency (ms)", f(snap["p99_latency_ms"])),
-            ("avg GPU time (ms)", f(snap["avg_gpu_time_ms"])),
-            ("GPU busy (%)", f"{snap['gpu_busy_pct']:.1f}%"),
-            ("avg queue delay (ms)", f(snap["avg_queue_delay_ms"])),
-            ("total batches", f"{snap['total_batches']:,}"),
-            ("task success (%)", f(snap["task_success_rate_pct"])),
-            ("TP (suc/sec/all)", f"{snap.get('tp_suc_per_sec_all', 0.0):.3f}"),
+            ("total requests", f"{snap.total_requests:,}"),
+            ("total responses", f"{snap.total_responses:,}"),
+            ("requests / s", f(snap.requests_per_second)),
+            ("responses / s", f(snap.responses_per_second)),
+            ("p50 latency (ms)", f(snap.p50_latency_ms)),
+            ("p99 latency (ms)", f(snap.p99_latency_ms)),
+            ("avg GPU time (ms)", f(snap.avg_gpu_time_ms)),
+            ("avg queue delay (ms)", f(snap.avg_queue_delay_ms)),
+            ("total batches", f"{snap.total_batches:,}"),
+            ("task success (%)", f(snap.task_success_rate_pct)),
+            ("TP (suc/sec/all)", f"{snap.tp_suc_per_sec_all:.3f}"),
         ]
         stat_cards = [_stat_card(v, lbl) for lbl, v in stats]
 
-        robots = snap.get("per_robot", {})
+        robots = snap.per_robot
         robot_el = _robot_table(robots, sla_pct)
 
         gpu_fig = _gpu_dist_fig(batches)
         task_heatmap_fig = _combined_task_episode_heatmap_fig(
-            task_events,
-            task_progress,
+            snap.task_events,
+            snap.task_progress,
             title="Success, Completion Time Metrics",
         )
-        sla_capacity_fig = _sla_capacity_curve_fig(sla_capacity_curve, sla_pct)
-        healthy_robots_fig = _healthy_robots_over_time_fig(healthy_robots_over_time, sla_pct)
+        sla_capacity_fig = _sla_capacity_curve_fig(snap.sla_capacity_curve, sla_pct)
+        healthy_robots_fig = _healthy_robots_over_time_fig(snap.healthy_robots_over_time, sla_pct)
         gantt = _gantt_fig(batches, float(window_s) if window_s else float("inf"))
 
-        robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in robots]
+        robot_opts = [{"label": "all", "value": "all"}] + [{"label": rid, "value": rid} for rid in sorted(robots)]
         status = "last refresh: " + datetime.datetime.now(datetime.UTC).astimezone().strftime("%H:%M:%S")
 
         return (
@@ -882,77 +989,63 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         )
 
     # -------------------------------------------------------------------------
-    # Batch sizes: initial load (resampled)
+    # Batch sizes
     # -------------------------------------------------------------------------
     @app.callback(
         Output("graph-batch", "figure"),
         Input("btn-refresh", "n_clicks"),
         Input("interval-refresh", "n_intervals"),
         State("input-window", "value"),
-        State("store-session", "data"),
     )
     def _load_batch(
         n_clicks: int,
         n_intervals: int,
         window_s: float | None,
-        session_data: dict | None,
-    ) -> FigureResampler:
+    ) -> go.Figure:
         _ = n_clicks, n_intervals
-        sid = (session_data or {}).get("id", "default")
-        hist = metrics_store.history(window_s)
-        batches = hist["batches"]
+        batches = metrics_store.snapshot(window_s).batch_history
 
-        fr = FigureResampler(go.Figure(), default_n_shown_samples=2000)
+        fig = go.Figure()
         if batches:
             times = np.array([b["t"] for b in batches], dtype=float)
             sizes = np.array([b["batch_size"] for b in batches], dtype=float)
-            fr.add_trace(
-                go.Scatter(mode="markers", name="batch size", marker={"size": 4, "color": "#ce93d8", "opacity": 0.6}),
-                hf_x=times,
-                hf_y=sizes,
+            fig.add_trace(
+                go.Scatter(
+                    x=times,
+                    y=sizes,
+                    mode="markers",
+                    name="batch size",
+                    marker={"size": 4, "color": "#ce93d8", "opacity": 0.6},
+                )
             )
-        fr.update_layout(
-            **_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Batch size"}, height=320)
+        fig.update_layout(
+            **_layout(
+                xaxis={"title": "Time since server start (s)"},
+                yaxis={"title": "Batch size"},
+                height=320,
+                margin={**_DARK["margin"], "l": 100},
+            )
         )
-        _resamplers.setdefault(sid, {})["batch"] = fr
-        return fr
-
-    # Batch sizes: zoom/pan update
-    @app.callback(
-        Output("graph-batch", "figure", allow_duplicate=True),
-        Input("graph-batch", "relayoutData"),
-        State("store-session", "data"),
-        prevent_initial_call=True,
-    )
-    def _resample_batch(relayout_data: dict | None, session_data: dict | None) -> Patch:
-        sid = (session_data or {}).get("id", "default")
-        fr = _resamplers.get(sid, {}).get("batch")
-        if fr is None or not relayout_data:
-            raise dash.exceptions.PreventUpdate
-        return fr.construct_update_data_patch(relayout_data)
+        return fig
 
     # -------------------------------------------------------------------------
-    # GPU busy: initial load (resampled)
+    # GPU busy
     # -------------------------------------------------------------------------
     @app.callback(
         Output("graph-busy", "figure"),
         Input("btn-refresh", "n_clicks"),
         Input("interval-refresh", "n_intervals"),
         State("input-window", "value"),
-        State("store-session", "data"),
     )
     def _load_busy(
         n_clicks: int,
         n_intervals: int,
         window_s: float | None,
-        session_data: dict | None,
-    ) -> FigureResampler:
+    ) -> go.Figure:
         _ = n_clicks, n_intervals
-        sid = (session_data or {}).get("id", "default")
-        hist = metrics_store.history(window_s)
-        batches = hist["batches"]
+        batches = metrics_store.snapshot(window_s).batch_history
 
-        fr = FigureResampler(go.Figure(), default_n_shown_samples=2000)
+        fig = go.Figure()
         if len(batches) >= 2:
             t0 = batches[0]["inference_start_t"]
             t1 = batches[-1]["inference_end_t"]
@@ -967,56 +1060,49 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                     if ov > 0:
                         pct[k] += ov * 100
             times = np.array([t0 + i + 0.5 for i in range(n)], dtype=float)
-            fr.add_trace(
+            fig.add_trace(
                 go.Scatter(
+                    x=times,
+                    y=np.array(pct, dtype=float),
                     mode="lines",
                     fill="tozeroy",
                     line={"color": "#4fc3f7", "width": 1.5},
                     fillcolor="rgba(79,195,247,0.12)",
                     name="busy %",
-                ),
-                hf_x=times,
-                hf_y=np.array(pct, dtype=float),
+                )
             )
-        fr.update_layout(
+        fig.update_layout(
             **_layout(
                 xaxis={"title": "Time since server start (s)"},
                 yaxis={"title": "GPU busy (%)", "range": [0, 100]},
                 height=320,
+                margin={**_DARK["margin"], "l": 100},
             )
         )
-        _resamplers.setdefault(sid, {})["busy"] = fr
-        return fr
-
-    # GPU busy: zoom/pan update
-    @app.callback(
-        Output("graph-busy", "figure", allow_duplicate=True),
-        Input("graph-busy", "relayoutData"),
-        State("store-session", "data"),
-        prevent_initial_call=True,
-    )
-    def _resample_busy(relayout_data: dict | None, session_data: dict | None) -> Patch:
-        sid = (session_data or {}).get("id", "default")
-        fr = _resamplers.get(sid, {}).get("busy")
-        if fr is None or not relayout_data:
-            raise dash.exceptions.PreventUpdate
-        return fr.construct_update_data_patch(relayout_data)
+        return fig
 
     # -------------------------------------------------------------------------
-    # X-axis sync: batch / busy / gantt share the same time axis
+    # X-axis sync: batch / busy / gantt / actions-left share the same time axis
     # -------------------------------------------------------------------------
     @app.callback(
         Output("store-xrange", "data"),
         Input("graph-batch", "relayoutData"),
         Input("graph-busy", "relayoutData"),
         Input("graph-gantt", "relayoutData"),
+        Input("graph-actions-left", "relayoutData"),
         prevent_initial_call=True,
     )
-    def _capture_xrange(batch_relay: dict | None, busy_relay: dict | None, gantt_relay: dict | None) -> list | None:
+    def _capture_xrange(
+        batch_relay: dict | None,
+        busy_relay: dict | None,
+        gantt_relay: dict | None,
+        actions_relay: dict | None,
+    ) -> list | None:
         relay_map = {
             "graph-batch": batch_relay,
             "graph-busy": busy_relay,
             "graph-gantt": gantt_relay,
+            "graph-actions-left": actions_relay,
         }
         relay = relay_map.get(ctx.triggered_id)
         if relay and "xaxis.range[0]" in relay:
@@ -1027,6 +1113,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("graph-batch", "figure", allow_duplicate=True),
         Output("graph-busy", "figure", allow_duplicate=True),
         Output("graph-gantt", "figure", allow_duplicate=True),
+        Output("graph-actions-left", "figure", allow_duplicate=True),
         Input("store-xrange", "data"),
         prevent_initial_call=True,
     )
@@ -1039,7 +1126,9 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         p_busy["layout"]["xaxis"]["range"] = xrange
         p_gantt = Patch()
         p_gantt["layout"]["xaxis"]["range"] = xrange
-        return p_batch, p_busy, p_gantt
+        p_actions = Patch()
+        p_actions["layout"]["xaxis"]["range"] = xrange
+        return p_batch, p_busy, p_gantt, p_actions
 
     # -------------------------------------------------------------------------
     # Stage latency distributions
@@ -1061,8 +1150,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         window_s: float | None,
     ) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure]:
         _ = n_clicks, n_intervals
-        hist = metrics_store.history(window_s)
-        return _stage_figs(hist, robot or "all")
+        return _stage_figs(metrics_store.snapshot(window_s), robot or "all")
 
     # Histogram zoom: refine bin size when user zooms in
     def _register_histogram_zoom(gid: str) -> None:
@@ -1087,5 +1175,23 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
 
     for _gid in ["graph-inbound", "graph-queue", "graph-infer", "graph-outbound"]:
         _register_histogram_zoom(_gid)
+
+    # -------------------------------------------------------------------------
+    # Actions left heatmap
+    # -------------------------------------------------------------------------
+    @app.callback(
+        Output("graph-actions-left", "figure"),
+        Input("btn-refresh", "n_clicks"),
+        Input("interval-refresh", "n_intervals"),
+        State("input-window", "value"),
+    )
+    def _load_actions_left(
+        n_clicks: int,
+        n_intervals: int,
+        window_s: float | None,
+    ) -> go.Figure:
+        _ = n_clicks, n_intervals
+        snap = metrics_store.snapshot(window_s)
+        return _actions_left_heatmap_fig(snap.robot_actions_left)
 
     return app

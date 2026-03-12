@@ -467,7 +467,7 @@ def main(args: Args) -> None:
     # Reset server-side metrics so this experiment gets a clean slate
     server_base = f"http://{args.host}:{args.port}"
     try:
-        requests.post(f"{server_base}/reset-metrics", timeout=5.0)
+        requests.post(f"{server_base}/reset", timeout=5.0)
         logging.info("Reset server metrics")
     except Exception as e:
         logging.warning(f"Could not reset server metrics: {e}")
@@ -477,7 +477,7 @@ def main(args: Args) -> None:
 
     # Dump server-side metrics history for offline analysis
     try:
-        history = requests.get(f"{server_base}/metrics/history", timeout=10.0).json()
+        history = requests.get(f"{server_base}/save-metrics", timeout=10.0).json()
         hist_path = output_path / "server_metrics_history.json"
         hist_path.write_text(json.dumps(history, indent=2))
         logging.info(f"Saved server metrics history to {hist_path}")
