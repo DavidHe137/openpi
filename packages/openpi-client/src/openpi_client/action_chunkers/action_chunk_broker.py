@@ -84,11 +84,12 @@ class ActionChunkBroker(ABC):
 
     def _receive_actions(self) -> None:
         while True:
-            infer_response = self._ws_client.receive()
+            infer_response, receive_time_server = self._ws_client.receive()
             with self._lock:
                 action_chunk = ActionChunk.from_infer_response(
                     infer_response=infer_response,
                     execution_start_step=self._observation_step,
+                    receive_time_server=receive_time_server,
                 )
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)

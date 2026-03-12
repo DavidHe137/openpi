@@ -1,8 +1,34 @@
 from dataclasses import dataclass
 from enum import Enum
 import numpy as np
+import time
 from typing import Literal, Optional, Union
 from jaxtyping import Float
+
+
+class SyncedClock:
+    """Client-side clock that can report time adjusted to the server's clock.
+
+    The offset is estimated during warmup using the NTP formula:
+        offset = ((t2 - t1) + (t3 - t4)) / 2
+    where t1/t4 are client timestamps and t2/t3 are server timestamps,
+    such that: server_time ≈ client_time + offset.
+    """
+
+    def __init__(self) -> None:
+        self._offset: float = 0.0
+
+    def set_offset(self, offset: float) -> None:
+        """Set estimated offset: server_clock - client_clock."""
+        self._offset = offset
+
+    def now(self) -> float:
+        """Current time in local client clock."""
+        return time.time()
+
+    def now_server(self) -> float:
+        """Current time adjusted to server clock."""
+        return time.time() + self._offset
 
 
 # TODO: merge with broker types
@@ -74,7 +100,7 @@ class InferResponse:
 @dataclass(frozen=True)
 class ResponseAck:
     request_id: int  # matches InferResponse.request_id
-    receive_time: float  # time.time() on client at receipt
+    receive_time: float  # client receipt time, adjusted to server clock via SyncedClock.now_server()
     execution_start_step: int  # client step when new chunk became available
     type: Literal["ack"] = "ack"
 

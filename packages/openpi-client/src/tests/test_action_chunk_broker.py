@@ -322,7 +322,7 @@ class TestThreadedReceive:
         broker, _ = make_broker(receive_queue=response_queue)
 
         response = make_infer_response(action_start_step=1, execution_horizon=3)
-        response_queue.put(response)
+        response_queue.put((response, 1.0))
 
         # Wait for background thread to process
         deadline = time.time() + 1.0
@@ -341,7 +341,7 @@ class TestThreadedReceive:
         ws_mock.reset_mock()
 
         response = make_infer_response(action_start_step=1, execution_horizon=3, request_id=99)
-        response_queue.put(response)
+        response_queue.put((response, 1.0))
 
         deadline = time.time() + 1.0
         while time.time() < deadline:

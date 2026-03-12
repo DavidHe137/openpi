@@ -12,6 +12,7 @@ from openpi_client import messages
 from openpi_client import msgpack_numpy
 from openpi_client.messages import (
     ConnectRequest,
+    SyncedClock,
     WarmupAck,
     WarmupPing,
     WarmupPong,
@@ -64,6 +65,7 @@ class BidirectionalWebsocket:
         if self._server_metadata.tunnel_url:
             tunnel_host = self._server_metadata.tunnel_url.replace("https://", "", 1)
             self._ws_uri = f"wss://{tunnel_host}/ws"
+        self._clock = SyncedClock()
         self._ws = self._connect_ws()
         self._handshake(control_hz)
         self._warmup()
@@ -94,13 +96,20 @@ class BidirectionalWebsocket:
         logger.info("Connected as robot_id=%s", self._robot_id)
 
     def _warmup(self) -> None:
-        """Perform num_warmup ping/pong round trips to seed server LatencyTracker."""
+        """Perform num_warmup ping/pong round trips to seed server LatencyTracker and estimate clock offset."""
+        offset_samples: list[float] = []
         for _ in range(NUM_WARMUP):
-            ping = WarmupPing(client_timestamp=time.time(), payload=bytes(WARMUP_OBS_BYTES))
+            t1 = self._clock.now()
+            ping = WarmupPing(client_timestamp=t1, payload=bytes(WARMUP_OBS_BYTES))
             self._ws.send(msgpack_numpy.packb(asdict(ping)))
             pong = WarmupPong(**msgpack_numpy.unpackb(self._ws.recv()))
-            ack = WarmupAck(server_send_time=pong.server_send_time, client_receive_time=time.time())
+            t4 = self._clock.now()
+            # NTP offset formula: server_clock - client_clock
+            # offset = ((t2 - t1) + (t3 - t4)) / 2
+            offset_samples.append(((pong.server_receive_time - t1) + (pong.server_send_time - t4)) / 2)
+            ack = WarmupAck(server_send_time=pong.server_send_time, client_receive_time=t4)
             self._ws.send(msgpack_numpy.packb(asdict(ack)))
+        self._clock.set_offset(sum(offset_samples) / len(offset_samples))
 
     def _connect_ws(self) -> websockets.sync.client.ClientConnection:
         headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
@@ -139,20 +148,23 @@ class BidirectionalWebsocket:
 
     def receive(
         self,
-    ) -> messages.InferResponse:  # noqa: UP006
+    ) -> Tuple[messages.InferResponse, float]:
+        """Returns (response, receive_time_server) where receive_time_server is in server-clock units."""
         response = self._ws.recv()
+        receive_time_server = self._clock.now_server()
 
         response = msgpack_numpy.unpackb(response)
         if isinstance(response, str):
             # we're expecting bytes; if the server sends a string, it's an error.
             raise RuntimeError(f"Error in inference server:\n{response}")
 
-        return messages.InferResponse(**response)
+        return messages.InferResponse(**response), receive_time_server
 
-    def send_ack(self, request_id: int, receive_time: float, execution_start_step: int) -> None:
+    def send_ack(self, request_id: int, receive_time_server: float, execution_start_step: int) -> None:
+        """Send acknowledgment. receive_time_server must be in server-clock units (from receive())."""
         ack = messages.ResponseAck(
             request_id=request_id,
-            receive_time=receive_time,
+            receive_time=receive_time_server,
             execution_start_step=execution_start_step,
         )
         self._ws.send(msgpack_numpy.packb(asdict(ack)))
