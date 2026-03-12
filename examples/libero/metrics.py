@@ -478,7 +478,7 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
         print("No episode data for steps plot")
         return
 
-    fig = plt.figure(figsize=(16, 10))
+    fig = plt.figure(figsize=(16, 10), layout="constrained")
     gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.2], hspace=0.3)
     fig.suptitle("Steps Taken Analysis", fontsize=16, fontweight="bold")
 
@@ -526,8 +526,6 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
         title="Steps by Task (Successful Episodes)",
         group_colors={"success": "lightgreen"},
     )
-
-    plt.tight_layout()
     plots_dir = output_path / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / "steps_taken.png", dpi=150)
@@ -740,6 +738,34 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
         table.add_row(*row_values)
 
     console.print(table)
+
+    # Per-robot success summary
+    robot_agg_spec: dict[str, str] = {
+        "success": "mean",
+        "episode_idx": "count",
+        "planner_starvation_steps": "sum",
+        "planner_starvation_rate": "mean",
+    }
+    robot_summary = df.groupby("robot_idx").agg(robot_agg_spec).reset_index()
+    robot_summary.rename(columns={"episode_idx": "count"}, inplace=True)
+
+    robot_table = Table(title="Per-Robot Success Summary")
+    robot_table.add_column("Robot", style="cyan")
+    robot_table.add_column("Success Rate", style="green")
+    robot_table.add_column("Episodes", style="magenta")
+    robot_table.add_column("Total Starvation Steps", style="yellow")
+    robot_table.add_column("Starvation Rate", style="yellow")
+    for _, row in robot_summary.sort_values("robot_idx").iterrows():
+        row_values = [
+            str(int(row["robot_idx"])),
+            f"{row['success']:.2%}",
+            str(int(row["count"])),
+        ]
+        row_values.append(f"{row['planner_starvation_steps']:.2f}")
+        row_values.append(f"{row['planner_starvation_rate']:.2%}")
+        robot_table.add_row(*row_values)
+    console.print(robot_table)
+
     console.print(
         f"\n[bold green]Total success rate: {summary['success'].mean():.2%}[/bold green]"
     )
