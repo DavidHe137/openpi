@@ -473,7 +473,7 @@ class MetricsStore(JSONDataclass):
 
             return Snapshot(
                 start_time=t0,
-                end_time=self.end_time,
+                end_time=self.end_time if self.end_time > t0 else time.time(),
                 sla_pct=sla_pct,
                 robot_actions_left=robot_actions_left,
                 per_robot=per_robot,
