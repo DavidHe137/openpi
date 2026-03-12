@@ -216,6 +216,25 @@ class Robot:
             itertools.chain.from_iterable(e.get_responses(start_timestamp, end_timestamp) for e in self.episodes)
         )
 
+    def get_actions_left_timed(self, start_ts: float, end_ts: float) -> tuple[np.ndarray, np.ndarray]:
+        """Return (timestamps, actions_left_values) for steps in [start_ts, end_ts), with nan separators between episodes."""
+        times_parts: list[np.ndarray] = []
+        values_parts: list[np.ndarray] = []
+        sep = np.array([np.nan])
+        for episode in self.episodes:
+            steps = episode.get_windowed_steps(start_ts, end_ts)
+            if not steps:
+                continue
+            if times_parts:
+                times_parts.append(sep)
+                values_parts.append(sep)
+            t_arr, v_arr = zip(*steps, strict=True)
+            times_parts.append(np.array(t_arr, dtype=float))
+            values_parts.append(np.array(v_arr, dtype=float))
+        if not times_parts:
+            return np.array([], dtype=float), np.array([], dtype=float)
+        return np.concatenate(times_parts), np.concatenate(values_parts)
+
     def get_actions_left_concatenated(self, start_ts: float, end_ts: float) -> np.ndarray:
         """Concatenate windowed episode actions_left slices with nan separators.
 

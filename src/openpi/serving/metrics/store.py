@@ -38,8 +38,8 @@ class Snapshot:
     start_timestamp: float
     end_timestamp: float
     sla_pct: float
-    # Per-robot windowed actions_left concatenated with nan separators between episodes.
-    robot_actions_left: dict[RobotID, np.ndarray]
+    # Per-robot windowed (times_relative_to_server_start, actions_left_values) with nan separators between episodes.
+    robot_actions_left: dict[RobotID, tuple[np.ndarray, np.ndarray]]
     per_robot: dict[RobotID, dict]
     requests: list[RequestRecord]
     responses: list[ResponseRecord]
@@ -246,10 +246,10 @@ class MetricsStore(JSONDataclass):
                 )
             )
 
-            robot_actions_left = {
-                robot_id: robot.get_actions_left_concatenated(start_timestamp, end_timestamp)
-                for robot_id, robot in self.robots.items()
-            }
+            robot_actions_left = {}
+            for robot_id, robot in self.robots.items():
+                times, values = robot.get_actions_left_timed(start_timestamp, end_timestamp)
+                robot_actions_left[robot_id] = (times - t0 if len(times) > 0 else times, values)
 
             completed_episodes: list[tuple[RobotID, Episode]] = [
                 (robot_id, episode)
@@ -273,7 +273,7 @@ class MetricsStore(JSONDataclass):
             active_rates: list[float] = []
             per_robot: dict[str, dict] = {}
 
-            for robot_id, alh in robot_actions_left.items():
+            for robot_id, (_times, alh) in robot_actions_left.items():
                 valid = alh[~np.isnan(alh)]
                 observed_steps = len(valid)
                 starved_steps = int(np.sum(valid == 0))

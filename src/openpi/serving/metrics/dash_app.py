@@ -565,7 +565,7 @@ def _gantt_fig(batches: list[dict], window_s: float) -> go.Figure:
             tmap[rid]["x"].append(dur)
             tmap[rid]["base"].append(b["inference_start_t"])
             tmap[rid]["y"].append(rid)
-    for rid, td in tmap.items():
+    for rid, td in sorted(tmap.items()):
         fig.add_trace(
             go.Bar(x=td["x"], base=td["base"], y=td["y"], orientation="h", name=rid, marker_color=td["color"])
         )
@@ -574,46 +574,56 @@ def _gantt_fig(batches: list[dict], window_s: float) -> go.Figure:
             barmode="overlay",
             height=max(200, len(all_robots) * 32 + 80),
             xaxis={"title": "Time since server start (s)"},
-            yaxis={"autorange": "reversed"},
+            yaxis={
+                "categoryorder": "array",
+                "categoryarray": all_robots,
+                "autorange": "reversed",
+            },
             showlegend=False,
+            margin={**_DARK["margin"], "l": 100},
         )
     )
     return fig
 
 
-def _actions_left_heatmap_fig(robot_actions_left: dict[str, np.ndarray]) -> go.Figure:
-    """Heatmap of actions_left over time. Robots on y-axis, steps on x-axis.
-
-    Each robot's array is windowed episodes concatenated with nan separators,
-    so gaps in the heatmap mark episode boundaries naturally.
-    """
+def _actions_left_heatmap_fig(robot_actions_left: dict[str, tuple[np.ndarray, np.ndarray]]) -> go.Figure:
+    """Scatter of actions_left over time. Robots on y-axis, time on x-axis (aligned with batch/busy/gantt)."""
     robots = sorted(robot_actions_left.keys())
     fig = go.Figure()
     if not robots:
-        fig.update_layout(**_layout(xaxis={"title": "Step"}, yaxis={"title": "Robot"}))
+        fig.update_layout(**_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Robot"}))
         return fig
 
-    max_len = max(len(arr) for arr in robot_actions_left.values())
-    matrix: list[list[float | None]] = []
-    for rid in robots:
-        arr = robot_actions_left[rid]
-        padded = np.full(max_len, np.nan)
-        padded[: len(arr)] = arr
-        matrix.append(padded.tolist())
-
-    fig.add_trace(
-        go.Heatmap(
-            z=matrix,
-            y=robots,
-            colorscale="RdYlGn",
-            zmin=0,
-            colorbar={"title": "Actions left"},
+    for i, rid in enumerate(robots):
+        times, values = robot_actions_left[rid]
+        fig.add_trace(
+            go.Scatter(
+                x=times,
+                y=[rid] * len(times),
+                mode="markers",
+                marker={
+                    "symbol": "square",
+                    "size": 6,
+                    "color": values,
+                    "colorscale": "RdYlGn",
+                    "cmin": 0,
+                    "showscale": i == len(robots) - 1,
+                    "colorbar": {"title": "Actions left", "thickness": 12},
+                },
+                name=rid,
+                showlegend=False,
+            )
         )
-    )
     fig.update_layout(
         **_layout(
-            xaxis={"title": "Step (nans = episode boundaries)"},
-            yaxis={"title": "Robot"},
+            xaxis={"title": "Time since server start (s)"},
+            yaxis={
+                "title": "Robot",
+                "categoryorder": "array",
+                "categoryarray": robots,
+                "autorange": "reversed",
+            },
+            margin={**_DARK["margin"], "l": 100},
         )
     )
     return fig
@@ -1003,7 +1013,12 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                 )
             )
         fig.update_layout(
-            **_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Batch size"}, height=320)
+            **_layout(
+                xaxis={"title": "Time since server start (s)"},
+                yaxis={"title": "Batch size"},
+                height=320,
+                margin={**_DARK["margin"], "l": 100},
+            )
         )
         return fig
 
@@ -1055,25 +1070,33 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
                 xaxis={"title": "Time since server start (s)"},
                 yaxis={"title": "GPU busy (%)", "range": [0, 100]},
                 height=320,
+                margin={**_DARK["margin"], "l": 100},
             )
         )
         return fig
 
     # -------------------------------------------------------------------------
-    # X-axis sync: batch / busy / gantt share the same time axis
+    # X-axis sync: batch / busy / gantt / actions-left share the same time axis
     # -------------------------------------------------------------------------
     @app.callback(
         Output("store-xrange", "data"),
         Input("graph-batch", "relayoutData"),
         Input("graph-busy", "relayoutData"),
         Input("graph-gantt", "relayoutData"),
+        Input("graph-actions-left", "relayoutData"),
         prevent_initial_call=True,
     )
-    def _capture_xrange(batch_relay: dict | None, busy_relay: dict | None, gantt_relay: dict | None) -> list | None:
+    def _capture_xrange(
+        batch_relay: dict | None,
+        busy_relay: dict | None,
+        gantt_relay: dict | None,
+        actions_relay: dict | None,
+    ) -> list | None:
         relay_map = {
             "graph-batch": batch_relay,
             "graph-busy": busy_relay,
             "graph-gantt": gantt_relay,
+            "graph-actions-left": actions_relay,
         }
         relay = relay_map.get(ctx.triggered_id)
         if relay and "xaxis.range[0]" in relay:
@@ -1084,6 +1107,7 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         Output("graph-batch", "figure", allow_duplicate=True),
         Output("graph-busy", "figure", allow_duplicate=True),
         Output("graph-gantt", "figure", allow_duplicate=True),
+        Output("graph-actions-left", "figure", allow_duplicate=True),
         Input("store-xrange", "data"),
         prevent_initial_call=True,
     )
@@ -1096,7 +1120,9 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
         p_busy["layout"]["xaxis"]["range"] = xrange
         p_gantt = Patch()
         p_gantt["layout"]["xaxis"]["range"] = xrange
-        return p_batch, p_busy, p_gantt
+        p_actions = Patch()
+        p_actions["layout"]["xaxis"]["range"] = xrange
+        return p_batch, p_busy, p_gantt, p_actions
 
     # -------------------------------------------------------------------------
     # Stage latency distributions
