@@ -27,14 +27,18 @@ def load_episodes(output_path: pathlib.Path) -> pd.DataFrame:
     return pd.DataFrame([asdict(result) for result in results])
 
 
-def load_actions_left(output_path: pathlib.Path) -> Dict[str, List[np.ndarray]]:
-    """Load actions_left.npy files grouped by robot_idx.
+def load_actions_left(
+    output_path: pathlib.Path,
+) -> Dict[str, List[Tuple[float, np.ndarray]]]:
+    """Load actions_left.npy files grouped by robot_idx, with start timestamps.
 
     Returns:
-        {robot_idx_str: [episode_array, ...]} sorted by episode order.
+        {robot_idx_str: [(start_timestamp, episode_array), ...]} sorted by episode order.
+        start_timestamp is the perf_counter value of the first step (from timestamps.csv),
+        or 0.0 if timestamps.csv is missing.
     """
     files = sorted(output_path.glob("**/actions_left.npy"))
-    by_robot: dict[str, list[tuple[int, np.ndarray]]] = {}
+    by_robot: dict[str, list[tuple[int, float, np.ndarray]]] = {}
     for f in files:
         # path: <out_dir>/<robot_idx>/<ep_idx>_<suite>_<task>_<result>/actions_left.npy
         parts = f.parts
@@ -42,10 +46,15 @@ def load_actions_left(output_path: pathlib.Path) -> Dict[str, List[np.ndarray]]:
         ep_prefix = parts[-2]  # e.g. "0_libero_10_0_success"
         ep_idx = int(ep_prefix.split("_")[0])
         arr = np.load(f)
-        by_robot.setdefault(robot_idx, []).append((ep_idx, arr))
+        ts_file = f.parent / "timestamps.csv"
+        if ts_file.exists():
+            start_time = float(pd.read_csv(ts_file, nrows=1)["timestamp"].iloc[0])
+        else:
+            start_time = 0.0
+        by_robot.setdefault(robot_idx, []).append((ep_idx, start_time, arr))
 
     return {
-        robot: [arr for _, arr in sorted(eps)]
+        robot: [(st, arr) for _, st, arr in sorted(eps)]
         for robot, eps in sorted(by_robot.items(), key=lambda kv: int(kv[0]))
     }
 
@@ -534,10 +543,14 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
     print(f"Saved {plots_dir / 'steps_taken.png'}")
 
 
-def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
+def generate_actions_left_heatmap(
+    output_path: pathlib.Path, control_hz: int = 20
+) -> None:
     """Heatmap of actions_left[step, robot] using ground-truth queue lengths.
 
-    Each robot's episodes are concatenated along the step axis.
+    Episodes are positioned on the time axis using their start timestamps, so
+    inter-episode gaps appear as NaN columns (mirroring the schemas.py approach
+    of using request_timestamp to place each step at its real wall-clock position).
     Episode boundaries are marked with vertical lines.
     """
     by_robot = load_actions_left(output_path)
@@ -545,24 +558,30 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
         print("No actions_left.npy data found")
         return
 
-    robots = list(by_robot.keys())
+    robots = sorted(list(by_robot.keys()), reverse=True)
     n_robots = len(robots)
 
-    # Concatenate episodes per robot; pad shorter robots with NaN
-    robot_series: list[np.ndarray] = [np.concatenate(by_robot[r]) for r in robots]
-    max_len = max(len(s) for s in robot_series)
-    matrix = np.full((n_robots, max_len), np.nan)
-    episode_boundaries: list[list[int]] = []
+    # Global t0: earliest episode start across all robots
+    t0 = min(start_time for eps in by_robot.values() for start_time, _ in eps)
 
-    for i, robot in enumerate(robots):
-        episodes = by_robot[robot]
+    # Compute per-robot column offsets from timestamps, then build matrix
+    episode_boundaries: list[list[int]] = []
+    robot_offsets: list[list[tuple[int, np.ndarray]]] = []
+    for robot in robots:
+        offsets = []
+        for start_time, arr in by_robot[robot]:
+            col = round((start_time - t0) * control_hz)
+            offsets.append((col, arr))
+        robot_offsets.append(offsets)
+
+    max_len = max(col + len(arr) for offsets in robot_offsets for col, arr in offsets)
+    matrix = np.full((n_robots, max_len), np.nan)
+
+    for i, offsets in enumerate(robot_offsets):
         boundaries = []
-        offset = 0
-        for ep in episodes:
-            end = offset + len(ep)
-            matrix[i, offset:end] = ep
-            boundaries.append(offset)
-            offset = end
+        for col, arr in offsets:
+            matrix[i, col : col + len(arr)] = arr
+            boundaries.append(col)
         episode_boundaries.append(boundaries)
 
     fig_width = min(
@@ -581,7 +600,7 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
 
     # Episode boundary markers (thin white lines)
     for i, bounds in enumerate(episode_boundaries):
-        for b in bounds[1:]:  # skip step 0
+        for b in bounds[1:]:  # skip first episode
             ax.plot(
                 [b - 0.5, b - 0.5],
                 [i - 0.4, i + 0.4],
@@ -595,19 +614,18 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
 
     ax.set_yticks(range(n_robots))
     ax.set_yticklabels([f"robot_{r}" for r in robots], fontsize=8)
-    # X-axis ticks every 20 steps (= 1 second at 20 Hz control)
-    tick_interval = 20
+    tick_interval = control_hz  # one tick per second
     x_ticks = np.arange(0, max_len, tick_interval)
     ax.set_xticks(x_ticks)
     ax.set_xticklabels([f"{t // tick_interval}s" for t in x_ticks], fontsize=6)
     ax.set_xlabel(
-        "Time in seconds (episodes concatenated, white lines = episode boundaries)",
+        "Wall-clock time in seconds (white lines = episode boundaries)",
         fontweight="bold",
     )
     ax.set_ylabel("Robot", fontweight="bold")
     ax.set_title("Actions Left Per Robot Over Time", fontsize=14, fontweight="bold")
 
-    plt.tight_layout()
+    fig.tight_layout()
     plots_dir = output_path / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / "actions_left_heatmap.png", dpi=150, bbox_inches="tight")
