@@ -55,7 +55,7 @@ class ActionChunkBroker(ABC):
             # count actions left in queue before we pop the next action
             self._actions_left_history.append(len(self._action_queue))
 
-            self._observation_step = obs.step
+            self._observation_step = obs.step + 1
             if self._action_queue:
                 action = self._action_queue.popleft()
                 self._action_step += 1
