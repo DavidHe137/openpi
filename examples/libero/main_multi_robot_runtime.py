@@ -2,6 +2,7 @@ import json
 import logging
 import pathlib
 import multiprocessing
+import queue
 import shutil
 from typing import List, Literal, Optional, Dict, Type
 import datetime
@@ -10,6 +11,7 @@ import datetime
 import numpy as np
 from jaxtyping import Float
 from libero.libero import benchmark
+from libero.libero.envs import OffScreenRenderEnv
 from openpi_client.client import BidirectionalWebsocket
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
@@ -36,15 +38,26 @@ logger = logging.getLogger(__name__)
 _start_barrier = None
 _has_synced_start = False
 
+# Per-worker globals (set in init_worker, used in _robot_worker)
+robot_idx: int = 0
+ws_client = None
+broker = None
+agent = None
+_progress_queue = None
+_raw_envs: Dict[int, OffScreenRenderEnv] = {}
+_first_episode = None
+_worker_progress_subscriber: Optional[ProgressSubscriber] = None
+_episode_queue = None  # multiprocessing.Queue inherited via initargs
+
 
 @dataclass
-class Job:
-    """A job is a task with a batch of episodes."""
+class Episode:
+    """A single episode: one task, one initial state."""
 
     task_suite_name: str
-    task: benchmark.Task
     task_id: int
-    initial_states: Float[np.ndarray, "n_initial_states state_dim"]
+    task: benchmark.Task
+    initial_state: np.ndarray
 
 
 @dataclass
@@ -93,7 +106,9 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
     return float(args.latency_ms[robot_idx])
 
 
-def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
+def init_worker(
+    args: Args, counter, progress_queue, start_barrier, episode_queue=None
+) -> None:
     global \
         robot_idx, \
         ws_client, \
@@ -101,12 +116,16 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
         agent, \
         _progress_queue, \
         _start_barrier, \
-        _has_synced_start
+        _has_synced_start, \
+        _raw_envs, \
+        _first_episode, \
+        _worker_progress_subscriber, \
+        _episode_queue
     with counter.get_lock():
         robot_idx = counter.value
         counter.value += 1
 
-    # Store queue globally for access in create_runtime
+    # Store queue globally for access in _robot_worker
     _progress_queue = progress_queue
     _start_barrier = start_barrier
     _has_synced_start = False
@@ -125,6 +144,46 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
+
+    # Preload all task envs
+    benchmark_dict: Dict[str, Type[benchmark.Benchmark]] = (
+        benchmark.get_benchmark_dict()
+    )
+    task_suite: benchmark.Benchmark = benchmark_dict[args.task_suite_name]()
+    _raw_envs = {}
+    for task_id in range(task_suite.n_tasks):
+        task = task_suite.get_task(task_id)
+        env, _ = utils._get_libero_env(
+            task, LIBERO_ENV_RESOLUTION, seed=args.seed + robot_idx
+        )
+        _raw_envs[task_id] = env
+
+    # Store episode queue globally so _robot_worker can access it without pickling
+    _episode_queue = episode_queue
+
+    # Pre-fetch first episode from queue
+    _first_episode = None
+    if episode_queue is not None:
+        try:
+            _first_episode = episode_queue.get_nowait()
+        except queue.Empty:
+            pass
+
+    # Create progress subscriber using first episode's task info
+    _worker_progress_subscriber = None
+    if progress_queue is not None and _first_episode is not None:
+        job_info = {
+            "task_suite_name": _first_episode.task_suite_name,
+            "task_id": _first_episode.task_id,
+            "num_episodes": 1,
+        }
+        _worker_progress_subscriber = ProgressSubscriber(
+            queue=progress_queue,
+            robot_idx=robot_idx,
+            job_info=job_info,
+            environment=None,
+            update_frequency=10,
+        )
 
 
 def _wait_for_initial_start_sync() -> None:
@@ -154,102 +213,114 @@ class _StartupSyncSubscriber(_subscriber.Subscriber):
         return
 
 
-def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
-    env_raw, task_description = utils._get_libero_env(
-        job.task,
-        LIBERO_ENV_RESOLUTION,
-        seed=args.seed + robot_idx,
-    )
-    env = LiberoSimEnvironment(
-        env=env_raw,
-        task_description=task_description,
-        initial_states=job.initial_states,
-        resize_size=args.resize_size,
-        num_steps_wait=args.num_steps_wait,
-        max_episode_steps=args.max_steps,
-        latency_ms=_latency_for_robot(args, robot_idx),
-        control_hz=args.control_hz,
-    )
+def _robot_worker(task_args) -> None:
+    """Worker process that pulls episodes from the shared queue until empty."""
+    args, server_metadata = task_args
 
-    # Create job info for progress subscriber
-    job_info = {
-        "task_suite_name": job.task_suite_name,
-        "task_id": job.task_id,
-        "num_episodes": len(job.initial_states),
-    }
+    episode = _first_episode  # pre-fetched in init_worker
+    total_completed = 0
+    total_successes = 0
 
-    subscribers: List[_subscriber.Subscriber] = [
-        _StartupSyncSubscriber(),
-        Saver(
-            out_dir=pathlib.Path(args.output_dir),
-            environment=env,
-            action_chunk_broker=broker,
-            task_suite_name=job.task_suite_name,
-            task_id=job.task_id,
-            task=job.task,
-            robot_idx=robot_idx,
-        ),
-        TaskMetricsPublisher(
-            ws_client=ws_client,
-            environment=env,
-            task_suite_name=job.task_suite_name,
-            task_id=job.task_id,
-            task=job.task,
-        ),
-    ]
-    if args.progress_type is not None and _progress_queue is not None:
-        subscribers.append(
-            ProgressSubscriber(
-                queue=_progress_queue,
-                robot_idx=robot_idx,
-                job_info=job_info,
-                environment=env,
-                update_frequency=10,
-            )
+    while episode is not None:
+        raw_env = _raw_envs[episode.task_id]
+        env = LiberoSimEnvironment(
+            env=raw_env,
+            task_description=episode.task.language,
+            initial_states=np.array([episode.initial_state]),
+            resize_size=args.resize_size,
+            num_steps_wait=args.num_steps_wait,
+            max_episode_steps=args.max_steps,
+            latency_ms=_latency_for_robot(args, robot_idx),
+            control_hz=args.control_hz,
         )
 
-    runtime = _runtime.Runtime(
-        environment=env,
-        agent=agent,
-        subscribers=subscribers,
-        max_hz=args.control_hz,
-        num_episodes=len(job.initial_states),
-        max_episode_steps=env._max_episode_steps,  # type: ignore[attr-defined]
-    )
-    return runtime
+        if _worker_progress_subscriber is not None:
+            _worker_progress_subscriber.environment = env
+
+        subscribers: List[_subscriber.Subscriber] = [
+            _StartupSyncSubscriber(),
+            Saver(
+                out_dir=pathlib.Path(args.output_dir),
+                environment=env,
+                action_chunk_broker=broker,
+                task_suite_name=episode.task_suite_name,
+                task_id=episode.task_id,
+                task=episode.task,
+                robot_idx=robot_idx,
+            ),
+            TaskMetricsPublisher(
+                ws_client=ws_client,
+                environment=env,
+                task_suite_name=episode.task_suite_name,
+                task_id=episode.task_id,
+                task=episode.task,
+            ),
+        ]
+        if _worker_progress_subscriber is not None:
+            subscribers.append(_worker_progress_subscriber)
+
+        runtime = _runtime.Runtime(
+            environment=env,
+            agent=agent,
+            subscribers=subscribers,
+            max_hz=args.control_hz,
+            num_episodes=1,
+            max_episode_steps=env._max_episode_steps,  # type: ignore[attr-defined]
+        )
+        runtime.run()
+        # Do NOT call runtime.close() — we own raw_env lifecycle
+
+        total_completed += 1
+        if env.current_success:
+            total_successes += 1
+
+        try:
+            episode = _episode_queue.get_nowait()
+        except queue.Empty:
+            episode = None
+
+    # Cleanup: close all preloaded envs
+    for raw_env in _raw_envs.values():
+        raw_env.close()
+
+    # Emit worker_complete
+    if _worker_progress_subscriber is not None:
+        _worker_progress_subscriber.close(total_completed, total_successes)
 
 
-def _robot_worker(task_args) -> None:
-    """Worker process that handles jobs for a specific robot index."""
-    args, job, _server_metadata = task_args
-    runtime = create_runtime(args, job)
-    runtime.run()
-    runtime.close()
-
-
-def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> None:
-    if not jobs:
-        logging.info("No jobs to run; skipping robot startup")
+def run_robots(
+    args: Args, episodes: List[Episode], server_metadata: ServerMetadata
+) -> None:
+    if not episodes:
+        logging.info("No episodes to run; skipping robot startup")
         return
 
     counter = multiprocessing.Value("i", 0)  # for assigning robot indices
 
     if args.debug:
         # Debug mode: no progress manager, single process for pdb compatibility
-        init_worker(args, counter, None, None)
-        for job in jobs:
-            _robot_worker((args, job, server_metadata))
+        ep_queue: queue.Queue = queue.Queue()
+        for ep in episodes:
+            ep_queue.put(ep)
+        init_worker(args, counter, None, None, ep_queue)
+        _robot_worker((args, server_metadata))
     else:
-        total_episodes = sum(len(job.initial_states) for job in jobs)
-        active_workers = min(args.num_robots, len(jobs))
+        total_episodes = len(episodes)
+        active_workers = min(args.num_robots, total_episodes)
         start_barrier = multiprocessing.Barrier(active_workers)
         logging.info(
             "Using one-time startup barrier across %d worker(s)",
             active_workers,
         )
+
+        # Build shared episode queue
+        mp_episode_queue: multiprocessing.Queue = multiprocessing.Queue()
+        for ep in episodes:
+            mp_episode_queue.put(ep)
+
         with get_progress_manager(
             args.progress_type,
-            total_jobs=len(jobs),
+            total_jobs=total_episodes,
             total_episodes=total_episodes,
             max_steps=args.max_steps,
         ) as progress_manager:
@@ -257,14 +328,20 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
             with multiprocessing.Pool(
                 processes=active_workers,
                 initializer=init_worker,
-                initargs=(args, counter, progress_manager.queue, start_barrier),
+                initargs=(
+                    args,
+                    counter,
+                    progress_manager.queue,
+                    start_barrier,
+                    mp_episode_queue,
+                ),
             ) as pool:
                 try:
                     # use imap_unordered so that it exits immediately on any exception
                     _ = list(
                         pool.imap_unordered(
                             _robot_worker,
-                            [(args, job, server_metadata) for job in jobs],
+                            [(args, server_metadata)] * active_workers,
                         )
                     )
                 except Exception as e:
@@ -275,7 +352,7 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
                     pool.join()
 
 
-def create_jobs(args: Args) -> List[Job]:
+def create_episodes(args: Args) -> List[Episode]:
     benchmark_dict: Dict[str, Type[benchmark.Benchmark]] = (
         benchmark.get_benchmark_dict()
     )
@@ -283,7 +360,7 @@ def create_jobs(args: Args) -> List[Job]:
     num_tasks_in_suite = task_suite.n_tasks
 
     logging.info(
-        "Setting up multi-robot LIBERO runtime over suite '%s' with %d tasks, num_robots=%d, trials_per_robot=%d, control_hz=%d",
+        "Setting up multi-robot LIBERO runtime over suite '%s' with %d tasks, num_robots=%d, trials_per_task=%d, control_hz=%d",
         args.task_suite_name,
         num_tasks_in_suite,
         args.num_robots,
@@ -291,7 +368,7 @@ def create_jobs(args: Args) -> List[Job]:
         args.control_hz,
     )
 
-    base_jobs: List[Job] = []
+    episodes: List[Episode] = []
     for task_id in range(num_tasks_in_suite):
         task: benchmark.Task = task_suite.get_task(task_id)
         all_initial_states: Float[np.ndarray, "n_initial_states state_dim"] = (
@@ -300,36 +377,27 @@ def create_jobs(args: Args) -> List[Job]:
 
         if len(all_initial_states) < args.num_trials_per_task:
             logging.error(
-                "Task %d has less initial states than trials per robot; skipping",
+                "Task %d has less initial states than trials per task; skipping",
                 task_id,
             )
             continue
 
         initial_states = all_initial_states[: args.num_trials_per_task]
-        job = Job(
-            task=task,
-            task_suite_name=args.task_suite_name,
-            task_id=task_id,
-            initial_states=initial_states,
-        )
-        base_jobs.append(job)
+        for state in initial_states:
+            episodes.append(
+                Episode(
+                    task_suite_name=args.task_suite_name,
+                    task_id=task_id,
+                    task=task,
+                    initial_state=state,
+                )
+            )
 
-    # If num_robots > num_tasks, repeat tasks cyclically so every robot gets a job.
-    if args.num_robots > len(base_jobs):
-        logging.warning(
-            "num_robots (%d) > num_tasks (%d); repeating tasks cyclically to fill all robots",
-            args.num_robots,
-            len(base_jobs),
-        )
-        jobs: List[Job] = [
-            base_jobs[i % len(base_jobs)] for i in range(args.num_robots)
-        ]
-    else:
-        jobs = base_jobs
+    logging.info(
+        "Created %d episodes across %d tasks", len(episodes), num_tasks_in_suite
+    )
 
-    logging.info("Created %d jobs", len(jobs))
-
-    return jobs
+    return episodes
 
 
 def main(args: Args) -> None:
@@ -361,7 +429,7 @@ def main(args: Args) -> None:
 
     np.random.seed(args.seed)
 
-    jobs = create_jobs(args)
+    episodes = create_episodes(args)
 
     # Connect to get server metadata
     temp_client = BidirectionalWebsocket(
@@ -405,7 +473,7 @@ def main(args: Args) -> None:
         logging.warning(f"Could not reset server metrics: {e}")
 
     # Run robots
-    run_robots(args, jobs, server_metadata)
+    run_robots(args, episodes, server_metadata)
 
     # Dump server-side metrics history for offline analysis
     try:

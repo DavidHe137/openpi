@@ -333,6 +333,12 @@ class ProgressManager:
                 self.job_stats.total_successes += 1
 
             self.job_stats.completed_episodes += 1
+            self.job_stats.completed_jobs += 1
+            if self.progress and self.overall_bar_id is not None:
+                self.progress.update(
+                    self.overall_bar_id,
+                    completed=self.job_stats.completed_jobs,
+                )
 
             # Update episode progress bar
             if self.progress and robot_state.episode_bar_id is not None:
@@ -372,14 +378,6 @@ class ProgressManager:
                     self.progress.update(robot_state.episode_bar_id, visible=False)
                 if robot_state.step_bar_id is not None:
                     self.progress.update(robot_state.step_bar_id, visible=False)
-
-            # Update overall progress
-            self.job_stats.completed_jobs += 1
-            if self.progress and self.overall_bar_id is not None:
-                self.progress.update(
-                    self.overall_bar_id,
-                    completed=self.job_stats.completed_jobs,
-                )
 
     def _print_final_summary(self):
         """Print final summary after completion."""
@@ -586,14 +584,6 @@ class ConciseProgressManager(ProgressManager):
             robot_state.active = False
             robot_state.completed = True
 
-            # Update overall progress
-            self.job_stats.completed_jobs += 1
-            if self.progress and self.overall_bar_id is not None:
-                self.progress.update(
-                    self.overall_bar_id,
-                    completed=self.job_stats.completed_jobs,
-                )
-
 
 class LoggingProgressManager(ProgressManager):
     """
@@ -721,9 +711,6 @@ class LoggingProgressManager(ProgressManager):
             robot_state = self.robot_states[robot_idx]
             robot_state.active = False
             robot_state.completed = True
-
-            # Update overall progress
-            self.job_stats.completed_jobs += 1
 
 
 class DebugQueue:

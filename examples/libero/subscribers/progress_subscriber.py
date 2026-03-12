@@ -3,7 +3,7 @@ from __future__ import annotations
 import multiprocessing
 import time
 import numpy as np
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
@@ -21,6 +21,10 @@ class ProgressSubscriber(_subscriber.Subscriber):
     - Sends updates every N steps (configurable)
     - Reports success/failure from environment
     - Sends messages on episode boundaries
+
+    Designed to be created once per worker and reused across multiple episodes
+    (potentially spanning different tasks). Call close() when the worker is done
+    to emit the final worker_complete message.
     """
 
     def __init__(
@@ -28,7 +32,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
         queue: multiprocessing.Queue,
         robot_idx: int,
         job_info: dict,
-        environment: LiberoSimEnvironment,
+        environment: Optional["LiberoSimEnvironment"],
         update_frequency: int = 10,
     ):
         """
@@ -38,7 +42,8 @@ class ProgressSubscriber(_subscriber.Subscriber):
             queue: Multiprocessing queue for sending progress messages
             robot_idx: Worker's assigned robot index
             job_info: Dict with task_suite_name, task_id, num_episodes
-            environment: LiberoSimEnvironment for accessing success flag
+            environment: LiberoSimEnvironment for accessing success flag (can be
+                updated later via ``self.environment = env`` before each episode)
             update_frequency: Send update every N steps
         """
         self.queue = queue
@@ -50,7 +55,6 @@ class ProgressSubscriber(_subscriber.Subscriber):
         # State tracking
         self.current_episode_idx = 0
         self.current_step_count = 0
-        self.total_episodes = job_info["num_episodes"]
         self.total_successes = 0
         self.step_times: List[List[float]] = []
 
@@ -116,7 +120,9 @@ class ProgressSubscriber(_subscriber.Subscriber):
     def on_episode_end(self) -> None:
         """Called when an episode ends. Report success/failure."""
         # Get success from environment
-        success = self.environment.current_success
+        success = (
+            self.environment.current_success if self.environment is not None else False
+        )
 
         if success:
             self.total_successes += 1
@@ -132,13 +138,13 @@ class ProgressSubscriber(_subscriber.Subscriber):
 
         self.current_episode_idx += 1
 
-        # If this was the last episode, send worker complete message
-        if self.current_episode_idx >= self.total_episodes:
-            self._send_message(
-                {
-                    "type": "worker_complete",
-                    "robot_idx": self.robot_idx,
-                    "total_episodes": self.total_episodes,
-                    "total_successes": self.total_successes,
-                }
-            )
+    def close(self, total_completed: int, total_successes: int) -> None:
+        """Send worker_complete message. Call when the worker has finished all episodes."""
+        self._send_message(
+            {
+                "type": "worker_complete",
+                "robot_idx": self.robot_idx,
+                "total_episodes": total_completed,
+                "total_successes": total_successes,
+            }
+        )
