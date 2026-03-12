@@ -109,21 +109,19 @@ def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
 
         result = Result.from_json(metadata_file)
         costs = np.load(cost_history_file)
-        planner_starvation_steps = int(np.isnan(costs).sum())
+        starvation_steps = int(np.isnan(costs).sum())
         total_steps = int(costs.shape[0])
         assert total_steps > 0, "cost_history should contain at least one step"
-        planner_starvation_rate = planner_starvation_steps / total_steps
-
+        assert control_hz is not None and control_hz > 0
         row = {
             "robot_idx": result.robot_idx,
             "episode_idx": result.episode_idx,
             "task_suite_name": result.task_suite_name,
             "task_id": result.task_id,
-            "planner_starvation_steps": planner_starvation_steps,
-            "planner_starvation_rate": planner_starvation_rate,
+            "starvation_steps": starvation_steps,
+            "observed_steps": total_steps,
+            "planner_starvation_seconds": starvation_steps / control_hz,
         }
-        assert control_hz is not None and control_hz > 0
-        row["planner_starvation_seconds"] = planner_starvation_steps / control_hz
 
         rows.append(row)
 
@@ -722,14 +720,17 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     df.to_csv(output_path / "results.csv", index=False)
 
     aggregation_spec: dict[str, str] = {"success": "mean"}
-    assert "planner_starvation_steps" in df.columns
-    assert "planner_starvation_rate" in df.columns
+    assert "starvation_steps" in df.columns
+    assert "observed_steps" in df.columns
     assert "planner_starvation_seconds" in df.columns
-    aggregation_spec["planner_starvation_steps"] = "sum"
-    aggregation_spec["planner_starvation_rate"] = "mean"
+    aggregation_spec["starvation_steps"] = "sum"
+    aggregation_spec["observed_steps"] = "sum"
     aggregation_spec["planner_starvation_seconds"] = "sum"
 
     summary = df.groupby(["task_suite_name", "task_id"]).agg(aggregation_spec)
+    summary["planner_starvation_rate"] = (
+        summary["starvation_steps"] / summary["observed_steps"]
+    )
     summary.reset_index().to_csv(output_path / "summary.csv", index=False)
 
     # Display with rich
@@ -738,22 +739,17 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     table.add_column("Task Suite", style="cyan")
     table.add_column("Task ID", style="magenta")
     table.add_column("Success Rate", style="green")
-    assert "planner_starvation_steps" in summary.columns
     table.add_column("Total Starvation Steps", style="yellow")
-    assert "planner_starvation_rate" in summary.columns
     table.add_column("Starvation Rate", style="yellow")
 
     for _, row in summary.reset_index().iterrows():
-        row_values = [
+        table.add_row(
             str(row["task_suite_name"]),
             str(row["task_id"]),
             f"{row['success']:.2%}",
-        ]
-        assert "planner_starvation_steps" in summary.columns
-        row_values.append(f"{row['planner_starvation_steps']:.2f}")
-        assert "planner_starvation_rate" in summary.columns
-        row_values.append(f"{row['planner_starvation_rate']:.2%}")
-        table.add_row(*row_values)
+            str(int(row["starvation_steps"])),
+            f"{row['planner_starvation_rate']:.2%}",
+        )
 
     console.print(table)
 
@@ -761,11 +757,14 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     robot_agg_spec: dict[str, str] = {
         "success": "mean",
         "episode_idx": "count",
-        "planner_starvation_steps": "sum",
-        "planner_starvation_rate": "mean",
+        "starvation_steps": "sum",
+        "observed_steps": "sum",
     }
     robot_summary = df.groupby("robot_idx").agg(robot_agg_spec).reset_index()
     robot_summary.rename(columns={"episode_idx": "count"}, inplace=True)
+    robot_summary["planner_starvation_rate"] = (
+        robot_summary["starvation_steps"] / robot_summary["observed_steps"]
+    )
 
     robot_table = Table(title="Per-Robot Success Summary")
     robot_table.add_column("Robot", style="cyan")
@@ -774,29 +773,27 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     robot_table.add_column("Total Starvation Steps", style="yellow")
     robot_table.add_column("Starvation Rate", style="yellow")
     for _, row in robot_summary.sort_values("robot_idx").iterrows():
-        row_values = [
+        robot_table.add_row(
             str(int(row["robot_idx"])),
             f"{row['success']:.2%}",
             str(int(row["count"])),
-        ]
-        row_values.append(f"{row['planner_starvation_steps']:.2f}")
-        row_values.append(f"{row['planner_starvation_rate']:.2%}")
-        robot_table.add_row(*row_values)
+            str(int(row["starvation_steps"])),
+            f"{row['planner_starvation_rate']:.2%}",
+        )
     console.print(robot_table)
 
+    total_starvation_steps = int(df["starvation_steps"].sum())
+    total_observed_steps = int(df["observed_steps"].sum())
+    overall_starvation_rate = total_starvation_steps / total_observed_steps
     console.print(
         f"\n[bold green]Total success rate: {summary['success'].mean():.2%}[/bold green]"
     )
-    assert "planner_starvation_steps" in df.columns
-    total_starvation_steps = int(df["planner_starvation_steps"].sum())
     console.print(
         f"[bold yellow]Total starvation steps: {total_starvation_steps} control steps[/bold yellow]"
     )
-    assert "planner_starvation_rate" in df.columns
     console.print(
-        f"[bold yellow]Planner starvation rate: {df['planner_starvation_rate'].mean():.2%}[/bold yellow]"
+        f"[bold yellow]Planner starvation rate: {overall_starvation_rate:.2%}[/bold yellow]"
     )
-    assert "planner_starvation_seconds" in df.columns
     console.print(
         f"[bold yellow]Planner starvation time: {df['planner_starvation_seconds'].sum():.2f}s[/bold yellow]"
     )
