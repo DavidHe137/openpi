@@ -594,6 +594,10 @@ def _actions_left_heatmap_fig(robot_actions_left: dict[str, tuple[np.ndarray, np
         fig.update_layout(**_layout(xaxis={"title": "Time since server start (s)"}, yaxis={"title": "Robot"}))
         return fig
 
+    row_h = 20
+    height = max(180, len(robots) * row_h + 80)
+    marker_size = row_h - 2
+
     for i, rid in enumerate(robots):
         times, values = robot_actions_left[rid]
         fig.add_trace(
@@ -603,7 +607,7 @@ def _actions_left_heatmap_fig(robot_actions_left: dict[str, tuple[np.ndarray, np
                 mode="markers",
                 marker={
                     "symbol": "square",
-                    "size": 6,
+                    "size": marker_size,
                     "color": values,
                     "colorscale": "RdYlGn",
                     "cmin": 0,
@@ -623,6 +627,7 @@ def _actions_left_heatmap_fig(robot_actions_left: dict[str, tuple[np.ndarray, np
                 "categoryarray": robots,
                 "autorange": "reversed",
             },
+            height=height,
             margin={**_DARK["margin"], "l": 100},
         )
     )
