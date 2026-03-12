@@ -212,6 +212,12 @@ class MetricsStore(JSONDataclass):
                 self.robots[robot_id] = Robot(robot_id=robot_id, episodes=[])
             self.robots[robot_id].start_episode(episode_start)
 
+    def record_episode_step(self, robot_id: str, timestamp: float) -> None:
+        with lock:
+            if robot_id in self.robots and self.robots[robot_id].episodes:
+                self.robots[robot_id].add_step(timestamp)
+                self.end_time = max(self.end_time, timestamp)
+
     def record_episode_end(
         self,
         robot_id: str,

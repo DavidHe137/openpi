@@ -375,6 +375,9 @@ def create_app(
                         case "episode_start":
                             state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
                             continue
+                        case "episode_step":
+                            state.metrics_store.record_episode_step(robot_id, time.time())
+                            continue
                         case "episode_end":
                             state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
                             continue

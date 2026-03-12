@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import field
 import itertools
 from typing import NamedTuple, TypeAlias, TypeVar
 
@@ -79,11 +80,12 @@ class Episode:
     requests: list[RequestRecord]
     responses: list[ResponseRecord]
     success: bool | None = None
+    num_observation_steps: int = 0
+    step_timestamps: list[float] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.requests = [RequestRecord(**r) if isinstance(r, dict) else r for r in self.requests]
         self.responses = [ResponseRecord(**r) if isinstance(r, dict) else r for r in self.responses]
-        assert all(r.observation_step == i for i, r in enumerate(self.requests))
         assert all(
             next_request.action_start_step >= prev_request.action_start_step
             for prev_request, next_request in zip(self.requests[:-1], self.requests[1:], strict=True)
@@ -100,7 +102,7 @@ class Episode:
 
     @property
     def num_steps(self) -> int:
-        return len(self.requests)
+        return self.num_observation_steps
 
     @property
     def actions_left_history(self) -> np.ndarray[int, " num_steps"]:
@@ -138,19 +140,17 @@ class Episode:
         return window_filter(self.responses, lambda r: r.receive_time, (start_timestamp, end_timestamp))
 
     def get_windowed_actions_left(self, start_ts: float, end_ts: float) -> np.ndarray:
-        """Slice of actions_left_history for steps with request_timestamp in [start_ts, end_ts)."""
-        timestamps = [r.request_timestamp for r in self.requests]
-        start_idx = next((i for i, t in enumerate(timestamps) if t >= start_ts), len(timestamps))
-        end_idx = next((i for i, t in enumerate(timestamps) if t >= end_ts), len(timestamps))
-        return self.actions_left_history[start_idx:end_idx].astype(float)
+        """Slice of actions_left_history for control steps with timestamp in [start_ts, end_ts)."""
+        history = self.actions_left_history
+        return np.array(
+            [history[i] for i, t in enumerate(self.step_timestamps) if start_ts <= t < end_ts],
+            dtype=float,
+        )
 
     def get_windowed_steps(self, start_ts: float, end_ts: float) -> list[tuple[float, float]]:
-        """Return [(request_timestamp, actions_left), ...] for steps in [start_ts, end_ts)."""
-        return [
-            (r.request_timestamp, float(al))
-            for r, al in zip(self.requests, self.actions_left_history, strict=True)
-            if start_ts <= r.request_timestamp < end_ts
-        ]
+        """Return [(timestamp, actions_left), ...] for control steps in [start_ts, end_ts)."""
+        history = self.actions_left_history
+        return [(t, float(history[i])) for i, t in enumerate(self.step_timestamps) if start_ts <= t < end_ts]
 
 
 @dataclass
@@ -186,6 +186,10 @@ class Robot:
         assert episode.task_id == episode_end.task_id
         assert episode.num_steps == episode_end.steps_taken
         episode.success = episode_end.success
+
+    def add_step(self, timestamp: float) -> None:
+        self.current_episode.num_observation_steps += 1
+        self.current_episode.step_timestamps.append(timestamp)
 
     def add_request(self, request: RequestRecord) -> None:
         self.current_episode.requests.append(request)
