@@ -35,8 +35,7 @@ class Snapshot:
     """Windowed metrics snapshot. All stats, SLA, and starvation computed here."""
 
     start_time: float
-    start_timestamp: float
-    end_timestamp: float
+    end_time: float
     sla_pct: float
     # Per-robot windowed (times_relative_to_server_start, actions_left_values) with nan separators between episodes.
     robot_actions_left: dict[RobotID, tuple[np.ndarray, np.ndarray]]
@@ -56,11 +55,9 @@ class Snapshot:
 
     @property
     def uptime_s(self) -> float:
-        return self.end_timestamp - self.start_time
-
-    @property
-    def duration_s(self) -> float:
-        return self.end_timestamp - self.start_timestamp
+        uptime_s = self.end_time - self.start_time
+        assert uptime_s >= 0, "Uptime cannot be negative"
+        return uptime_s
 
     @property
     def total_batches(self) -> int:
@@ -69,6 +66,10 @@ class Snapshot:
     @property
     def total_requests(self) -> int:
         return len(self.requests)
+
+    @property
+    def total_responses(self) -> int:
+        return len(self.responses)
 
     @property
     def gpu_times_ms(self) -> list[float]:
@@ -80,18 +81,16 @@ class Snapshot:
 
     @property
     def requests_per_second(self) -> float:
-        return self.total_requests / self.duration_s if self.duration_s > 0 else 0.0
+        return len(self.requests) / self.uptime_s if self.uptime_s > 0 else 0.0
+
+    @property
+    def responses_per_second(self) -> float:
+        return len(self.responses) / self.uptime_s if self.uptime_s > 0 else 0.0
 
     @property
     def avg_gpu_time_ms(self) -> float:
         t = self.gpu_times_ms
         return float(np.mean(t)) if t else 0.0
-
-    @property
-    def gpu_busy_pct(self) -> float:
-        if not self.batches or self.duration_s <= 0:
-            return 0.0
-        return sum(b.gpu_time_ms for b in self.batches) / (self.duration_s * 1000) * 100
 
     @property
     def avg_queue_delay_ms(self) -> float:
@@ -116,16 +115,15 @@ class Snapshot:
 
     @property
     def tp_suc_per_sec_all(self) -> float:
-        if self.duration_s <= 0:
-            return 0.0
-        return sum(1 for _, ep in self.completed_episodes if ep.success) / self.duration_s
+        return sum(1 for _, ep in self.completed_episodes if ep.success) / self.uptime_s
 
 
 @dataclass
 class MetricsStore(JSONDataclass):
     """Single-call-site metrics store. All updates go through record_batch / record_ack."""
 
-    start_time: float = 0.0
+    start_time: float = float("inf")
+    end_time: float = 0.0
     robots: dict[RobotID, Robot] = field(default_factory=dict)
     batches: list[BatchSummary] = field(default_factory=list)
     scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
@@ -201,6 +199,7 @@ class MetricsStore(JSONDataclass):
                     first_executed_index=ack.first_executed_index,
                 )
             )
+            self.end_time = max(self.end_time, time.time())
 
     def record_episode_start(
         self,
@@ -221,35 +220,35 @@ class MetricsStore(JSONDataclass):
         """Called when client streams an in-progress task step count."""
         with lock:
             self.robots[robot_id].end_episode(episode_end)
+            self.end_time = max(self.end_time, time.time())
 
     def snapshot(self, window_s: float | None = None, *, sla_pct: float = 10.0) -> Snapshot:
         """Single source of truth for the dashboard. Computes all stats, SLA, and chart data."""
         from collections import deque
 
         with lock:
-            end_timestamp = time.time()
-            start_timestamp = end_timestamp - window_s if window_s is not None else self.start_time
-            t0 = self.start_time
+            start_timestamp = self.end_time - window_s if window_s is not None else self.start_time
+            t0 = start_timestamp
 
             batches = window_filter(
                 self.batches,
                 lambda b: b.inference_end_time,
-                (start_timestamp, end_timestamp),
+                (start_timestamp, self.end_time),
             )
             requests = list(
                 itertools.chain.from_iterable(
-                    robot.get_requests(start_timestamp, end_timestamp) for robot in self.robots.values()
+                    robot.get_requests(start_timestamp, self.end_time) for robot in self.robots.values()
                 )
             )
             responses = list(
                 itertools.chain.from_iterable(
-                    robot.get_responses(start_timestamp, end_timestamp) for robot in self.robots.values()
+                    robot.get_responses(start_timestamp, self.end_time) for robot in self.robots.values()
                 )
             )
 
             robot_actions_left = {}
             for robot_id, robot in self.robots.items():
-                times, values = robot.get_actions_left_timed(start_timestamp, end_timestamp)
+                times, values = robot.get_actions_left_timed(start_timestamp, self.end_time)
                 robot_actions_left[robot_id] = (
                     times - t0 if len(times) > 0 else times,
                     values,
@@ -261,7 +260,7 @@ class MetricsStore(JSONDataclass):
                 for episode in robot.episodes
                 if episode.success is not None
                 and episode.requests
-                and start_timestamp <= episode.requests[-1].request_timestamp < end_timestamp
+                and start_timestamp <= episode.requests[-1].request_timestamp < self.end_time
             ]
 
             # ---- per-robot stats ----
@@ -273,7 +272,7 @@ class MetricsStore(JSONDataclass):
             for robot_id, ep in completed_episodes:
                 eps_by_robot.setdefault(robot_id, []).append(ep)
 
-            duration_s = end_timestamp - start_timestamp
+            duration_s = self.end_time - start_timestamp
             active_rates: list[float] = []
             per_robot: dict[str, dict] = {}
 
@@ -323,7 +322,7 @@ class MetricsStore(JSONDataclass):
                     (ts, robot_id, al)
                     for robot_id, robot in self.robots.items()
                     for episode in robot.episodes
-                    for ts, al in episode.get_windowed_steps(start_timestamp, end_timestamp)
+                    for ts, al in episode.get_windowed_steps(start_timestamp, self.end_time)
                 ),
                 key=lambda x: x[0],
             )
@@ -468,8 +467,7 @@ class MetricsStore(JSONDataclass):
 
             return Snapshot(
                 start_time=t0,
-                start_timestamp=start_timestamp,
-                end_timestamp=end_timestamp,
+                end_time=self.end_time,
                 sla_pct=sla_pct,
                 robot_actions_left=robot_actions_left,
                 per_robot=per_robot,

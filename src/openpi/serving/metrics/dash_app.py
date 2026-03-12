@@ -946,11 +946,12 @@ def create_dash_app(metadata: ServerMetadata, metrics_store: MetricsStore) -> da
 
         stats = [
             ("total requests", f"{snap.total_requests:,}"),
-            ("req / s", f(snap.requests_per_second)),
+            ("total responses", f"{snap.total_responses:,}"),
+            ("requests / s", f(snap.requests_per_second)),
+            ("responses / s", f(snap.responses_per_second)),
             ("p50 latency (ms)", f(snap.p50_latency_ms)),
             ("p99 latency (ms)", f(snap.p99_latency_ms)),
             ("avg GPU time (ms)", f(snap.avg_gpu_time_ms)),
-            ("GPU busy (%)", f"{snap.gpu_busy_pct:.1f}%"),
             ("avg queue delay (ms)", f(snap.avg_queue_delay_ms)),
             ("total batches", f"{snap.total_batches:,}"),
             ("task success (%)", f(snap.task_success_rate_pct)),
