@@ -91,6 +91,11 @@ class EpisodeStart:
 
 
 @dataclass(frozen=True)
+class EpisodeStep:
+    type: Literal["episode_step"] = "episode_step"
+
+
+@dataclass(frozen=True)
 class EpisodeEnd:
     task_suite_name: str
     task_id: int

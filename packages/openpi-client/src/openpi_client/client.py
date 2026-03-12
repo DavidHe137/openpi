@@ -184,6 +184,10 @@ class BidirectionalWebsocket:
         )
         self._ws.send(msgpack_numpy.packb(asdict(payload)))
 
+    def send_episode_step(self) -> None:
+        payload = messages.EpisodeStep()
+        self._ws.send(msgpack_numpy.packb(asdict(payload)))
+
     def send_episode_end(
         self,
         task_suite_name: str,

@@ -59,10 +59,17 @@ class TaskMetricsPublisher(_subscriber.Subscriber):
     @override
     def on_step(self, observation: Observation, action: Action) -> None:
         self._steps_taken += 1
+        try:
+            self._ws_client.send_episode_step()
+        except Exception:
+            logger.warning(
+                "Failed to publish episode_step for task %s/%s",
+                self._task_suite_name,
+                self._task_id,
+            )
 
     @override
     def on_episode_end(self) -> None:
-        # FIXME: I don't think this is in seconds?
         duration_s = time.perf_counter() - self._episode_start_perf
         assert duration_s >= 0.0
         try:
