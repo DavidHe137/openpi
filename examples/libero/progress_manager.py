@@ -130,6 +130,7 @@ class ProgressManager:
         self.overall_bar_id = self.progress.add_task(
             "[bold green]Overall Progress",
             total=self.job_stats.total_episodes,
+            start=False,
         )
 
         # Start Rich Live display
@@ -140,8 +141,7 @@ class ProgressManager:
         )
         self.live.start()
 
-        # Start monitoring thread
-        self.job_stats.start_time = time.time()
+        # Start monitoring thread (start_time is set on first run_start message)
         self._monitor_thread = threading.Thread(
             target=self._monitor_queue,
             daemon=True,
@@ -183,7 +183,11 @@ class ProgressManager:
 
         # Add stats summary
         with self._lock:
-            elapsed = time.time() - self.job_stats.start_time
+            elapsed = (
+                time.time() - self.job_stats.start_time
+                if self.job_stats.start_time > 0.0
+                else 0.0
+            )
             success_rate = (
                 self.job_stats.total_successes / self.job_stats.completed_episodes * 100
                 if self.job_stats.completed_episodes > 0
@@ -256,7 +260,13 @@ class ProgressManager:
         msg_type = message["type"]
 
         with self._lock:
-            if msg_type == "worker_init":
+            if msg_type == "run_start":
+                # Set start_time on the first worker to cross the barrier
+                if self.job_stats.start_time == 0.0:
+                    self.job_stats.start_time = time.time()
+                    if self.progress is not None and self.overall_bar_id is not None:
+                        self.progress.start_task(self.overall_bar_id)
+            elif msg_type == "worker_init":
                 self._handle_worker_init(message)
             elif msg_type == "episode_start":
                 self._handle_episode_start(message)
@@ -359,7 +369,11 @@ class ProgressManager:
     def _print_final_summary(self):
         """Print final summary after completion."""
         with self._lock:
-            total_time = time.time() - self.job_stats.start_time
+            total_time = (
+                time.time() - self.job_stats.start_time
+                if self.job_stats.start_time > 0.0
+                else 0.0
+            )
             success_rate = (
                 self.job_stats.total_successes / self.job_stats.completed_episodes * 100
                 if self.job_stats.completed_episodes > 0
@@ -405,6 +419,7 @@ class ConciseProgressManager(ProgressManager):
         self.overall_bar_id = self.progress.add_task(
             "[bold green]Overall Progress",
             total=self.job_stats.total_episodes,
+            start=False,
         )
 
         # Start Rich Live display
@@ -415,8 +430,7 @@ class ConciseProgressManager(ProgressManager):
         )
         self.live.start()
 
-        # Start monitoring thread
-        self.job_stats.start_time = time.time()
+        # Start monitoring thread (start_time is set on first run_start message)
         self._monitor_thread = threading.Thread(
             target=self._monitor_queue,
             daemon=True,
@@ -436,7 +450,11 @@ class ConciseProgressManager(ProgressManager):
 
         # Add summary stats
         with self._lock:
-            elapsed = time.time() - self.job_stats.start_time
+            elapsed = (
+                time.time() - self.job_stats.start_time
+                if self.job_stats.start_time > 0.0
+                else 0.0
+            )
             success_rate = (
                 self.job_stats.total_successes / self.job_stats.completed_episodes * 100
                 if self.job_stats.completed_episodes > 0
@@ -568,8 +586,7 @@ class LoggingProgressManager(ProgressManager):
         """Initialize without Rich Progress - just use console for logging."""
         self.console = Console()
 
-        # Start monitoring thread
-        self.job_stats.start_time = time.time()
+        # Start monitoring thread (start_time is set on first run_start message)
         self._monitor_thread = threading.Thread(
             target=self._monitor_queue,
             daemon=True,
@@ -613,7 +630,10 @@ class LoggingProgressManager(ProgressManager):
         msg_type = message["type"]
 
         with self._lock:
-            if msg_type == "worker_init":
+            if msg_type == "run_start":
+                if self.job_stats.start_time == 0.0:
+                    self.job_stats.start_time = time.time()
+            elif msg_type == "worker_init":
                 self._handle_worker_init(message)
                 self.console.print(
                     f"[cyan][Robot {message['robot_idx']}][/cyan] Starting task {message['job_info']['task_id']} "

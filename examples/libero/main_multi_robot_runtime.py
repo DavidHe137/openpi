@@ -204,10 +204,17 @@ def _wait_for_initial_start_sync() -> None:
 
     if _start_barrier is None:
         _has_synced_start = True
-        return
+    else:
+        _start_barrier.wait()
+        _has_synced_start = True
 
-    _start_barrier.wait()
-    _has_synced_start = True
+    # Notify the progress manager that this worker has crossed the start barrier.
+    # The manager sets its start_time on the first such message it receives.
+    if _progress_queue is not None:
+        try:
+            _progress_queue.put_nowait({"type": "run_start"})
+        except Exception:
+            pass
 
 
 class _StartupSyncSubscriber(_subscriber.Subscriber):
@@ -470,7 +477,7 @@ def main(args: Args) -> None:
         seed=args.seed,
         resize_size=args.resize_size,
         latency_ms=args.latency_ms,
-        episodes=[ep.to_string() for ep in episodes],
+        episodes=[str(ep) for ep in episodes],
     )
 
     output_path = pathlib.Path(args.output_dir)
