@@ -6,6 +6,7 @@ import queue
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Literal, Optional, Dict, Type
+import random
 import datetime
 
 
@@ -406,6 +407,9 @@ def create_episodes(args: Args) -> List[Episode]:
     logging.info(
         "Created %d episodes across %d tasks", len(episodes), num_tasks_in_suite
     )
+
+    random.seed(args.seed)
+    random.shuffle(episodes)
 
     return episodes
 
