@@ -89,6 +89,30 @@ def load_action_chunks(output_path: pathlib.Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def load_experiment_duration(output_path: pathlib.Path) -> Optional[float]:
+    """Compute total experiment wall-clock duration from timestamps.csv files.
+
+    Returns the span from the earliest first-step timestamp to the latest
+    last-step timestamp across all episodes, or None if no timestamps exist.
+    """
+    ts_files = list(output_path.glob("**/timestamps.csv"))
+    if not ts_files:
+        return None
+
+    t_min = float("inf")
+    t_max = float("-inf")
+    for f in ts_files:
+        df = pd.read_csv(f, usecols=["timestamp"])
+        if df.empty:
+            continue
+        t_min = min(t_min, float(df["timestamp"].iloc[0]))
+        t_max = max(t_max, float(df["timestamp"].iloc[-1]))
+
+    if t_min == float("inf"):
+        return None
+    return t_max - t_min
+
+
 def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
     """Load per-episode no-action metrics from saved cost histories.
 
@@ -797,3 +821,14 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     console.print(
         f"[bold yellow]Planner starvation time: {df['planner_starvation_seconds'].sum():.2f}s[/bold yellow]"
     )
+
+    total_successes = int(df["success"].sum())
+    experiment_duration = load_experiment_duration(output_path)
+    if experiment_duration is not None:
+        successes_per_second = total_successes / experiment_duration
+        console.print(
+            f"[bold cyan]Total experiment time: {experiment_duration:.1f}s ({experiment_duration / 60:.1f}min)[/bold cyan]"
+        )
+        console.print(
+            f"[bold cyan]Throughput: {successes_per_second:.3f} successes/second[/bold cyan]"
+        )
