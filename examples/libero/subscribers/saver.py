@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+import dataclasses
 from dataclasses import dataclass
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
@@ -138,7 +139,8 @@ class Saver(_subscriber.Subscriber):
         self._executor.submit(self._save_all, data)
 
     def _save_all(self, data: _EpisodeSaveData) -> None:
-        out_folder = self._get_out_folder(data)
+        out_folder, dir_episode_idx = self._get_out_folder(data)
+        data = dataclasses.replace(data, episode_idx=dir_episode_idx)
         self._save_metadata(out_folder, data)
         self._save_timestamps(out_folder, data)
         self._save_action_chunks(out_folder, data)
@@ -147,7 +149,7 @@ class Saver(_subscriber.Subscriber):
         self._save_actions_left(out_folder, data)
         self._save_cost_history(out_folder, data)
 
-    def _get_out_folder(self, data: _EpisodeSaveData) -> pathlib.Path:
+    def _get_out_folder(self, data: _EpisodeSaveData) -> Tuple[pathlib.Path, int]:
         robot_folder = self._out_dir / str(self._robot_idx)
         pathlib.Path(robot_folder).mkdir(parents=True, exist_ok=True)
 
@@ -162,7 +164,7 @@ class Saver(_subscriber.Subscriber):
             / f"{next_idx}_{self._task_suite_name}_{self._task_id}_{success_str}"
         )
         pathlib.Path(out_folder).mkdir(parents=True, exist_ok=True)
-        return pathlib.Path(out_folder)
+        return pathlib.Path(out_folder), next_idx
 
     def _save_metadata(self, out_folder: pathlib.Path, data: _EpisodeSaveData) -> None:
         logger.info(f"Saving metadata to {out_folder / 'metadata.json'}")
