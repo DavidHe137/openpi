@@ -62,6 +62,9 @@ class Episode:
     task: benchmark.Task
     initial_state: np.ndarray
 
+    def __str__(self) -> str:
+        return f"Episode(task_suite_name={self.task_suite_name}, task_id={self.task_id}, task={self.task})"
+
 
 @dataclass
 class Args:
@@ -467,6 +470,7 @@ def main(args: Args) -> None:
         seed=args.seed,
         resize_size=args.resize_size,
         latency_ms=args.latency_ms,
+        episodes=[ep.to_string() for ep in episodes],
     )
 
     output_path = pathlib.Path(args.output_dir)
