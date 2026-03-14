@@ -710,6 +710,142 @@ def generate_per_robot_success_rate_plot(output_path: pathlib.Path) -> None:
     print(f"Saved {plots_dir / 'per_robot_success_rate.png'}")
 
 
+def generate_starvation_plot(output_path: pathlib.Path) -> None:
+    """Per-robot starvation rate bar chart."""
+    starvation_df = load_planner_starvation_metrics(output_path)
+    if starvation_df.empty:
+        print("No starvation data found")
+        return
+
+    robot_starvation = (
+        starvation_df.groupby("robot_idx")[["starvation_steps", "observed_steps"]]
+        .sum()
+        .reset_index()
+        .sort_values("robot_idx")
+    )
+    robot_starvation["starvation_rate"] = (
+        robot_starvation["starvation_steps"] / robot_starvation["observed_steps"]
+    )
+
+    rates = robot_starvation["starvation_rate"].values
+    robot_labels = robot_starvation["robot_idx"].astype(str).tolist()
+    n_robots = len(robot_labels)
+
+    fig, ax = plt.subplots(figsize=(max(6, 2 * n_robots), 5))
+    bars = ax.bar(robot_labels, rates, color="tomato", edgecolor="black", alpha=0.8)
+    overall_rate = (
+        robot_starvation["starvation_steps"].sum()
+        / robot_starvation["observed_steps"].sum()
+    )
+    ax.axhline(
+        overall_rate,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label=f"Overall: {overall_rate:.2%}",
+    )
+    for bar, rate in zip(bars, rates):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height() + 0.005,
+            f"{rate:.1%}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+    ax.set_xlabel("Robot Index", fontsize=12)
+    ax.set_ylabel("Starvation Rate", fontsize=12)
+    ax.set_title("Per-Robot Starvation Rate", fontsize=14, fontweight="bold")
+    ax.set_ylim(0, min(1.0, max(rates) * 1.3 + 0.05))
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    plots_dir = output_path / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plots_dir / "starvation_rate.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {plots_dir / 'starvation_rate.png'}")
+
+
+def generate_staleness_plot(output_path: pathlib.Path) -> None:
+    """Per-robot actions_left distribution (staleness), excluding starvation steps (NaN).
+
+    Shows violin bodies with mean, median, and p5 markers (lower = more stale).
+    """
+    by_robot = load_actions_left(output_path)
+    if not by_robot:
+        print("No actions_left data found")
+        return
+
+    robots = sorted(by_robot.keys(), key=int)
+    robot_actions: Dict[str, np.ndarray] = {}
+    for robot in robots:
+        vals = np.concatenate([arr for _, arr in by_robot[robot]])
+        robot_actions[robot] = vals[~np.isnan(vals)]
+
+    valid_robots = [r for r in robots if len(robot_actions.get(r, [])) > 0]
+    if not valid_robots:
+        print("No non-starvation actions_left data found")
+        return
+
+    data = [robot_actions[r] for r in valid_robots]
+    positions = list(range(len(valid_robots)))
+    n_robots = len(valid_robots)
+
+    fig, ax = plt.subplots(figsize=(max(6, 2 * n_robots), 5))
+
+    parts = ax.violinplot(
+        data, positions=positions, widths=0.7, showmeans=False, showmedians=False
+    )
+    for pc in parts["bodies"]:
+        pc.set_facecolor("steelblue")
+        pc.set_alpha(0.6)
+    for partname in ["cbars", "cmins", "cmaxes"]:
+        if partname in parts:
+            parts[partname].set_edgecolor("black")
+            parts[partname].set_linewidth(0.8)
+
+    # Overlay mean, median, p5
+    stat_styles = [
+        ("mean", np.mean, "red", "D", "Mean"),
+        ("median", np.median, "white", "o", "Median"),
+        ("p5", lambda x: np.percentile(x, 5), "orange", "s", "P5"),
+    ]
+    for _, fn, color, marker, label in stat_styles:
+        vals_stat = [fn(d) for d in data]
+        ax.scatter(
+            positions,
+            vals_stat,
+            color=color,
+            edgecolors="black",
+            linewidths=0.8,
+            marker=marker,
+            s=60,
+            zorder=3,
+            label=label,
+        )
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels([f"robot_{r}" for r in valid_robots], fontsize=9)
+    ax.set_xlabel("Robot", fontsize=12)
+    ax.set_ylabel("Actions left in queue", fontsize=12)
+    ax.set_title(
+        "Staleness Distribution (excl. starvation steps)",
+        fontsize=14,
+        fontweight="bold",
+    )
+    ax.legend(fontsize=9)
+    ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    plots_dir = output_path / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plots_dir / "staleness_distribution.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {plots_dir / 'staleness_distribution.png'}")
+
+
 def generate_all_plots(output_path: pathlib.Path) -> None:
     """Generate all plots."""
     print("Generating plots...")
@@ -718,6 +854,8 @@ def generate_all_plots(output_path: pathlib.Path) -> None:
     generate_steps_plot(output_path)
     generate_per_robot_success_rate_plot(output_path)
     generate_actions_left_heatmap(output_path)
+    generate_starvation_plot(output_path)
+    generate_staleness_plot(output_path)
     print("Done!")
 
 
