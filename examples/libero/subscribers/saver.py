@@ -5,7 +5,7 @@ import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from openpi_client.runtime import subscriber as _subscriber
@@ -50,7 +50,7 @@ class _EpisodeSaveData:
 
 
 class Saver(_subscriber.Subscriber):
-    """Saves episode data, optionally offloading I/O to a background thread pool."""
+    """Saves episode data by offloading I/O to a background thread pool."""
 
     def __init__(
         self,
@@ -61,7 +61,7 @@ class Saver(_subscriber.Subscriber):
         task_id: int,
         task: benchmark.Task,
         robot_idx: int,
-        executor: Optional[ThreadPoolExecutor] = None,
+        executor: ThreadPoolExecutor,
     ) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         self._out_dir = out_dir
@@ -75,7 +75,6 @@ class Saver(_subscriber.Subscriber):
         self._control_hz = environment.control_hz
         self._observations_buffer: Dict[int, Observation] = {}
         self._executor = executor
-        self._pending_future: Optional[Future] = None
 
     @override
     def on_episode_start(self) -> None:
@@ -136,14 +135,7 @@ class Saver(_subscriber.Subscriber):
             initial_state=initial_state,
         )
 
-        if self._executor is not None:
-            # Wait for any previous episode's save to finish before submitting a new
-            # one, which keeps memory bounded and avoids racing on the output directory.
-            if self._pending_future is not None:
-                self._pending_future.result()
-            self._pending_future = self._executor.submit(self._save_all, data)
-        else:
-            self._save_all(data)
+        self._executor.submit(self._save_all, data)
 
     def _save_all(self, data: _EpisodeSaveData) -> None:
         out_folder = self._get_out_folder(data)
