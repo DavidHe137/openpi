@@ -31,7 +31,6 @@ class RobotState:
 
     # Episode tracking
     current_episode: int = 0
-    total_episodes: int = 0
 
     # Step tracking
     current_step: int = 0
@@ -56,8 +55,6 @@ class RobotState:
 class JobStats:
     """Aggregate stats for current job."""
 
-    total_jobs: int
-    completed_jobs: int = 0
     total_episodes: int = 0
     completed_episodes: int = 0
     total_successes: int = 0
@@ -78,7 +75,6 @@ class ProgressManager:
     def __init__(
         self,
         num_robots: int,
-        total_jobs: int,
         total_episodes: int = 0,
         max_steps: int = 300,
         update_interval: float = 0.1,
@@ -88,13 +84,11 @@ class ProgressManager:
 
         Args:
             num_robots: Number of robot workers
-            total_jobs: Total number of jobs to complete
             total_episodes: Total number of episodes across all jobs
             max_steps: Maximum steps per episode
             update_interval: How often to check queue (seconds)
         """
         self.num_robots = num_robots
-        self.total_jobs = total_jobs
         self.max_steps = max_steps
         self.update_interval = update_interval
 
@@ -103,7 +97,7 @@ class ProgressManager:
 
         # State tracking
         self.robot_states: dict[int, RobotState] = {}
-        self.job_stats = JobStats(total_jobs=total_jobs, total_episodes=total_episodes)
+        self.job_stats = JobStats(total_episodes=total_episodes)
 
         # Rich Progress components
         self.progress: Optional[Progress] = None
@@ -135,7 +129,7 @@ class ProgressManager:
         # Create overall progress bar
         self.overall_bar_id = self.progress.add_task(
             "[bold green]Overall Progress",
-            total=self.total_jobs,
+            total=self.job_stats.total_episodes,
         )
 
         # Start Rich Live display
@@ -197,8 +191,7 @@ class ProgressManager:
             )
 
             stats_text = (
-                f"\n[bold]Jobs:[/bold] {self.job_stats.completed_jobs}/{self.job_stats.total_jobs}  "
-                f"[bold]Episodes:[/bold] {self.job_stats.completed_episodes}/{self.job_stats.total_episodes}  "
+                f"\n[bold]Episodes:[/bold] {self.job_stats.completed_episodes}/{self.job_stats.total_episodes}  "
                 f"[bold]Success Rate:[/bold] {success_rate:.1f}%  "
                 f"[bold]Time:[/bold] {elapsed:.1f}s\n"
             )
@@ -221,7 +214,7 @@ class ProgressManager:
                 )
                 stats_text += (
                     f"[cyan]R{robot_state.robot_idx}[/cyan] Task {robot_state.task_id}: "
-                    f"Ep {robot_state.current_episode}/{robot_state.total_episodes} "
+                    f"Ep {robot_state.current_episode} "
                     f"Step {robot_state.current_step}/{robot_state.max_steps} | "
                     f"Success: {robot_state.successes}/{robot_state.current_episode} ({robot_success_rate:.0f}%) | "
                     f"Speed: {robot_state.steps_per_sec:.1f} steps/s\n"
@@ -284,7 +277,6 @@ class ProgressManager:
             robot_idx=robot_idx,
             task_id=job_info["task_id"],
             task_suite_name=job_info["task_suite_name"],
-            total_episodes=job_info["num_episodes"],
             max_steps=self.max_steps,
             active=True,
         )
@@ -319,11 +311,10 @@ class ProgressManager:
                 self.job_stats.total_successes += 1
 
             self.job_stats.completed_episodes += 1
-            self.job_stats.completed_jobs += 1
             if self.progress and self.overall_bar_id is not None:
                 self.progress.update(
                     self.overall_bar_id,
-                    completed=self.job_stats.completed_jobs,
+                    completed=self.job_stats.completed_episodes,
                 )
 
             # Update episode progress bar
@@ -379,9 +370,6 @@ class ProgressManager:
                 "\n[bold green]===== Evaluation Complete =====[/bold green]"
             )
             self.console.print(
-                f"Total Jobs: {self.job_stats.completed_jobs}/{self.job_stats.total_jobs}"
-            )
-            self.console.print(
                 f"Total Episodes: {self.job_stats.completed_episodes}/{self.job_stats.total_episodes}"
             )
             self.console.print(f"Total Successes: {self.job_stats.total_successes}")
@@ -416,7 +404,7 @@ class ConciseProgressManager(ProgressManager):
         # Create overall progress bar
         self.overall_bar_id = self.progress.add_task(
             "[bold green]Overall Progress",
-            total=self.total_jobs,
+            total=self.job_stats.total_episodes,
         )
 
         # Start Rich Live display
@@ -456,7 +444,6 @@ class ConciseProgressManager(ProgressManager):
             )
 
             stats_text = (
-                f"[bold]Jobs:[/bold] {self.job_stats.completed_jobs}/{self.job_stats.total_jobs}  "
                 f"[bold]Episodes:[/bold] {self.job_stats.completed_episodes}/{self.job_stats.total_episodes}  "
                 f"[bold]Success Rate:[/bold] {success_rate:.1f}%  "
                 f"[bold]Time:[/bold] {elapsed:.1f}s"
@@ -503,7 +490,7 @@ class ConciseProgressManager(ProgressManager):
                     left_table.add_row(
                         f"R{rs.robot_idx}",
                         str(rs.task_id),
-                        f"{rs.current_episode}/{rs.total_episodes}",
+                        str(rs.current_episode),
                         f"{rs.steps_per_sec:.1f}",
                         f"{rs.successes}/{rs.current_episode} ({success_pct:.0f}%)",
                     )
@@ -527,7 +514,7 @@ class ConciseProgressManager(ProgressManager):
                     right_table.add_row(
                         f"R{rs.robot_idx}",
                         str(rs.task_id),
-                        f"{rs.current_episode}/{rs.total_episodes}",
+                        str(rs.current_episode),
                         f"{rs.steps_per_sec:.1f}",
                         f"{rs.successes}/{rs.current_episode} ({success_pct:.0f}%)",
                     )
@@ -548,7 +535,6 @@ class ConciseProgressManager(ProgressManager):
             robot_idx=robot_idx,
             task_id=job_info["task_id"],
             task_suite_name=job_info["task_suite_name"],
-            total_episodes=job_info["num_episodes"],
             max_steps=self.max_steps,
             active=True,
         )
@@ -631,7 +617,7 @@ class LoggingProgressManager(ProgressManager):
                 self._handle_worker_init(message)
                 self.console.print(
                     f"[cyan][Robot {message['robot_idx']}][/cyan] Starting task {message['job_info']['task_id']} "
-                    f"({message['job_info']['task_suite_name']}) - {message['job_info']['num_episodes']} episodes"
+                    f"({message['job_info']['task_suite_name']})"
                 )
             elif msg_type == "episode_start":
                 self._handle_episode_start(message)
@@ -676,7 +662,6 @@ class LoggingProgressManager(ProgressManager):
             robot_idx=robot_idx,
             task_id=job_info["task_id"],
             task_suite_name=job_info["task_suite_name"],
-            total_episodes=job_info["num_episodes"],
             max_steps=self.max_steps,
             active=True,
         )
@@ -728,7 +713,6 @@ class DebugQueue:
 def get_progress_manager(
     progress_type: Literal["verbose", "concise", "logging", None],
     num_robots: int = 1,
-    total_jobs: int = 1,
     total_episodes: int = 0,
     max_steps: int = 300,
     update_interval: float = 0.1,
@@ -739,8 +723,7 @@ def get_progress_manager(
     Args:
         progress_type: Type of progress manager ("verbose", "concise", "logging", or None)
         num_robots: Number of robot workers
-        total_jobs: Total number of jobs to complete
-        total_episodes: Total number of episodes across all jobs
+        total_episodes: Total number of episodes across all robots
         max_steps: Maximum steps per episode
         update_interval: How often to check queue (seconds)
 
@@ -748,16 +731,14 @@ def get_progress_manager(
         The appropriate progress manager or nullcontext if progress_type is None
     """
     if progress_type == "verbose":
-        return ProgressManager(
-            num_robots, total_jobs, total_episodes, max_steps, update_interval
-        )
+        return ProgressManager(num_robots, total_episodes, max_steps, update_interval)
     elif progress_type == "concise":
         return ConciseProgressManager(
-            num_robots, total_jobs, total_episodes, max_steps, update_interval
+            num_robots, total_episodes, max_steps, update_interval
         )
     elif progress_type == "logging":
         return LoggingProgressManager(
-            num_robots, total_jobs, total_episodes, max_steps, update_interval
+            num_robots, total_episodes, max_steps, update_interval
         )
     else:
         return nullcontext()

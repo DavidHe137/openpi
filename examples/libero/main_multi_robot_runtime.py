@@ -182,7 +182,6 @@ def init_worker(
         job_info = {
             "task_suite_name": _first_episode.task_suite_name,
             "task_id": _first_episode.task_id,
-            "num_episodes": 1,
         }
         _worker_progress_subscriber = ProgressSubscriber(
             queue=progress_queue,
@@ -332,7 +331,6 @@ def run_robots(
 
         with get_progress_manager(
             args.progress_type,
-            total_jobs=total_episodes,
             total_episodes=total_episodes,
             max_steps=args.max_steps,
         ) as progress_manager:
