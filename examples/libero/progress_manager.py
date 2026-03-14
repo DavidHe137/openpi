@@ -289,20 +289,6 @@ class ProgressManager:
             active=True,
         )
 
-        # Create progress bars for this robot
-        if self.progress:
-            robot_state.episode_bar_id = self.progress.add_task(
-                f"[cyan]Robot {robot_idx}[/cyan] - Episodes",
-                total=job_info["num_episodes"],
-                visible=True,
-            )
-
-            robot_state.step_bar_id = self.progress.add_task(
-                f"[cyan]Robot {robot_idx}[/cyan] - Steps",
-                total=self.max_steps,
-                visible=True,
-            )
-
         self.robot_states[robot_idx] = robot_state
 
     def _handle_episode_start(self, message: dict):
