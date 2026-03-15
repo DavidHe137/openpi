@@ -67,6 +67,7 @@ from openpi.serving.slots import SlotData
 
 MAX_ROBOTS = 100
 NUM_WARMUP = 10
+API_KEY = "openpi-secret"
 logger = logging.getLogger(__name__)
 
 _uid = uuid.uuid4().hex[:8]
@@ -266,6 +267,7 @@ def create_app(
     policy_factory: Callable,
     scheduler_kwargs: dict[str, object] | None = None,
     log_queue: mp.Queue | None = None,
+    api_key: str | None = API_KEY,
 ) -> FastAPI:
     metrics_store = MetricsStore()
 
@@ -331,6 +333,22 @@ def create_app(
         zmq_ctx.term()
 
     app = FastAPI(lifespan=lifespan)
+
+    if api_key is not None:
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.responses import Response as StarletteResponse
+
+        class ApiKeyMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: Request, call_next):
+                # WebSocket upgrade — check Sec-WebSocket-Protocol or X-Api-Key header
+                auth = request.headers.get("authorization", "")
+                token = auth.removeprefix("Api-Key ") if auth.startswith("Api-Key ") else None
+                if token != api_key:
+                    logger.warning("Rejected request from %s (bad/missing API key)", request.client)
+                    return StarletteResponse(status_code=403)
+                return await call_next(request)
+
+        app.add_middleware(ApiKeyMiddleware)
 
     @app.websocket("/ws")
     async def ws_handler(websocket: WebSocket):
@@ -481,12 +499,14 @@ class PolicyServer:
         policy_factory: Callable,
         scheduler_kwargs: dict[str, object] | None = None,
         log_queue: mp.Queue | None = None,
+        api_key: str | None = API_KEY,
     ):
         self._metadata = metadata
         self._policy_factory = policy_factory
         self._scheduler_kwargs = scheduler_kwargs
         self._log_queue = log_queue
+        self._api_key = api_key
 
     def serve_forever(self, host="0.0.0.0", port=8000):
-        app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue)
+        app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue, self._api_key)
         uvicorn.run(app, host=host, port=port)

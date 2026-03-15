@@ -32,6 +32,7 @@ from examples.libero.metrics import calculate_metrics, generate_all_plots
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
+API_KEY = "openpi-secret"
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ def init_worker(
         robot_id=f"robot_{robot_idx}",
         host=args.host,
         port=args.port,
+        api_key=API_KEY,
     )
 
     # Create broker config and instantiate
@@ -452,6 +454,7 @@ def main(args: Args) -> None:
         host=args.host,
         port=args.port,
         control_hz=args.control_hz,
+        api_key=API_KEY,
     )
     server_metadata = temp_client.server_metadata
     temp_client.close()
@@ -482,8 +485,9 @@ def main(args: Args) -> None:
 
     # Reset server-side metrics so this experiment gets a clean slate
     server_base = f"http://{args.host}:{args.port}"
+    _api_headers = {"Authorization": f"Api-Key {API_KEY}"}
     try:
-        requests.post(f"{server_base}/reset", timeout=5.0)
+        requests.post(f"{server_base}/reset", headers=_api_headers, timeout=5.0)
         logging.info("Reset server metrics")
     except Exception as e:
         logging.warning(f"Could not reset server metrics: {e}")
@@ -493,7 +497,9 @@ def main(args: Args) -> None:
 
     # Dump server-side metrics history for offline analysis
     try:
-        history = requests.get(f"{server_base}/save-metrics", timeout=10.0).json()
+        history = requests.get(
+            f"{server_base}/save-metrics", headers=_api_headers, timeout=10.0
+        ).json()
         hist_path = output_path / "server_metrics_history.json"
         hist_path.write_text(json.dumps(history, indent=2))
         logging.info(f"Saved server metrics history to {hist_path}")
