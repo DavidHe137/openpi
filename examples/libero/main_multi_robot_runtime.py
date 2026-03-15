@@ -13,7 +13,6 @@ import datetime
 import numpy as np
 from jaxtyping import Float
 from libero.libero import benchmark
-from libero.libero.envs import OffScreenRenderEnv
 from openpi_client.client import BidirectionalWebsocket
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
@@ -46,7 +45,7 @@ ws_client = None
 broker = None
 agent = None
 _progress_queue = None
-_raw_envs: Dict[int, OffScreenRenderEnv] = {}
+_task_suite = None
 _first_episode = None
 _worker_progress_subscriber: Optional[ProgressSubscriber] = None
 _episode_queue = None  # multiprocessing.Queue inherited via initargs
@@ -123,7 +122,7 @@ def init_worker(
         _progress_queue, \
         _start_barrier, \
         _has_synced_start, \
-        _raw_envs, \
+        _task_suite, \
         _first_episode, \
         _worker_progress_subscriber, \
         _episode_queue, \
@@ -152,18 +151,10 @@ def init_worker(
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
 
-    # Preload all task envs
     benchmark_dict: Dict[str, Type[benchmark.Benchmark]] = (
         benchmark.get_benchmark_dict()
     )
-    task_suite: benchmark.Benchmark = benchmark_dict[args.task_suite_name]()
-    _raw_envs = {}
-    for task_id in range(task_suite.n_tasks):
-        task = task_suite.get_task(task_id)
-        env, _ = utils._get_libero_env(
-            task, LIBERO_ENV_RESOLUTION, seed=args.seed + robot_idx
-        )
-        _raw_envs[task_id] = env
+    _task_suite = benchmark_dict[args.task_suite_name]()
 
     # Store episode queue globally so _robot_worker can access it without pickling
     _episode_queue = episode_queue
@@ -239,7 +230,11 @@ def _robot_worker(task_args) -> None:
     total_successes = 0
 
     while episode is not None:
-        raw_env = _raw_envs[episode.task_id]
+        raw_env, _ = utils._get_libero_env(
+            _task_suite.get_task(episode.task_id),
+            LIBERO_ENV_RESOLUTION,
+            seed=args.seed + robot_idx,
+        )
         env = LiberoSimEnvironment(
             env=raw_env,
             task_description=episode.task.language,
@@ -286,7 +281,7 @@ def _robot_worker(task_args) -> None:
             max_episode_steps=env._max_episode_steps,  # type: ignore[attr-defined]
         )
         runtime.run()
-        # Do NOT call runtime.close() — we own raw_env lifecycle
+        raw_env.close()
 
         total_completed += 1
         if env.current_success:
@@ -296,10 +291,6 @@ def _robot_worker(task_args) -> None:
             episode = _episode_queue.get_nowait()
         except queue.Empty:
             episode = None
-
-    # Cleanup: close all preloaded envs
-    for raw_env in _raw_envs.values():
-        raw_env.close()
 
     # Drain any in-flight save before the worker exits
     if _save_executor is not None:
