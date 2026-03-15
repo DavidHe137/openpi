@@ -7,7 +7,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=26
 #SBATCH --gpus-per-node="l40s:2"
-#SBATCH --mem-per-gpu=128
+#SBATCH --mem-per-gpu=64
 #SBATCH --array=0-2
 
 set -e
@@ -57,7 +57,7 @@ SERVER_JOB_PID=$!
 echo "Server launched (PID $SERVER_JOB_PID). Waiting for it to initialize..."
 
 # --- Step 2: Sweep num_robots ---
-NUM_RUNS=5
+NUM_RUNS=3
 for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
     for RUN_IDX in $(seq 0 $((NUM_RUNS - 1))); do
         OUTPUT_DIR="data/libero/sweep_schedulers/scheduler_${SCHEDULER}_num_robots_${NUM_ROBOTS}_run_${RUN_IDX}"
@@ -76,7 +76,7 @@ for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
                 --task-suite-name libero_10 \
                 --num-trials-per-task $NUM_TRIALS_PER_TASK \
                 --control-hz 20 \
-                --max-steps 1000 \
+                --max-steps 600 \
                 --output-dir $OUTPUT_DIR \
                 --progress-type logging \
                 --log-dir $OUTPUT_DIR \
