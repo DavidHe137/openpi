@@ -53,7 +53,7 @@ class RequestScheduler(ABC):
             batch_size = len(batch)
             annotated = []
             for request in batch:
-                self._deadlines[request.robot_id] = request.deadline
+                self._deadlines[request.robot_id] = request.max_execution_horizon / request.control_hz
                 self._latest_scheduled_requests[request.robot_id] = request
                 d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
                 step_ms = 1000.0 / request.control_hz

@@ -27,6 +27,7 @@ class SlotData:
     request_timestamp: float
     deadline: float
     min_execution_horizon: int
+    max_execution_horizon: int
     infer_type: Any
     params: Any
     noise: Any  # np.ndarray | None

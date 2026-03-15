@@ -8,11 +8,11 @@
 #SBATCH --cpus-per-task=22
 #SBATCH --gpus-per-node="l40s:2"
 #SBATCH --mem-per-gpu=128
-#SBATCH --array=0-3
+#SBATCH --array=0-2
 
 set -e
 
-SCHEDULERS=(greedy round_robin lookahead ilp)
+SCHEDULERS=(greedy round_robin lookahead)
 SCHEDULER=${SCHEDULERS[$SLURM_ARRAY_TASK_ID]}
 NUM_ROBOTS_LIST=(20 15 10 5)
 NUM_TRIALS_PER_TASK=10
