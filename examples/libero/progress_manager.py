@@ -643,21 +643,19 @@ class LoggingProgressManager(ProgressManager):
                 self._handle_episode_start(message)
                 robot_idx = message["robot_idx"]
                 if robot_idx in self.robot_states:
-                    rs = self.robot_states[robot_idx]
                     self.console.print(
-                        f"[cyan][Robot {robot_idx}][/cyan] Episode {message['episode_idx'] + 1}/{rs.total_episodes} started"
+                        f"[cyan][Robot {robot_idx}][/cyan] Episode {message['episode_idx'] + 1}/{self.job_stats.total_episodes} started"
                     )
             elif msg_type == "episode_end":
                 robot_idx = message["robot_idx"]
                 if robot_idx in self.robot_states:
-                    rs = self.robot_states[robot_idx]
                     status = (
                         "[green]SUCCESS[/green]"
                         if message["success"]
                         else "[red]FAILURE[/red]"
                     )
                     self.console.print(
-                        f"[cyan][Robot {robot_idx}][/cyan] Episode {message['episode_idx'] + 1}/{rs.total_episodes} ended: {status}"
+                        f"[cyan][Robot {robot_idx}][/cyan] Episode {message['episode_idx'] + 1}/{self.job_stats.total_episodes} ended: {status}"
                     )
                 self._handle_episode_end(message)
             elif msg_type == "step_batch":
