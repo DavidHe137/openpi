@@ -418,17 +418,8 @@ def create_episodes(args: Args) -> List[Episode]:
 
 
 def main(args: Args) -> None:
-    if args.log_dir is not None:
-        log_file_name = f"libero_multi_robot_runtime_{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
-        log_file_path = pathlib.Path(args.log_dir) / log_file_name
-        pathlib.Path(args.log_dir).mkdir(parents=True, exist_ok=True)
-        logging_config.setup_logging(
-            log_path=log_file_path, level=logging.DEBUG if args.debug else logging.INFO
-        )
-    else:
-        logging_config.setup_logging(
-            level=logging.DEBUG if args.debug else logging.INFO
-        )
+    # Set up a temporary console-only logger until the output dir is ready.
+    logging_config.setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
 
     if not args.overwrite and pathlib.Path(args.output_dir).exists():
         raise ValueError(f"Output path {args.output_dir} already exists")
@@ -436,6 +427,15 @@ def main(args: Args) -> None:
         if pathlib.Path(args.output_dir).exists():
             shutil.rmtree(args.output_dir, ignore_errors=True)
         pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Now that the output dir exists (and won't be deleted), open the log file.
+    if args.log_dir is not None:
+        log_file_name = f"libero_multi_robot_runtime_{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
+        log_file_path = pathlib.Path(args.log_dir) / log_file_name
+        pathlib.Path(args.log_dir).mkdir(parents=True, exist_ok=True)
+        logging_config.setup_logging(
+            log_path=log_file_path, level=logging.DEBUG if args.debug else logging.INFO
+        )
 
     # Validate latency specification
     if args.latency_ms and len(args.latency_ms) != args.num_robots:
