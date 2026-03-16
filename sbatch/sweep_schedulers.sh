@@ -28,6 +28,9 @@ NODE=${HOSTS[0]}
 
 cleanup() {
     echo "Cleaning up..."
+    if [ ! -z "$MONITOR_PID" ] && kill -0 $MONITOR_PID 2>/dev/null; then
+        kill $MONITOR_PID 2>/dev/null || true
+    fi
     if [ ! -z "$SERVER_JOB_PID" ] && kill -0 $SERVER_JOB_PID 2>/dev/null; then
         echo "Stopping server process (PID: $SERVER_JOB_PID)"
         kill $SERVER_JOB_PID 2>/dev/null || true
@@ -54,7 +57,17 @@ srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=4 --overlap --exact -w 
         --log-dir logs/server
 " &
 SERVER_JOB_PID=$!
-echo "Server launched (PID $SERVER_JOB_PID). Waiting for it to initialize..."
+echo "Server launched (PID $SERVER_JOB_PID)."
+
+# Monitor server in background: terminate the job if it dies unexpectedly
+( while sleep 5; do
+    if ! kill -0 $SERVER_JOB_PID 2>/dev/null; then
+        echo "ERROR: Server process (PID $SERVER_JOB_PID) died unexpectedly - terminating job"
+        kill -TERM $$
+        break
+    fi
+  done ) &
+MONITOR_PID=$!
 
 # --- Step 2: Sweep num_robots ---
 NUM_RUNS=1
@@ -67,6 +80,7 @@ for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
         echo "--------------------------------------"
 
         srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=22 --overlap --exact -w $NODE bash -c "
+            set -e
             echo 'Starting client on $NODE: scheduler=$SCHEDULER num_robots=$NUM_ROBOTS run=$RUN_IDX'
             source scripts/libero_client.sh
             ./examples/libero/.venv/bin/python examples/libero/main_multi_robot_runtime.py \
@@ -103,6 +117,7 @@ if [ "$SCHEDULER" = "greedy" ]; then
             echo "--------------------------------------"
 
             srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=22 --overlap --exact -w $NODE bash -c "
+                set -e
                 echo 'Starting sync client on $NODE: scheduler=$SCHEDULER num_robots=$NUM_ROBOTS run=$RUN_IDX'
                 source scripts/libero_client.sh
                 ./examples/libero/.venv/bin/python examples/libero/main_multi_robot_runtime.py \
@@ -126,4 +141,5 @@ fi
 
 cleanup
 trap - EXIT
+wait $SERVER_JOB_PID 2>/dev/null || true
 echo "======================================"
