@@ -325,7 +325,7 @@ def run_robots(
     else:
         total_episodes = len(episodes)
         active_workers = min(args.num_robots, total_episodes)
-        start_barrier = multiprocessing.Barrier(active_workers, timeout=30)
+        start_barrier = multiprocessing.Barrier(active_workers, timeout=60)
         logging.info(
             "Using one-time startup barrier across %d worker(s)",
             active_workers,
