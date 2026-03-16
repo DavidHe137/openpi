@@ -1,12 +1,9 @@
-# import logging
 import multiprocessing as mp
 import random
 import time
 
 from openpi.scheduling import RequestScheduler
 from openpi.serving.schemas import SlotRequest
-
-# logger = logging.getLogger(__name__)
 
 
 class GreedyScheduler(RequestScheduler):
@@ -24,12 +21,6 @@ class GreedyScheduler(RequestScheduler):
             candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
             earliest_deadline = self._deadlines.get(candidates[0].robot_id, candidates[0].deadline)
             batch_size = self.get_largest_batch_size(earliest_deadline)
-            # logger.info(
-            #     "GreedyScheduler: candidates: %s, batch_size: %s, candidates[:batch_size]: %s",
-            #     [(r.robot_id, self._deadlines.get(r.robot_id, r.deadline)) for r in candidates],
-            #     batch_size,
-            #     candidates[:batch_size],
-            # )
             return [candidates[:batch_size]]
 
     def get_largest_batch_size(self, deadline: float) -> int:
