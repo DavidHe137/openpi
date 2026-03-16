@@ -63,7 +63,7 @@ class Episode:
     initial_state: np.ndarray
 
     def __str__(self) -> str:
-        return f"Episode(task_suite_name={self.task_suite_name}, task_id={self.task_id}, task={self.task})"
+        return f"Episode(task_suite_name={self.task_suite_name}, task_id={self.task_id}, task={self.task.language})"
 
 
 @dataclass
