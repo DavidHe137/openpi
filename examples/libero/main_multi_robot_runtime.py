@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Literal, Optional, Dict, Type
 import random
 import datetime
-
+import time
 
 import numpy as np
 from jaxtyping import Float
@@ -136,6 +136,9 @@ def init_worker(
     _progress_queue = progress_queue
     _start_barrier = start_barrier
     _has_synced_start = False
+
+    # to avoid flooding the server with simultaneous warmup
+    time.sleep(robot_idx * 0.5)
 
     ws_client = BidirectionalWebsocket(
         robot_id=f"robot_{robot_idx}",
@@ -322,7 +325,7 @@ def run_robots(
     else:
         total_episodes = len(episodes)
         active_workers = min(args.num_robots, total_episodes)
-        start_barrier = multiprocessing.Barrier(active_workers)
+        start_barrier = multiprocessing.Barrier(active_workers, timeout=30)
         logging.info(
             "Using one-time startup barrier across %d worker(s)",
             active_workers,
