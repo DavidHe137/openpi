@@ -79,13 +79,13 @@ class Args:
     ilp_timestep_ms: int = 10
 
     # ILP planning horizon in discretized timesteps.
-    ilp_horizon_steps: int = 160
+    ilp_horizon_steps: int = 100
 
     # Fraction of the horizon executed before swapping to the next receding plan.
-    ilp_execution_fraction: float = 0.25
+    ilp_execution_fraction: float = 0.50
 
     # Per-solve time budget for the ILP backend.
-    ilp_solve_timeout_ms: int = 500
+    ilp_solve_timeout_ms: int = 1000
 
     # Optional action chunk length override for ILP. If unset, uses model action_horizon.
     ilp_action_horizon_steps: int | None = None
