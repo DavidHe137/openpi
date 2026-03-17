@@ -1,6 +1,5 @@
 from abc import ABC
 from abc import abstractmethod
-from collections.abc import Generator
 from contextlib import contextmanager
 import dataclasses
 import multiprocessing as mp
@@ -9,7 +8,7 @@ import time
 from openpi.scheduling.latency import LatencyTracker
 from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import CompletionNotification
-from openpi.serving.schemas import SchedulerTimingSample
+from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 
 
@@ -27,7 +26,7 @@ class RequestScheduler(ABC):
         self._latest_requests: dict[str, SlotRequest] = {}
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
-        self._timing_samples: list[SchedulerTimingSample] = []
+        self._decisions: list[SchedulerDecision] = []
         self.latency = LatencyTracker()
 
     def update(self, request: SlotRequest) -> None:
@@ -48,9 +47,21 @@ class RequestScheduler(ABC):
 
     def schedule(self) -> None:
         """Return a list of batches of requests to be sent to the GPU."""
-        batches = self.get_next_batches()
+        candidates = self._get_schedulable_requests()
+        with self.record_timing() as duration:
+            batches = self.get_next_batches()
+
         for batch in batches:
             batch_size = len(batch)
+            # Capture deadlines before the loop overwrites them, sort earliest first.
+            candidate_entries = sorted(
+                ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in candidates),
+                key=lambda x: x["deadline"],
+            )
+            batch_entries = sorted(
+                ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in batch),
+                key=lambda x: x["deadline"],
+            )
             annotated = []
             for request in batch:
                 self._deadlines[request.robot_id] = request.deadline + request.execution_horizon / request.control_hz
@@ -60,6 +71,17 @@ class RequestScheduler(ABC):
                 d_steps = round(d_ms / step_ms) if d_ms is not None else 0
                 annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
 
+            # FIXME: this branch only has single batch decisions for now, will need to refactor timing for multi batch decisions
+            self._decisions.append(
+                SchedulerDecision(
+                    scheduler_name=self.__class__.__name__,
+                    metric_name="batch_scheduled",
+                    duration_ms=duration() * 1e3,
+                    recorded_at=time.time(),
+                    candidates=candidate_entries,
+                    scheduled=batch_entries,
+                )
+            )
             self._batch_queue.put_nowait(annotated)
 
     @abstractmethod
@@ -73,24 +95,13 @@ class RequestScheduler(ABC):
         self.latency.reset_robot(robot_id)
 
     @contextmanager
-    def record_timing(self, metric_name: str) -> Generator[None, None, None]:
-        start_ns = time.perf_counter_ns()
-        try:
-            yield
-        finally:
-            duration_ms = (time.perf_counter_ns() - start_ns) / 1e6
-            self._timing_samples.append(
-                SchedulerTimingSample(
-                    scheduler_name=self.__class__.__name__,
-                    metric_name=metric_name,
-                    duration_ms=duration_ms,
-                    recorded_at=time.time(),
-                )
-            )
+    def record_timing(self) -> float:
+        start = time.perf_counter()
+        yield lambda: time.perf_counter() - start
 
-    def flush_timing_samples(self) -> list[SchedulerTimingSample]:
-        samples = self._timing_samples
-        self._timing_samples = []
+    def flush_decisions(self) -> list[SchedulerDecision]:
+        samples = self._decisions
+        self._decisions = []
         return samples
 
     def _get_schedulable_requests(self) -> list[SlotRequest]:

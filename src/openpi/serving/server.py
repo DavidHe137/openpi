@@ -58,7 +58,7 @@ from openpi.serving.metrics import MetricsStore
 from openpi.serving.metrics.dash_app import create_dash_app
 from openpi.serving.scheduler import _run_scheduler
 from openpi.serving.schemas import AckNotification
-from openpi.serving.schemas import SchedulerTimingSample
+from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import WarmupSeed
 from openpi.serving.schemas import _request_id_counter
@@ -201,10 +201,10 @@ async def _scheduler_metrics_task(
         drained = False
         while True:
             try:
-                samples: list[SchedulerTimingSample] = scheduler_metrics_queue.get_nowait()
+                samples: list[SchedulerDecision] = scheduler_metrics_queue.get_nowait()
             except queue.Empty:
                 break
-            metrics_store.record_scheduler_timings(samples)
+            metrics_store.record_scheduler_decisions(samples)
             drained = True
         await asyncio.sleep(0 if drained else 0.05)
 
