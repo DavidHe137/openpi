@@ -75,7 +75,7 @@ class Saver(_subscriber.Subscriber):
         self._timestamps: List[Timestamp] = []
         self._control_hz = environment.control_hz
         self._observations_buffer: Dict[int, Observation] = {}
-        self._executor = executor
+        self._executor = ThreadPoolExecutor(max_workers=5)
 
     @override
     def on_episode_start(self) -> None:
@@ -116,14 +116,6 @@ class Saver(_subscriber.Subscriber):
 
     @override
     def on_episode_end(self) -> None:
-        # Snapshot all mutable state NOW before this episode's data is overwritten.
-        # References to lists/dicts are safe because on_episode_start() always
-        # creates new objects rather than clearing existing ones.
-        try:
-            initial_state = self._environment.current_initial_state
-        except RuntimeError:
-            initial_state = None
-
         data = _EpisodeSaveData(
             timestamps=self._timestamps,
             observations_buffer=self._observations_buffer,
@@ -133,10 +125,13 @@ class Saver(_subscriber.Subscriber):
             cost_history=self._cost_history,
             current_success=self._environment.current_success,
             episode_idx=self._environment.episode_idx,
-            initial_state=initial_state,
+            initial_state=self._environment.current_initial_state,
         )
 
         self._executor.submit(self._save_all, data)
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=True)
 
     def _save_all(self, data: _EpisodeSaveData) -> None:
         out_folder, dir_episode_idx = self._get_out_folder(data)
@@ -189,7 +184,6 @@ class Saver(_subscriber.Subscriber):
         self, out_folder: pathlib.Path, data: _EpisodeSaveData
     ) -> None:
         logger.info(f"Saving action chunks to {out_folder}")
-        ActionChunk.to_csv(data.action_chunks, out_folder / "action_chunks.csv")
         ActionChunk.to_parquet(data.action_chunks, out_folder / "action_chunks.parquet")
 
     def _save_video(self, out_folder: pathlib.Path, data: _EpisodeSaveData) -> None:
