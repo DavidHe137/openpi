@@ -84,7 +84,3 @@ class SchedulerDecision:
         if isinstance(data, cls):
             return data
         return cls(**data)
-
-
-# Backward-compat alias
-SchedulerTimingSample = SchedulerDecision

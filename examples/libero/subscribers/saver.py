@@ -62,7 +62,6 @@ class Saver(_subscriber.Subscriber):
         task_id: int,
         task: benchmark.Task,
         robot_idx: int,
-        executor: ThreadPoolExecutor,
     ) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         self._out_dir = out_dir

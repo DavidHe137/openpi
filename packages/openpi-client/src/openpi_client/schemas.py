@@ -264,7 +264,6 @@ class RuntimeMetadata(JSONDataclass):
     # Multi-robot config
     num_robots: int
     control_hz: int
-    episodes: List[str]  # list of episode strings (task_suite_name, task_id, task_language)
 
     # Action chunking config
     broker_type: str
