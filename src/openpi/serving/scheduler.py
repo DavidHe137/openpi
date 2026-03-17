@@ -151,6 +151,6 @@ def _run_scheduler(
         if not batch_queue.full():
             scheduler.schedule()
             if scheduler_metrics_queue is not None:
-                samples = scheduler.flush_timing_samples()
+                samples = scheduler.flush_decisions()
                 if samples:
                     scheduler_metrics_queue.put_nowait(samples)

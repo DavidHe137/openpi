@@ -72,61 +72,55 @@ class LookaheadScheduler(RequestScheduler):
         if not schedulable:
             return []
 
-        with self.record_timing("schedule_decision"):
-            request_by_robot = {request.robot_id: request for request in schedulable}
-            # FIXME: this might be more complicated than it needs to be
-            active_robot_ids = sorted(
-                set(self._latest_requests) | set(self._deadlines) | set(self._predicted_valid_until)
-            )
-            # FIXME: shouldn't need this
-            if not active_robot_ids:
-                active_robot_ids = sorted(request_by_robot)
+        request_by_robot = {request.robot_id: request for request in schedulable}
+        active_robot_ids = sorted(set(self._latest_requests) | set(self._deadlines) | set(self._predicted_valid_until))
+        if not active_robot_ids:
+            active_robot_ids = sorted(request_by_robot)
 
-            initial_state = tuple(self._remaining_ticks(robot_id, now) for robot_id in active_robot_ids)
-            initial_candidates = self._candidate_prefixes(
-                robot_ids=active_robot_ids,
-                valid_until=initial_state,
-                eligible_robot_ids=set(request_by_robot),
-            )
-            if not initial_candidates:
-                return []
+        initial_state = tuple(self._remaining_ticks(robot_id, now) for robot_id in active_robot_ids)
+        initial_candidates = self._candidate_prefixes(
+            robot_ids=active_robot_ids,
+            valid_until=initial_state,
+            eligible_robot_ids=set(request_by_robot),
+        )
+        if not initial_candidates:
+            return []
 
-            # FIXME: very duplicated code, why?
-            @cache
-            def dfs(current_tick: int, valid_until: tuple[int, ...]) -> int:
-                if current_tick >= self._horizon_ticks:
-                    return 0
+        @cache
+        def dfs(current_tick: int, valid_until: tuple[int, ...]) -> int:
+            if current_tick >= self._horizon_ticks:
+                return 0
 
-                best_cost = math.inf
-                for candidate in self._candidate_prefixes(active_robot_ids, valid_until):
-                    arrival_tick = min(self._horizon_ticks, current_tick + self._latency_ticks[len(candidate)])
-                    interval_cost = self._interval_starvation_cost(valid_until, current_tick, arrival_tick)
-                    next_state = self._apply_batch(valid_until, candidate, arrival_tick)
-                    total_cost = interval_cost + dfs(arrival_tick, next_state)
-                    best_cost = min(best_cost, total_cost)
-
-                if best_cost is math.inf:
-                    return self._interval_starvation_cost(valid_until, current_tick, self._horizon_ticks)
-
-                return best_cost
-
-            best_candidate: tuple[int, ...] | None = None
             best_cost = math.inf
-            for candidate in initial_candidates:
-                arrival_tick = min(self._horizon_ticks, self._latency_ticks[len(candidate)])
-                interval_cost = self._interval_starvation_cost(initial_state, 0, arrival_tick)
-                next_state = self._apply_batch(initial_state, candidate, arrival_tick)
+            for candidate in self._candidate_prefixes(active_robot_ids, valid_until):
+                arrival_tick = min(self._horizon_ticks, current_tick + self._latency_ticks[len(candidate)])
+                interval_cost = self._interval_starvation_cost(valid_until, current_tick, arrival_tick)
+                next_state = self._apply_batch(valid_until, candidate, arrival_tick)
                 total_cost = interval_cost + dfs(arrival_tick, next_state)
-                if total_cost < best_cost or (
-                    total_cost == best_cost and self._prefer_candidate(candidate, best_candidate, active_robot_ids)
-                ):
-                    best_cost = total_cost
-                    best_candidate = candidate
+                best_cost = min(best_cost, total_cost)
 
-            if best_candidate is None:
-                return []
+            if best_cost is math.inf:
+                return self._interval_starvation_cost(valid_until, current_tick, self._horizon_ticks)
 
-            return [[request_by_robot[active_robot_ids[index]] for index in best_candidate]]
+            return best_cost
+
+        best_candidate: tuple[int, ...] | None = None
+        best_cost = math.inf
+        for candidate in initial_candidates:
+            arrival_tick = min(self._horizon_ticks, self._latency_ticks[len(candidate)])
+            interval_cost = self._interval_starvation_cost(initial_state, 0, arrival_tick)
+            next_state = self._apply_batch(initial_state, candidate, arrival_tick)
+            total_cost = interval_cost + dfs(arrival_tick, next_state)
+            if total_cost < best_cost or (
+                total_cost == best_cost and self._prefer_candidate(candidate, best_candidate, active_robot_ids)
+            ):
+                best_cost = total_cost
+                best_candidate = candidate
+
+        if best_candidate is None:
+            return []
+
+        return [[request_by_robot[active_robot_ids[index]] for index in best_candidate]]
 
     def reset_robot(self, robot_id: str) -> None:
         super().reset_robot(robot_id)
