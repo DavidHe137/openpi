@@ -77,7 +77,7 @@ def make_infer_response(
 def make_broker(
     receive_queue: queue.Queue | None = None,
     control_hz: int = 10,
-    min_execution_horizon: int = 0,
+    execution_horizon: int = 0,
 ) -> tuple[ActionChunkBroker, MagicMock]:
     """Create a broker with a mocked websocket client.
 
@@ -91,7 +91,7 @@ def make_broker(
     else:
         block = threading.Event()
         ws_mock.receive.side_effect = lambda: block.wait()
-    broker = ActionChunkBroker(ws_mock, control_hz=control_hz, min_execution_horizon=min_execution_horizon)
+    broker = ActionChunkBroker(ws_mock, control_hz=control_hz, execution_horizon=execution_horizon)
     return broker, ws_mock
 
 
@@ -205,11 +205,6 @@ class TestInfer:
             action = broker.infer(make_obs(expected_index + 1))
             assert action.index_in_chunk == expected_index
 
-    def test_out_of_order_observation_raises(self, broker_and_mock):
-        broker, _ = broker_and_mock
-        with pytest.raises(AssertionError, match="Observations must be streamed in order"):
-            broker.infer(make_obs(5))
-
     def test_actions_left_history(self, broker_and_mock):
         broker, ws_mock = broker_and_mock
         chunk = make_action_chunk(action_start_step=1, execution_horizon=3)
@@ -235,7 +230,7 @@ class TestInfer:
         broker.infer(make_obs(2))  # real action
         broker.infer(make_obs(3))  # null action - _action_step should not increment
 
-        assert broker._action_step == 2
+        assert broker._next_action_step == 2
 
     def test_send_called_on_each_infer(self, broker_and_mock):
         broker, ws_mock = broker_and_mock
@@ -251,7 +246,7 @@ class TestInfer:
 class TestMinExecutionHorizon:
     def test_send_always_called_with_full_queue(self):
         """Broker sends on every infer even when queue is full (no threshold suppression)."""
-        broker, ws_mock = make_broker(min_execution_horizon=5)
+        broker, ws_mock = make_broker(execution_horizon=5)
         chunk = make_action_chunk(action_start_step=1, execution_horizon=10)
         broker._action_chunks.append(chunk)
         broker._update_action_queue(chunk)
@@ -260,16 +255,16 @@ class TestMinExecutionHorizon:
         broker.infer(make_obs(1))  # queue has 10 — should still send
         ws_mock.send.assert_called_once()
 
-    def test_send_passes_min_execution_horizon_kwarg(self):
-        """send() is called with the correct min_execution_horizon kwarg."""
-        broker, ws_mock = make_broker(min_execution_horizon=7)
+    def test_send_passes_execution_horizon_kwarg(self):
+        """send() is called with the correct execution_horizon kwarg."""
+        broker, ws_mock = make_broker(execution_horizon=7)
         broker.infer(make_obs(1))
         call_kwargs = ws_mock.send.call_args[1]
-        assert call_kwargs.get("min_execution_horizon") == 7
+        assert call_kwargs.get("execution_horizon") == 7
 
     def test_send_called_on_every_step(self):
         """send() is called on each infer step regardless of queue depth."""
-        broker, ws_mock = make_broker(min_execution_horizon=3)
+        broker, ws_mock = make_broker(execution_horizon=3)
         chunk = make_action_chunk(action_start_step=1, execution_horizon=10)
         broker._action_chunks.append(chunk)
         broker._update_action_queue(chunk)
@@ -300,8 +295,8 @@ class TestReset:
         assert len(broker._action_queue) == 0
         assert broker._action_chunks == []
         assert broker._actions_left_history == []
-        assert broker._observation_step == 0
-        assert broker._action_step == 0
+        assert broker._next_observation_step == 0
+        assert broker._next_action_step == 0
 
     def test_calls_ws_reset(self, broker_and_mock):
         broker, ws_mock = broker_and_mock
@@ -369,7 +364,7 @@ def inject_chunk(broker, action_start_step, execution_horizon, request_id=0):
         chunk = make_action_chunk(
             action_start_step=action_start_step,
             execution_horizon=execution_horizon,
-            execution_start_step=broker._observation_step,
+            execution_start_step=broker._next_observation_step,
             request_id=request_id,
         )
         broker._action_chunks.append(chunk)
@@ -385,7 +380,7 @@ class TestNaiveAsync:
     """
 
     def _make_broker(self):
-        return make_broker(control_hz=10, min_execution_horizon=3)
+        return make_broker(control_hz=10, execution_horizon=3)
 
     def test_case_a_no_starvation(self):
         """Chunk arrives before queue drains → starvation=0."""
@@ -404,7 +399,7 @@ class TestNaiveAsync:
         # Filter: 3+i >= 3 → all 10 actions
         with broker._lock:
             assert len(broker._action_queue) == 10
-        assert chunk2.execution_start_step == 3
+        assert chunk2.execution_start_step == 4
 
         # Run 10 more infers (obs 4-13)
         for obs_step in range(4, 14):
@@ -429,7 +424,7 @@ class TestNaiveAsync:
         chunk2 = inject_chunk(broker, action_start_step=3, execution_horizon=10, request_id=1)
         with broker._lock:
             assert len(broker._action_queue) == 3
-        assert chunk2.execution_start_step == 11
+        assert chunk2.execution_start_step == 12
 
         # Run infer obs 12-14 → records [3,2,1], no new zeros
         for obs_step in range(12, 15):

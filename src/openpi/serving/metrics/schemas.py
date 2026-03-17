@@ -22,7 +22,7 @@ class RequestRecord:
     request_id: int
     observation_step: int
     action_start_step: int
-    min_execution_horizon: int
+    execution_horizon: int
     request_timestamp: float  # client: when request was created
     server_arrival_time: float  # server: when observation arrived
 

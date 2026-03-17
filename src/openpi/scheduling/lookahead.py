@@ -74,9 +74,11 @@ class LookaheadScheduler(RequestScheduler):
 
         with self.record_timing("schedule_decision"):
             request_by_robot = {request.robot_id: request for request in schedulable}
+            # FIXME: this might be more complicated than it needs to be
             active_robot_ids = sorted(
                 set(self._latest_requests) | set(self._deadlines) | set(self._predicted_valid_until)
             )
+            # FIXME: shouldn't need this
             if not active_robot_ids:
                 active_robot_ids = sorted(request_by_robot)
 
@@ -89,6 +91,7 @@ class LookaheadScheduler(RequestScheduler):
             if not initial_candidates:
                 return []
 
+            # FIXME: very duplicated code, why?
             @cache
             def dfs(current_tick: int, valid_until: tuple[int, ...]) -> int:
                 if current_tick >= self._horizon_ticks:

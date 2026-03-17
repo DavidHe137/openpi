@@ -10,7 +10,6 @@ from openpi_client.messages import RTCParams
 from openpi_client.messages import TrainTimeRTCParams
 from openpi_client.messages import VlashParams
 
-DEFAULT_EXECUTION_HORIZON = 10
 _request_id_counter = itertools.count(1)
 
 
@@ -26,7 +25,7 @@ class SlotRequest:
     action_start_step: int
     request_timestamp: float
     deadline: float
-    min_execution_horizon: int
+    execution_horizon: int
     infer_type: InferType
     params: RTCParams | VlashParams | TrainTimeRTCParams | None
     noise: np.ndarray | None

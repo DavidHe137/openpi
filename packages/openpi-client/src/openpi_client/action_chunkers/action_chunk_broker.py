@@ -28,7 +28,7 @@ class ActionChunkBroker(ABC):
         ws_client: BidirectionalWebsocket,
         control_hz: int,
         realtime: bool = True,
-        min_execution_horizon: int = 0,
+        execution_horizon: int = 0,
     ) -> None:
         self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
@@ -38,7 +38,7 @@ class ActionChunkBroker(ABC):
 
         self._step_duration = 1 / control_hz
         self._realtime = realtime
-        self._min_execution_horizon = min_execution_horizon
+        self.execution_horizon = execution_horizon
 
         self._prev_action: Action = self._create_null_action(-1)
 
@@ -121,7 +121,7 @@ class ActionChunkBroker(ABC):
             obs,
             self.deadline,
             self._next_action_step,
-            min_execution_horizon=self._min_execution_horizon,
+            execution_horizon=self.execution_horizon,
         )
 
     def reset(self) -> None:

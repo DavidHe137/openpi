@@ -63,7 +63,7 @@ class RequestScheduler(ABC):
             )
             annotated = []
             for request in batch:
-                self._deadlines[request.robot_id] = request.deadline
+                self._deadlines[request.robot_id] = request.deadline + request.execution_horizon / request.control_hz
                 self._latest_scheduled_requests[request.robot_id] = request
                 d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
                 step_ms = 1000.0 / request.control_hz
@@ -120,9 +120,7 @@ class RequestScheduler(ABC):
             last = self._latest_scheduled_requests.get(req.robot_id)
             if last is req:
                 continue
-            if last is not None and req.action_start_step == last.action_start_step:
-                continue
-            if last is not None and req.action_start_step < last.action_start_step + last.min_execution_horizon:
+            if last is not None and req.action_start_step <= last.action_start_step:
                 continue
             result.append(req)
         return result

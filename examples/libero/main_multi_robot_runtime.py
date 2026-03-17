@@ -74,7 +74,7 @@ class Args:
     port: int = 8080
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
-    min_execution_horizon: int = 0
+    execution_horizon: List[int] = field(default_factory=list)
     latency_ms: List[float] = field(
         default_factory=list
     )  # Optional per-robot artificial latency (ms); length <= num_robots
@@ -109,6 +109,13 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
     if not args.latency_ms:
         return 0.0
     return float(args.latency_ms[robot_idx])
+
+
+def _execution_horizon_for_robot(args: Args, robot_idx: int) -> int:
+    """Return the execution horizon for a given robot index."""
+    if not args.execution_horizon:
+        return 10
+    return int(args.execution_horizon[robot_idx])
 
 
 def init_worker(
@@ -149,7 +156,7 @@ def init_worker(
     config = BrokerConfig(
         ws_client=ws_client,
         control_hz=args.control_hz,
-        min_execution_horizon=args.min_execution_horizon,
+        execution_horizon=_execution_horizon_for_robot(args, robot_idx),
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
@@ -472,10 +479,9 @@ def main(args: Args) -> None:
         resize_size=args.resize_size,
         latency_ms=args.latency_ms,
         episodes=[str(ep) for ep in episodes],
+        execution_horizon=args.execution_horizon,
     )
-
     output_path = pathlib.Path(args.output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
 
     runtime_metadata.to_json(output_path / "runtime_metadata.json")
     logging.info(f"Saved runtime metadata to {output_path / 'runtime_metadata.json'}")
