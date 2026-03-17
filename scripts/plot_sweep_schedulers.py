@@ -138,7 +138,7 @@ def main():
         default="data/libero/sweep_schedulers",
         help="Directory containing sweep_schedulers run folders",
     )
-    parser.add_argument("--out-dir", default=".", help="Directory to save output figures")
+    parser.add_argument("--out-dir", default="./plots", help="Directory to save output figures")
     args = parser.parse_args()
 
     print(f"Loading data from {args.data_dir} ...")
