@@ -76,13 +76,13 @@ class Args:
     lookahead_control_hz: int = 20
 
     # ILP discretization step in milliseconds.
-    ilp_timestep_ms: int = 20
+    ilp_timestep_ms: int = 10
 
     # ILP planning horizon in discretized timesteps.
     ilp_horizon_steps: int = 100
 
     # Fraction of the horizon executed before swapping to the next receding plan.
-    ilp_execution_fraction: float = 1.0
+    ilp_execution_fraction: float = 0.75
 
     # Per-solve time budget for the ILP backend.
     ilp_solve_timeout_ms: int = 1000
