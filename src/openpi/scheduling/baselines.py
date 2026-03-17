@@ -17,7 +17,7 @@ class GreedyScheduler(RequestScheduler):
         if not candidates:
             return []
 
-        with self.record_timing("schedule_decision"):
+        with self.record_timing() as _:
             candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
             earliest_deadline = self._deadlines.get(candidates[0].robot_id, candidates[0].deadline)
             batch_size = self.get_largest_batch_size(earliest_deadline)
@@ -66,7 +66,7 @@ class RoundRobinScheduler(RequestScheduler):
         if not candidate_by_robot or n_robots == 0:
             return []
 
-        with self.record_timing("schedule_decision"):
+        with self.record_timing() as _:
             batch: list[SlotRequest] = []
             idx = self._rr_index % n_robots
             for _ in range(n_robots):
@@ -101,6 +101,6 @@ class RandomBatchScheduler(RequestScheduler):
         if not candidates:
             return []
 
-        with self.record_timing("schedule_decision"):
+        with self.record_timing() as _:
             k = min(self._max_batch_size, len(candidates))
             return [random.sample(candidates, random.randint(1, k))]

@@ -72,7 +72,7 @@ class LookaheadScheduler(RequestScheduler):
         if not schedulable:
             return []
 
-        with self.record_timing("schedule_decision"):
+        with self.record_timing() as _:
             request_by_robot = {request.robot_id: request for request in schedulable}
             # FIXME: this might be more complicated than it needs to be
             active_robot_ids = sorted(

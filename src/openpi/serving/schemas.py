@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 import itertools
 
 import numpy as np
@@ -67,17 +68,24 @@ class WarmupSeed:
     delivery_samples: list[tuple[float, float]]  # (client_receive_time, server_send_time) per ack
 
 
-@dataclass(frozen=True)
-class SchedulerTimingSample:
-    """A single scheduler timing sample emitted by the scheduler process."""
+@dataclass
+class SchedulerDecision:
+    """A scheduler decision: a timing metric or a batch scheduling event.
+
+    For metric_name="batch_scheduled", candidates and scheduled are populated
+    with per-robot dicts (keys: robot_id, deadline), sorted by deadline ascending.
+    All other metric_name values are pure timing samples (candidates/scheduled empty).
+    """
 
     scheduler_name: str
     metric_name: str
     duration_ms: float
     recorded_at: float
+    candidates: list[dict] = field(default_factory=list)
+    scheduled: list[dict] = field(default_factory=list)
 
     @classmethod
-    def from_json(cls, data: SchedulerTimingSample | dict) -> SchedulerTimingSample:
+    def from_json(cls, data: SchedulerDecision | dict) -> SchedulerDecision:
         if isinstance(data, cls):
             return data
         return cls(**data)
