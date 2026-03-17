@@ -18,8 +18,8 @@ class GreedyScheduler(RequestScheduler):
             return []
 
         with self.record_timing("schedule_decision"):
-            candidates = sorted(candidates, key=lambda r: r.deadline)
-            earliest_deadline = candidates[0].deadline
+            candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
+            earliest_deadline = self._deadlines.get(candidates[0].robot_id, candidates[0].deadline)
             batch_size = self.get_largest_batch_size(earliest_deadline)
             return [candidates[:batch_size]]
 
@@ -40,6 +40,8 @@ class GreedyScheduler(RequestScheduler):
 
 
 class RoundRobinScheduler(RequestScheduler):
+    """Cycle through robots starting from the current pointer, fill to max_batch_size."""
+
     def __init__(
         self,
         batch_queue: mp.Queue,
@@ -49,8 +51,6 @@ class RoundRobinScheduler(RequestScheduler):
         super().__init__(batch_queue, max_batch_size, batch_profile)
         self._rr_index: int = 0
         self._rr_robot_order: list[str] = []
-
-    """Cycle through robots starting from the current pointer, fill to max_batch_size."""
 
     def update(self, request: SlotRequest) -> None:
         super().update(request)
@@ -84,7 +84,10 @@ class RoundRobinScheduler(RequestScheduler):
         super().reset_robot(robot_id)
         # FIXME: temporary hack to remove robot on reset
         if robot_id in self._rr_robot_order:
+            removed_index = self._rr_robot_order.index(robot_id)
             self._rr_robot_order.remove(robot_id)
+            if removed_index < self._rr_index:
+                self._rr_index = max(0, self._rr_index - 1)
 
 
 class RandomBatchScheduler(RequestScheduler):
