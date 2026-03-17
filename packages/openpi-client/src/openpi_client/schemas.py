@@ -270,3 +270,4 @@ class RuntimeMetadata(JSONDataclass):
 
     # Other
     latency_ms: List[float] = field(default_factory=list)
+    execution_horizon: List[int] = field(default_factory=list)

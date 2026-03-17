@@ -392,6 +392,7 @@ def main(args: Args) -> None:
         seed=args.seed,
         resize_size=args.resize_size,
         latency_ms=args.latency_ms,
+        execution_horizon=args.execution_horizon,
     )
 
     output_path = pathlib.Path(args.output_dir)
