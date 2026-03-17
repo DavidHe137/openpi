@@ -130,9 +130,7 @@ def _run_scheduler(
                 scheduler.update_ack(msg)
                 logger.debug("Received ack notification: %s", msg)
             elif isinstance(msg, WarmupSeed):
-                register_bootstrap_robot = getattr(scheduler, "register_bootstrap_robot", None)
-                if callable(register_bootstrap_robot):
-                    register_bootstrap_robot(msg.robot_id)
+                scheduler.update_warmup(msg)
                 for arrival_ts, request_ts in msg.obs_samples:
                     scheduler.latency.update_obs(msg.robot_id, arrival_ts, request_ts)
                 for client_receive_time, server_send_time in msg.delivery_samples:
