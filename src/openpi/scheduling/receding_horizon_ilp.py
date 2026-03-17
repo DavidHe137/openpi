@@ -10,18 +10,12 @@ import multiprocessing as mp
 import time
 from typing import Any
 
+import gurobipy as gp
+
 from openpi.scheduling import RequestScheduler
 from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import WarmupSeed
-
-try:
-    import gurobipy as gp
-except Exception:  # pragma: no cover - exercised in runtime setup paths
-    gp = None
-
-
-DEFAULT_CONTROL_HZ = 20.0
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +93,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         execution_fraction: float = 0.25,
         solve_timeout_ms: int = 500,
         action_horizon_steps: int = 10,
-        default_control_hz: float = DEFAULT_CONTROL_HZ,
     ) -> None:
         super().__init__(batch_queue, max_batch_size, batch_profile)
 
@@ -108,9 +101,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         assert solve_timeout_ms >= 1, "solve_timeout_ms must be >= 1"
         assert 0 < execution_fraction <= 1, "execution_fraction must satisfy 0 < execution_fraction <= 1"
         assert action_horizon_steps >= 1, "action_horizon_steps must be >= 1"
-        assert default_control_hz > 0, "default_control_hz must be > 0"
-
-        self._validate_gurobi_available()
 
         self._tick_ms = tick_ms
         self._tick_s = tick_ms / 1000.0
@@ -119,7 +109,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._execute_steps = max(1, math.floor(horizon_steps * execution_fraction))
         self._solve_timeout_s = solve_timeout_ms / 1000.0
         self._action_horizon_steps = action_horizon_steps
-        self._default_control_hz = default_control_hz
 
         self._epoch_monotonic = time.monotonic()
         self._bootstrap_start_monotonic = self._epoch_monotonic
@@ -174,7 +163,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         for request in candidate:
             self._latest_scheduled_requests[request.robot_id] = request
             d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
-            step_ms = 1000.0 / self._safe_control_hz(request.control_hz)
+            step_ms = 1000.0 / request.control_hz
             d_steps = round(d_ms / step_ms) if d_ms is not None else 0
             annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
 
@@ -522,8 +511,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         return self._to_nonnegative_ticks(max(0.0, value))
 
     def _chunk_horizon_ticks(self, control_hz: float) -> int:
-        hz = self._safe_control_hz(control_hz)
-        duration_ms = (self._action_horizon_steps * 1000.0) / hz
+        duration_ms = (self._action_horizon_steps * 1000.0) / control_hz
         return self._to_positive_ticks(duration_ms)
 
     def _earliest_sched_tick(self, robot_id: str, start_tick: int) -> int:
@@ -537,11 +525,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         if remaining_steps <= 0:
             return start_tick
 
-        wait_ms = remaining_steps * (1000.0 / self._safe_control_hz(request.control_hz))
+        wait_ms = remaining_steps * (1000.0 / request.control_hz)
         return start_tick + self._to_nonnegative_ticks(wait_ms)
-
-    def _safe_control_hz(self, control_hz: float) -> float:
-        return control_hz if control_hz > 0 else self._default_control_hz
 
     def _now_tick(self) -> int:
         return math.floor((time.monotonic() - self._epoch_monotonic) / self._tick_s)
@@ -593,17 +578,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             if selected:
                 return tick, selected
         return None
-
-    @staticmethod
-    def _validate_gurobi_available() -> None:
-        if gp is None:
-            raise RuntimeError("receding_horizon_ilp requires gurobipy, but it is not importable in this environment.")
-        try:
-            model = gp.Model("receding_horizon_ilp_probe")
-            model.Params.OutputFlag = 0
-            model.dispose()
-        except Exception as exc:  # pragma: no cover - environment-dependent
-            raise RuntimeError("receding_horizon_ilp requires a working Gurobi installation/license.") from exc
 
     @staticmethod
     def _gurobi_status_name(status: int) -> str:

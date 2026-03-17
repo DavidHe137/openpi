@@ -90,8 +90,8 @@ class Args:
     # Optional action chunk length override for ILP. If unset, uses model action_horizon.
     ilp_action_horizon_steps: int | None = None
 
-    # Logging level.
-    log_debug: bool = False
+    # Logging level (DEBUG, INFO, WARNING, ERROR).
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
 # FIXME: may not be needed
@@ -160,9 +160,7 @@ def main(args: Args) -> None:
         / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_queue, log_listener = logging_config.setup_logging(
-        log_path=log_path, level=logging.DEBUG if args.log_debug else logging.INFO
-    )
+    log_queue, log_listener = logging_config.setup_logging(log_path=log_path, level=getattr(logging, args.log_level))
 
     # Create policy factory to avoid CUDA context fork issues
     policy_factory = _PolicyFactory(args)

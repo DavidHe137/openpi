@@ -119,6 +119,16 @@ class ActionChunkBroker(ABC):
                     infer_response=infer_response,
                     execution_start_step=self._next_observation_step,
                 )
+                # Discard chunks from a previous episode that arrive after reset.
+                # After reset, _next_observation_step=0 and any legitimate first chunk
+                # must have action_start_step near 0. A stale chunk from step ~500+
+                # of the prior episode would contaminate the new episode's queue.
+                if (
+                    not self._received_first_chunk
+                    and action_chunk.action_start_step
+                    > self._next_observation_step + self._ws_client.server_metadata.action_horizon
+                ):
+                    continue
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)
                 self._received_first_chunk = True
