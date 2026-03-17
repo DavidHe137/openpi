@@ -135,6 +135,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._epoch_monotonic = time.monotonic()
         self._bootstrap_start_monotonic = self._epoch_monotonic
         self._bootstrap_recorded = False
+        self._bootstrap_robot_ids: set[str] = set()
+        self._bootstrap_waiting_missing_ids: tuple[str, ...] | None = None
 
         self._active_plan: _PlanState | None = None
         self._pending_plan: _PlanState | None = None
@@ -195,6 +197,11 @@ class RecedingHorizonILPScheduler(RequestScheduler):
     def reset_robot(self, robot_id: str) -> None:
         super().reset_robot(robot_id)
         self._committed_chunks.pop(robot_id, None)
+        self._bootstrap_waiting_missing_ids = None
+
+    def register_bootstrap_robot(self, robot_id: str) -> None:
+        """Mark robot as expected during first-plan bootstrap."""
+        self._bootstrap_robot_ids.add(robot_id)
 
     def close(self) -> None:
         """Release solver worker resources."""
@@ -204,6 +211,18 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._poll_solve_completion(now_tick)
 
         if self._active_plan is None:
+            missing_bootstrap = self._missing_bootstrap_robot_ids()
+            if missing_bootstrap:
+                if self._bootstrap_waiting_missing_ids != missing_bootstrap:
+                    logger.info(
+                        "ILP bootstrap waiting for first request from %d/%d robots (missing=%s)",
+                        len(missing_bootstrap),
+                        len(self._bootstrap_robot_ids),
+                        ",".join(missing_bootstrap),
+                    )
+                    self._bootstrap_waiting_missing_ids = missing_bootstrap
+                return None
+            self._bootstrap_waiting_missing_ids = None
             self._kickoff_solve(start_tick=now_tick, now_tick=now_tick)
             return None
 
@@ -228,6 +247,13 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         if not selected:
             return None
         return _DispatchCandidate(planned_tick=planned_tick, requests=selected)
+
+    def _missing_bootstrap_robot_ids(self) -> tuple[str, ...]:
+        if not self._bootstrap_robot_ids:
+            return ()
+        return tuple(
+            sorted(robot_id for robot_id in self._bootstrap_robot_ids if robot_id not in self._latest_requests)
+        )
 
     def _kickoff_next_receding_solve(self, now_tick: int) -> None:
         if self._active_plan is None:

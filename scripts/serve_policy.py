@@ -76,7 +76,7 @@ class Args:
     lookahead_control_hz: int = 20
 
     # ILP discretization step in milliseconds.
-    ilp_timestep_ms: int = 10
+    ilp_timestep_ms: int = 20
 
     # ILP planning horizon in discretized timesteps.
     ilp_horizon_steps: int = 100

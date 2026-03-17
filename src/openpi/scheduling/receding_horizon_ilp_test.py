@@ -151,6 +151,80 @@ def test_bootstrap_waits_for_first_plan(monkeypatch):
         scheduler.close()
 
 
+def test_bootstrap_waits_for_all_registered_bootstrap_robots(monkeypatch):
+    monkeypatch.setattr(rhilp.RecedingHorizonILPScheduler, "_validate_gurobi_available", staticmethod(lambda: None))
+
+    captured_inputs: list[Any] = []
+
+    def fake_solve(solve_input: Any) -> SolveResult:
+        captured_inputs.append(solve_input)
+        return _make_success_result(solve_input, {solve_input.start_tick: tuple(solve_input.robot_ids)})
+
+    monkeypatch.setattr(rhilp.RecedingHorizonILPScheduler, "_solve_ilp", staticmethod(fake_solve))
+
+    scheduler = rhilp.RecedingHorizonILPScheduler(
+        queue.Queue(),
+        max_batch_size=2,
+        batch_profile={1: 10.0, 2: 18.0},
+    )
+    try:
+        scheduler.register_bootstrap_robot("r1")
+        scheduler.register_bootstrap_robot("r2")
+
+        scheduler.update(_make_request(robot_id="r1", request_id=1))
+        scheduler.schedule()
+        time.sleep(0.02)
+        scheduler.schedule()
+        assert not captured_inputs
+
+        scheduler.update(_make_request(robot_id="r2", request_id=2))
+        scheduler.schedule()
+        time.sleep(0.02)
+        scheduler.schedule()
+
+        assert captured_inputs
+        assert set(captured_inputs[0].robot_ids) == {"r1", "r2"}
+    finally:
+        scheduler.close()
+
+
+def test_bootstrap_reset_does_not_drop_expected_robots(monkeypatch):
+    monkeypatch.setattr(rhilp.RecedingHorizonILPScheduler, "_validate_gurobi_available", staticmethod(lambda: None))
+
+    captured_inputs: list[Any] = []
+
+    def fake_solve(solve_input: Any) -> SolveResult:
+        captured_inputs.append(solve_input)
+        return _make_success_result(solve_input, {})
+
+    monkeypatch.setattr(rhilp.RecedingHorizonILPScheduler, "_solve_ilp", staticmethod(fake_solve))
+
+    scheduler = rhilp.RecedingHorizonILPScheduler(
+        queue.Queue(),
+        max_batch_size=1,
+        batch_profile={1: 10.0},
+    )
+    try:
+        scheduler.register_bootstrap_robot("robot_0")
+        scheduler.register_bootstrap_robot("robot_1")
+        scheduler.reset_robot("robot_1")
+        scheduler.update(_make_request(robot_id="robot_0", request_id=1))
+
+        scheduler.schedule()
+        time.sleep(0.02)
+        scheduler.schedule()
+        assert not captured_inputs
+
+        scheduler.update(_make_request(robot_id="robot_1", request_id=2))
+        scheduler.schedule()
+        time.sleep(0.02)
+        scheduler.schedule()
+        assert captured_inputs
+        assert set(captured_inputs[0].robot_ids) == {"robot_0", "robot_1"}
+    finally:
+        scheduler.close()
+
+
 def test_schedule_is_non_blocking_while_solving(monkeypatch):
     monkeypatch.setattr(rhilp.RecedingHorizonILPScheduler, "_validate_gurobi_available", staticmethod(lambda: None))
 

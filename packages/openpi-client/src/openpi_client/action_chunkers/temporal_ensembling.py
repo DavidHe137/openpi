@@ -20,6 +20,7 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
         control_hz: int,
         realtime: bool = True,
         m_param: float = 1.0,
+        block_until_first_chunk: bool = True,
     ):
         """
         Args:
@@ -28,7 +29,12 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
             realtime: whether to run in realtime mode
             m_param: exponential decay rate (smaller = slower incorporation of new observations)
         """
-        super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
+        super().__init__(
+            ws_client=ws_client,
+            control_hz=control_hz,
+            realtime=realtime,
+            block_until_first_chunk=block_until_first_chunk,
+        )
         self._m_param = m_param
 
     @override

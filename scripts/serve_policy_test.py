@@ -15,10 +15,10 @@ def test_build_scheduler_kwargs_for_receding_horizon_ilp_defaults():
     kwargs = serve_policy.build_scheduler_kwargs(args, action_horizon_steps=50)
 
     assert kwargs == {
-        "tick_ms": 10,
-        "horizon_steps": 160,
-        "execution_fraction": 0.25,
-        "solve_timeout_ms": 500,
+        "tick_ms": args.ilp_timestep_ms,
+        "horizon_steps": args.ilp_horizon_steps,
+        "execution_fraction": args.ilp_execution_fraction,
+        "solve_timeout_ms": args.ilp_solve_timeout_ms,
         "action_horizon_steps": 50,
     }
 

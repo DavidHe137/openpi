@@ -17,12 +17,14 @@ class SyncBroker(ActionChunkBroker):
         control_hz: int,
         realtime: bool = True,
         min_execution_horizon: int = 0,
+        block_until_first_chunk: bool = True,
     ):
         super().__init__(
             ws_client=ws_client,
             control_hz=control_hz,
             realtime=realtime,
             min_execution_horizon=ws_client.server_metadata.action_horizon,
+            block_until_first_chunk=block_until_first_chunk,
         )
         assert self._min_execution_horizon == ws_client.server_metadata.action_horizon
 

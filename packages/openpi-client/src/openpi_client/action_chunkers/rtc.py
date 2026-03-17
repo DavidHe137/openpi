@@ -7,7 +7,12 @@ from openpi_client import messages
 
 class InferenceTimeRTCBroker(ActionChunkBroker):
     def __init__(
-        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, min_execution_horizon: int = 0
+        self,
+        ws_client: BidirectionalWebsocket,
+        control_hz: int,
+        realtime: bool = True,
+        min_execution_horizon: int = 0,
+        block_until_first_chunk: bool = True,
     ):
         """
         Args:
@@ -17,7 +22,11 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
             min_execution_horizon: tells the server the number of steps to wait before inferring a new action chunk
         """
         super().__init__(
-            ws_client=ws_client, control_hz=control_hz, realtime=realtime, min_execution_horizon=min_execution_horizon
+            ws_client=ws_client,
+            control_hz=control_hz,
+            realtime=realtime,
+            min_execution_horizon=min_execution_horizon,
+            block_until_first_chunk=block_until_first_chunk,
         )
 
     @override

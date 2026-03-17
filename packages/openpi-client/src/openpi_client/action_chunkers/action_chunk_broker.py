@@ -29,6 +29,7 @@ class ActionChunkBroker(ABC):
         control_hz: int,
         realtime: bool = True,
         min_execution_horizon: int = 0,
+        block_until_first_chunk: bool = True,
     ) -> None:
         self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
@@ -39,10 +40,13 @@ class ActionChunkBroker(ABC):
         self._step_duration = 1 / control_hz
         self._realtime = realtime
         self._min_execution_horizon = min_execution_horizon
+        self._block_until_first_chunk = block_until_first_chunk
+        self._received_first_chunk = False
 
         self._prev_action: Action = self._create_null_action(-1)
 
         self._lock = threading.Lock()
+        self._actions_available = threading.Condition(self._lock)
         self._actions_left_history: list[int] = []
         self._background_thread = threading.Thread(target=self._receive_actions, daemon=True)
 
@@ -56,15 +60,25 @@ class ActionChunkBroker(ABC):
             self._actions_left_history.append(len(self._action_queue))
 
             self._next_observation_step = obs.step + 1
+            request_sent = False
             if self._action_queue:
                 action = self._action_queue.popleft()
                 self._next_action_step += 1
             else:
-                action = self._create_null_action(obs.step)
+                if self._block_until_first_chunk and not self._received_first_chunk:
+                    self._infer(obs)
+                    request_sent = True
+                    while not self._action_queue:
+                        self._actions_available.wait()
+                    action = self._action_queue.popleft()
+                    self._next_action_step += 1
+                else:
+                    action = self._create_null_action(obs.step)
 
             self._prev_action = action
 
-            self._infer(obs)
+            if not request_sent:
+                self._infer(obs)
 
             return action
 
@@ -92,6 +106,8 @@ class ActionChunkBroker(ABC):
                 )
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)
+                self._received_first_chunk = True
+                self._actions_available.notify_all()
                 first_executed_index = max(0, self._next_action_step - action_chunk.action_start_step)
                 self._ws_client.send_ack(
                     action_chunk.request_id,
@@ -131,6 +147,7 @@ class ActionChunkBroker(ABC):
             self._action_queue.clear()
             self._action_chunks = []
             self._actions_left_history = []
+            self._received_first_chunk = False
             self._ws_client.reset()
 
     @property
