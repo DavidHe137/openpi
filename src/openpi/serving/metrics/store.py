@@ -4,6 +4,7 @@ import bisect
 from dataclasses import dataclass
 from dataclasses import field
 import itertools
+import logging
 import threading
 import time
 
@@ -23,6 +24,8 @@ from openpi.serving.metrics.schemas import RobotID
 from openpi.serving.metrics.schemas import window_filter
 from openpi.serving.schemas import SchedulerTimingSample
 from openpi.serving.schemas import SlotRequest
+
+logger = logging.getLogger(__name__)
 
 # TODO: make sure nans are nans and not 0s
 # TODO: make sure s, ms, and ns are consistent
@@ -59,7 +62,9 @@ class Snapshot:
     @property
     def uptime_s(self) -> float:
         uptime_s = self.end_time - self.start_time
-        assert uptime_s >= 0, "Uptime cannot be negative"
+        if uptime_s < 0:
+            logger.warning("Uptime is negative: %s", uptime_s)
+            return 0.0
         return uptime_s
 
     @property
@@ -118,7 +123,7 @@ class Snapshot:
 
     @property
     def tp_suc_per_sec_all(self) -> float:
-        return sum(1 for _, ep in self.completed_episodes if ep.success) / self.uptime_s
+        return sum(1 for _, ep in self.completed_episodes if ep.success) / self.uptime_s if self.uptime_s > 0 else 0.0
 
     @property
     def replan_times_s(self) -> list[float]:
