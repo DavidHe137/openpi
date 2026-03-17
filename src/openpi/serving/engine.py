@@ -133,7 +133,6 @@ def _run_gpu_worker(
                 observation_step=sd.observation_step,
                 action_start_step=sd.action_start_step,
                 min_execution_horizon=sd.min_execution_horizon,
-                max_execution_horizon=sd.max_execution_horizon,
                 request_timestamp=sd.request_timestamp,
                 deadline=sd.deadline,
                 infer_type=sd.infer_type,

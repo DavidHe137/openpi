@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 NUM_WARMUP = 10
 WARMUP_OBS_BYTES = 3 * 224 * 224 * 3  # 3 channels, 224x224 pixels, 3 bytes per pixel
-DEFAULT_EXECUTION_HORIZON = 10  # FIXME: need to decide later who sets this
 
 
 # FIXME: need Tuple and not tuple to be backwards compatible with Python 3.8 (libero environment)
@@ -121,7 +120,6 @@ class BidirectionalWebsocket:
         action_start_step: int,
         infer_type: messages.InferType = messages.InferType.SYNC,
         min_execution_horizon: int = 0,
-        max_execution_horizon: int = DEFAULT_EXECUTION_HORIZON,
         noise: Optional[np.ndarray] = None,
     ) -> None:
         request = messages.InferRequest(
@@ -134,7 +132,6 @@ class BidirectionalWebsocket:
             infer_type=infer_type,
             noise=noise,
             min_execution_horizon=min_execution_horizon,
-            max_execution_horizon=max_execution_horizon,
         )
         data = msgpack_numpy.packb(asdict(request))
         self._ws.send(data)  # type: ignore

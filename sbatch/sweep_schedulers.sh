@@ -12,7 +12,7 @@
 
 set -e
 
-SCHEDULERS=(greedy round_robin lookahead)
+SCHEDULERS=(greedy round_robin lookahead ilp)
 SCHEDULER=${SCHEDULERS[$SLURM_ARRAY_TASK_ID]}
 NUM_ROBOTS_LIST=(20 15 10 5)
 NUM_TRIALS_PER_TASK=10

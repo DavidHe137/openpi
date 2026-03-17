@@ -27,7 +27,6 @@ class SlotRequest:
     request_timestamp: float
     deadline: float
     min_execution_horizon: int
-    max_execution_horizon: int
     infer_type: InferType
     params: RTCParams | VlashParams | TrainTimeRTCParams | None
     noise: np.ndarray | None

@@ -42,7 +42,6 @@ class InferRequest:
     request_timestamp: float
     deadline: float
     min_execution_horizon: int
-    max_execution_horizon: int
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
