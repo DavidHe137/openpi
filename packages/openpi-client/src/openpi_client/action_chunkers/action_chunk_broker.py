@@ -38,7 +38,7 @@ class ActionChunkBroker(ABC):
 
         self._step_duration = 1 / control_hz
         self._realtime = realtime
-        self._execution_horizon = execution_horizon
+        self.execution_horizon = execution_horizon
 
         self._prev_action: Action = self._create_null_action(-1)
 

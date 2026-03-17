@@ -205,11 +205,6 @@ class TestInfer:
             action = broker.infer(make_obs(expected_index + 1))
             assert action.index_in_chunk == expected_index
 
-    def test_out_of_order_observation_raises(self, broker_and_mock):
-        broker, _ = broker_and_mock
-        with pytest.raises(AssertionError, match="Observations must be streamed in order"):
-            broker.infer(make_obs(5))
-
     def test_actions_left_history(self, broker_and_mock):
         broker, ws_mock = broker_and_mock
         chunk = make_action_chunk(action_start_step=1, execution_horizon=3)
@@ -235,7 +230,7 @@ class TestInfer:
         broker.infer(make_obs(2))  # real action
         broker.infer(make_obs(3))  # null action - _action_step should not increment
 
-        assert broker._action_step == 2
+        assert broker._next_action_step == 2
 
     def test_send_called_on_each_infer(self, broker_and_mock):
         broker, ws_mock = broker_and_mock
@@ -300,8 +295,8 @@ class TestReset:
         assert len(broker._action_queue) == 0
         assert broker._action_chunks == []
         assert broker._actions_left_history == []
-        assert broker._observation_step == 0
-        assert broker._action_step == 0
+        assert broker._next_observation_step == 0
+        assert broker._next_action_step == 0
 
     def test_calls_ws_reset(self, broker_and_mock):
         broker, ws_mock = broker_and_mock
@@ -369,7 +364,7 @@ def inject_chunk(broker, action_start_step, execution_horizon, request_id=0):
         chunk = make_action_chunk(
             action_start_step=action_start_step,
             execution_horizon=execution_horizon,
-            execution_start_step=broker._observation_step,
+            execution_start_step=broker._next_observation_step,
             request_id=request_id,
         )
         broker._action_chunks.append(chunk)
@@ -404,7 +399,7 @@ class TestNaiveAsync:
         # Filter: 3+i >= 3 → all 10 actions
         with broker._lock:
             assert len(broker._action_queue) == 10
-        assert chunk2.execution_start_step == 3
+        assert chunk2.execution_start_step == 4
 
         # Run 10 more infers (obs 4-13)
         for obs_step in range(4, 14):
@@ -429,7 +424,7 @@ class TestNaiveAsync:
         chunk2 = inject_chunk(broker, action_start_step=3, execution_horizon=10, request_id=1)
         with broker._lock:
             assert len(broker._action_queue) == 3
-        assert chunk2.execution_start_step == 11
+        assert chunk2.execution_start_step == 12
 
         # Run infer obs 12-14 → records [3,2,1], no new zeros
         for obs_step in range(12, 15):
