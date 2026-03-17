@@ -6,6 +6,7 @@ import flax.nnx as nnx
 import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
+import nvtx
 from typing_extensions import override
 
 from openpi.models import model as _model
@@ -127,27 +128,29 @@ class Pi0(_model.BaseModel):
         ar_mask = []
         tokens = []
         # embed images
-        for name in obs.images:
-            image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
+        with nvtx.annotate("embed_prefix/images", color="purple"):
+            for name in obs.images:
+                image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
 
-            tokens.append(image_tokens)
-            input_mask.append(
-                einops.repeat(
-                    obs.image_masks[name],
-                    "b -> b s",
-                    s=image_tokens.shape[1],
+                tokens.append(image_tokens)
+                input_mask.append(
+                    einops.repeat(
+                        obs.image_masks[name],
+                        "b -> b s",
+                        s=image_tokens.shape[1],
+                    )
                 )
-            )
-            # image tokens attend to each other
-            ar_mask += [False] * image_tokens.shape[1]
+                # image tokens attend to each other
+                ar_mask += [False] * image_tokens.shape[1]
 
         # add language (aka tokenized inputs)
-        if obs.tokenized_prompt is not None:
-            tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
-            tokens.append(tokenized_inputs)
-            input_mask.append(obs.tokenized_prompt_mask)
-            # full attention between image and language inputs
-            ar_mask += [False] * tokenized_inputs.shape[1]
+        with nvtx.annotate("embed_prefix/language", color="blue"):
+            if obs.tokenized_prompt is not None:
+                tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
+                tokens.append(tokenized_inputs)
+                input_mask.append(obs.tokenized_prompt_mask)
+                # full attention between image and language inputs
+                ar_mask += [False] * tokenized_inputs.shape[1]
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)
@@ -432,8 +435,9 @@ class Pi0(_model.BaseModel):
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
 
-        # first fill KV cache with a forward pass of the prefix
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        with nvtx.annotate("sample_actions/embed_prefix", color="purple"):
+            # first fill KV cache with a forward pass of the prefix
+            prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
 
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
@@ -445,21 +449,24 @@ class Pi0(_model.BaseModel):
             noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
         assert noise is not None
 
-        _, kv_cache = self.prefill(prefix_tokens, prefix_attn_mask, positions)
+        with nvtx.annotate("sample_actions/prefill", color="cyan"):
+            _, kv_cache = self.prefill(prefix_tokens, prefix_attn_mask, positions)
 
         if use_rtc:
-            x_0 = self.guided_flow_matching(
-                observation, noise, kv_cache, dt, prefix_tokens, prefix_mask, prev_action, s, d
-            )
+            with nvtx.annotate("sample_actions/guided_flow_matching", color="red"):
+                x_0 = self.guided_flow_matching(
+                    observation, noise, kv_cache, dt, prefix_tokens, prefix_mask, prev_action, s, d
+                )
         else:
-            x_0 = self.flow_matching(
-                observation,
-                noise,
-                kv_cache,
-                dt,
-                prefix_tokens,
-                prefix_mask,
-            )
+            with nvtx.annotate("sample_actions/flow_matching", color="green"):
+                x_0 = self.flow_matching(
+                    observation,
+                    noise,
+                    kv_cache,
+                    dt,
+                    prefix_tokens,
+                    prefix_mask,
+                )
 
         return x_0
 
