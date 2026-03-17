@@ -70,12 +70,7 @@ class WarmupSeed:
 
 @dataclass
 class SchedulerDecision:
-    """A scheduler decision: a timing metric or a batch scheduling event.
-
-    For metric_name="batch_scheduled", candidates and scheduled are populated
-    with per-robot dicts (keys: robot_id, deadline), sorted by deadline ascending.
-    All other metric_name values are pure timing samples (candidates/scheduled empty).
-    """
+    """A scheduler decision: a batch scheduling event."""
 
     scheduler_name: str
     metric_name: str
