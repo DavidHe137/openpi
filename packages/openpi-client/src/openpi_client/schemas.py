@@ -8,6 +8,7 @@ import numpy as np
 from jaxtyping import Float
 from openpi_client import messages
 import pandas as pd
+import requests
 
 T = TypeVar("T", bound="CSVDataclass")
 J = TypeVar("J", bound="JSONDataclass")
@@ -238,6 +239,13 @@ class ServerMetadata(JSONDataclass):
     # Set by Modal when running behind a tunnel; clients should use this for WebSocket
     tunnel_url: Optional[str] = None
     location: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        try:
+            info = requests.get("https://ipinfo.io/json", timeout=3).json()
+            self.location = f"{info.get('city', '?')}, {info.get('region', '?')}, {info.get('country', '?')}"
+        except Exception:
+            self.location = "unknown"
 
 
 @dataclass(frozen=True)

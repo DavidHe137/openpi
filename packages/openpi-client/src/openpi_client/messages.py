@@ -103,24 +103,34 @@ class ResponseAck:
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # client receipt time, adjusted to server clock via SyncedClock.now_server()
     execution_start_step: int  # client step when new chunk became available
+    first_executed_index: int = 0  # index within chunk where actual execution started
     type: Literal["ack"] = "ack"
 
 
 @dataclass(frozen=True)
-class TaskUpdate:
+class EpisodeStart:
     task_suite_name: str
     task_id: int
     episode_idx: int
-    current_step: int
     max_episode_steps: int
-    phase: Literal["progress", "result"] = "progress"
-    task_language: Optional[str] = None
-    total_episodes: Optional[int] = None
-    success: Optional[bool] = None
-    duration_s: Optional[float] = None
-    steps_taken: Optional[int] = None
-    max_duration_s: Optional[float] = None
-    type: Literal["task_update"] = "task_update"
+    task_language: str
+    type: Literal["episode_start"] = "episode_start"
+
+
+@dataclass(frozen=True)
+class EpisodeStep:
+    type: Literal["episode_step"] = "episode_step"
+
+
+@dataclass(frozen=True)
+class EpisodeEnd:
+    task_suite_name: str
+    task_id: int
+    episode_idx: int
+    success: bool
+    duration_s: float
+    steps_taken: int
+    type: Literal["episode_end"] = "episode_end"
 
 
 @dataclass(frozen=True)

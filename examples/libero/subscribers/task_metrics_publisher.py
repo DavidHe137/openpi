@@ -34,64 +34,56 @@ class TaskMetricsPublisher(_subscriber.Subscriber):
         self._task_suite_name = task_suite_name
         self._task_id = task_id
         self._task_language = task.language
-        self._episode_start_perf: float | None = None
+        self._episode_start_perf: float = 0.0
         self._steps_taken = 0
 
     @override
     def on_episode_start(self) -> None:
         self._episode_start_perf = time.perf_counter()
         self._steps_taken = 0
-        self._publish_progress()
-
-    @override
-    def on_step(self, observation: Observation, action: Action) -> None:
-        self._steps_taken += 1
-        self._publish_progress()
-
-    @override
-    def on_episode_end(self) -> None:
-        if self._episode_start_perf is None:
-            return
-
-        duration_s = max(0.0, time.perf_counter() - self._episode_start_perf)
         try:
-            self._ws_client.send_task_update(
+            self._ws_client.send_episode_start(
                 task_suite_name=self._task_suite_name,
                 task_id=self._task_id,
                 episode_idx=self._environment.episode_idx,
-                current_step=self._steps_taken,
                 max_episode_steps=self._environment.max_episode_steps,
-                phase="result",
-                success=self._environment.current_success,
-                duration_s=duration_s,
-                steps_taken=self._steps_taken,
                 task_language=self._task_language,
-                total_episodes=self._environment.total_episodes,
-                max_duration_s=self._environment.max_episode_steps
-                / self._environment.control_hz,
             )
         except Exception:
             logger.warning(
-                "Failed to publish task_update(result) for task %s/%s",
+                "Failed to publish episode_start for task %s/%s",
                 self._task_suite_name,
                 self._task_id,
             )
 
-    def _publish_progress(self) -> None:
+    @override
+    def on_step(self, observation: Observation, action: Action) -> None:
+        self._steps_taken += 1
         try:
-            self._ws_client.send_task_update(
+            self._ws_client.send_episode_step()
+        except Exception:
+            logger.warning(
+                "Failed to publish episode_step for task %s/%s",
+                self._task_suite_name,
+                self._task_id,
+            )
+
+    @override
+    def on_episode_end(self) -> None:
+        duration_s = time.perf_counter() - self._episode_start_perf
+        assert duration_s >= 0.0
+        try:
+            self._ws_client.send_episode_end(
                 task_suite_name=self._task_suite_name,
                 task_id=self._task_id,
                 episode_idx=self._environment.episode_idx,
-                current_step=self._steps_taken,
-                max_episode_steps=self._environment.max_episode_steps,
-                phase="progress",
-                task_language=self._task_language,
-                total_episodes=self._environment.total_episodes,
+                success=self._environment.current_success,
+                duration_s=duration_s,
+                steps_taken=self._steps_taken,
             )
         except Exception:
-            logger.debug(
-                "Failed to publish task_update(progress) for task %s/%s",
+            logger.warning(
+                "Failed to publish task_update(result) for task %s/%s",
                 self._task_suite_name,
                 self._task_id,
             )

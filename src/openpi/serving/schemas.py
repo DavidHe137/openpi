@@ -76,3 +76,9 @@ class SchedulerTimingSample:
     metric_name: str
     duration_ms: float
     recorded_at: float
+
+    @classmethod
+    def from_json(cls, data: SchedulerTimingSample | dict) -> SchedulerTimingSample:
+        if isinstance(data, cls):
+            return data
+        return cls(**data)
