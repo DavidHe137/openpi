@@ -51,7 +51,8 @@ class Snapshot:
     batch_history: list[dict]
     outbound_delays_ms: dict[str, list[float]]
     scheduler_timings_ms: dict[str, list[float]]
-    replan_times_s: list[float]
+    replan_markers: list[dict]
+    kickoff_markers: list[dict]
     task_events: list[dict]
     task_progress: list[dict]
 
@@ -118,6 +119,11 @@ class Snapshot:
     @property
     def tp_suc_per_sec_all(self) -> float:
         return sum(1 for _, ep in self.completed_episodes if ep.success) / self.uptime_s
+
+    @property
+    def replan_times_s(self) -> list[float]:
+        """Backward-compat shim for older dashboard code paths."""
+        return [float(marker.get("t", 0.0)) for marker in self.replan_markers]
 
 
 @dataclass
@@ -354,11 +360,33 @@ class MetricsStore(JSONDataclass):
                 for sample in self.scheduler_timings
                 if sample.metric_name == "ilp_plan_activated" and sample.recorded_at <= self.end_time
             )
-            replan_times_s = sorted(
-                round(sample.recorded_at - t0, 3)
+            kickoff_abs = sorted(
+                sample.recorded_at
                 for sample in self.scheduler_timings
-                if sample.metric_name == "ilp_replan_kickoff" and start_timestamp <= sample.recorded_at < self.end_time
+                if sample.metric_name == "ilp_replan_kickoff" and sample.recorded_at <= self.end_time
             )
+            replan_markers = [
+                {
+                    "t": round(ts - t0, 3),
+                    "plan_index": idx,
+                }
+                for idx, ts in enumerate(plan_activation_abs)
+                if start_timestamp <= ts < self.end_time
+            ]
+            kickoff_markers = []
+            kickoff_cursor = 0
+            for plan_index, activation_ts in enumerate(plan_activation_abs):
+                while kickoff_cursor + 1 < len(kickoff_abs) and kickoff_abs[kickoff_cursor + 1] <= activation_ts:
+                    kickoff_cursor += 1
+                if kickoff_cursor < len(kickoff_abs) and kickoff_abs[kickoff_cursor] <= activation_ts:
+                    kickoff_ts = kickoff_abs[kickoff_cursor]
+                    if start_timestamp <= kickoff_ts < self.end_time:
+                        kickoff_markers.append(
+                            {
+                                "t": round(kickoff_ts - t0, 3),
+                                "plan_index": plan_index,
+                            }
+                        )
 
             response_by_id: dict[int, ResponseRecord] = {
                 resp.request.request_id: resp
@@ -505,7 +533,8 @@ class MetricsStore(JSONDataclass):
                 batch_history=batch_history,
                 outbound_delays_ms=outbound_delays_ms,
                 scheduler_timings_ms=scheduler_timings_ms,
-                replan_times_s=replan_times_s,
+                replan_markers=replan_markers,
+                kickoff_markers=kickoff_markers,
                 task_events=task_events,
                 task_progress=task_progress,
             )
