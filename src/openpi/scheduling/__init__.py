@@ -9,7 +9,7 @@ import time
 from openpi.scheduling.latency import LatencyTracker
 from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import CompletionNotification
-from openpi.serving.schemas import SchedulerTimingSample
+from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 
 
@@ -27,7 +27,7 @@ class RequestScheduler(ABC):
         self._latest_requests: dict[str, SlotRequest] = {}
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
-        self._timing_samples: list[SchedulerTimingSample] = []
+        self._timing_samples: list[SchedulerDecision] = []
         self.latency = LatencyTracker()
 
     def update(self, request: SlotRequest) -> None:
@@ -48,9 +48,19 @@ class RequestScheduler(ABC):
 
     def schedule(self) -> None:
         """Return a list of batches of requests to be sent to the GPU."""
+        candidates = self._get_schedulable_requests()
         batches = self.get_next_batches()
         for batch in batches:
             batch_size = len(batch)
+            # Capture deadlines before the loop overwrites them, sort earliest first.
+            candidate_entries = sorted(
+                ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in candidates),
+                key=lambda x: x["deadline"],
+            )
+            batch_entries = sorted(
+                ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in batch),
+                key=lambda x: x["deadline"],
+            )
             annotated = []
             for request in batch:
                 self._deadlines[request.robot_id] = time.time() + request.max_execution_horizon / request.control_hz
@@ -60,6 +70,16 @@ class RequestScheduler(ABC):
                 d_steps = round(d_ms / step_ms) if d_ms is not None else 0
                 annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
 
+            self._timing_samples.append(
+                SchedulerDecision(
+                    scheduler_name=self.__class__.__name__,
+                    metric_name="batch_scheduled",
+                    duration_ms=0.0,
+                    recorded_at=time.time(),
+                    candidates=candidate_entries,
+                    scheduled=batch_entries,
+                )
+            )
             self._batch_queue.put_nowait(annotated)
 
     @abstractmethod
@@ -80,7 +100,7 @@ class RequestScheduler(ABC):
         finally:
             duration_ms = (time.perf_counter_ns() - start_ns) / 1e6
             self._timing_samples.append(
-                SchedulerTimingSample(
+                SchedulerDecision(
                     scheduler_name=self.__class__.__name__,
                     metric_name=metric_name,
                     duration_ms=duration_ms,
@@ -88,7 +108,7 @@ class RequestScheduler(ABC):
                 )
             )
 
-    def flush_timing_samples(self) -> list[SchedulerTimingSample]:
+    def flush_timing_samples(self) -> list[SchedulerDecision]:
         samples = self._timing_samples
         self._timing_samples = []
         return samples
