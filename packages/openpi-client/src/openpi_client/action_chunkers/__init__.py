@@ -16,7 +16,7 @@ class BrokerConfig:
 
     ws_client: BidirectionalWebsocket
     control_hz: int
-    min_execution_horizon: int
+    execution_horizon: int
     # Optional parameters for specific brokers
     m_param: float = 1.0  # For temporal_ensembling: exponential decay rate
 

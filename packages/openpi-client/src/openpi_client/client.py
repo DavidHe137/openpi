@@ -119,7 +119,7 @@ class BidirectionalWebsocket:
         deadline: float,
         action_start_step: int,
         infer_type: messages.InferType = messages.InferType.SYNC,
-        min_execution_horizon: int = 0,
+        execution_horizon: int = 0,
         noise: Optional[np.ndarray] = None,
     ) -> None:
         request = messages.InferRequest(
@@ -131,7 +131,7 @@ class BidirectionalWebsocket:
             deadline=deadline,
             infer_type=infer_type,
             noise=noise,
-            min_execution_horizon=min_execution_horizon,
+            execution_horizon=execution_horizon,
         )
         data = msgpack_numpy.packb(asdict(request))
         self._ws.send(data)  # type: ignore
