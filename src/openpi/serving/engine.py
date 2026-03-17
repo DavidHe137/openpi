@@ -8,6 +8,7 @@ import signal
 import time
 
 import numpy as np
+import nvtx
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import InferType
@@ -106,93 +107,100 @@ def _run_gpu_worker(
         return RTCParams(prev_action=prev, s_param=s, d_param=d_param)
 
     while True:
-        slot_reqs: list[SlotRequest] = batch_queue.get()  # blocking
+        with nvtx.annotate("wait_for_batch", color="gray"):
+            slot_reqs: list[SlotRequest] = batch_queue.get()  # blocking
 
-        # Read obs and metadata together — guarantees they correspond to the same request,
-        # even if the slot was overwritten after the SlotRequest was enqueued.
-        slot_datas = [slots.read(sr.slot_index) for sr in slot_reqs]
+        with nvtx.annotate(f"read_slots bs={len(slot_reqs)}", color="yellow"):
+            # Read obs and metadata together — guarantees they correspond to the same request,
+            # even if the slot was overwritten after the SlotRequest was enqueued.
+            slot_datas = [slots.read(sr.slot_index) for sr in slot_reqs]
 
-        # Drop any slot whose request_id has already been served.  This happens when the
-        # scheduler dispatches multiple SlotRequests for the same robot before the GPU
-        # finishes the first one: both read the same (overwritten) slot and would produce
-        # two InferResponses with identical request_ids.  request_ids are monotonically
-        # increasing, so a strict > check also handles episode resets correctly.
-        fresh = [
-            (sr, sd)
-            for sr, sd in zip(slot_reqs, slot_datas, strict=True)
-            if sd.request_id > _last_served_request_id.get(sr.robot_id, 0)
-        ]
-        if not fresh:
-            continue
-        slot_reqs, slot_datas = zip(*fresh, strict=True)
+            # Drop any slot whose request_id has already been served.  This happens when the
+            # scheduler dispatches multiple SlotRequests for the same robot before the GPU
+            # finishes the first one: both read the same (overwritten) slot and would produce
+            # two InferResponses with identical request_ids.  request_ids are monotonically
+            # increasing, so a strict > check also handles episode resets correctly.
+            fresh = [
+                (sr, sd)
+                for sr, sd in zip(slot_reqs, slot_datas, strict=True)
+                if sd.request_id > _last_served_request_id.get(sr.robot_id, 0)
+            ]
+            if not fresh:
+                continue
+            slot_reqs, slot_datas = zip(*fresh, strict=True)
 
-        infer_requests = [
-            InferRequest(
-                robot_id=sr.robot_id,
-                observation=sd.obs,
-                observation_step=sd.observation_step,
-                action_start_step=sd.action_start_step,
-                min_execution_horizon=sd.min_execution_horizon,
-                request_timestamp=sd.request_timestamp,
-                deadline=sd.deadline,
-                infer_type=sd.infer_type,
-                params=_make_rtc_params(sr.robot_id, sd.observation_step, sr.estimated_d_param)
-                if sd.infer_type == InferType.INFERENCE_TIME_RTC
-                else sd.params,
-                noise=sd.noise,
-            )
-            for sr, sd in zip(slot_reqs, slot_datas, strict=True)
-        ]
-
-        logger.debug("Inferring batch of %d", len(infer_requests))
-        t0 = time.time()
-        actions = policy.infer_batch(infer_requests)
-        t1 = time.time()
-
-        responses = [
-            InferResponse(
-                robot_id=sr.robot_id,
-                request_id=sd.request_id,
-                observation_step=sd.observation_step,
-                action_start_step=sd.action_start_step,
-                request_timestamp=sd.request_timestamp,
-                execution_horizon=len(action_dict["actions"]),
-                actions=action_dict["actions"],
-                noise=action_dict["noise"],
-                server_arrival_time=sd.arrival_timestamp,
-                inference_start_time=t0,
-                inference_end_time=t1,
-            )
-            for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True)
-        ]
-
-        # Update per-robot RTC state
-        for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True):
-            if sd.infer_type == InferType.INFERENCE_TIME_RTC:
-                prev_action = action_dict["actions"][0]  # shape (ah, ad)
-                if _action_shape is None:
-                    _action_shape = prev_action.shape
-                _last_infer_step[sr.robot_id] = sd.observation_step
-                _prev_actions[sr.robot_id] = prev_action
-
-        # Record served request_ids before sending so the duplicate check stays consistent.
-        for sr, sd in zip(slot_reqs, slot_datas, strict=True):
-            _last_served_request_id[sr.robot_id] = sd.request_id
-
-        # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
-        response_sock.send_pyobj(responses)
-
-        # Notify scheduler of completion so it can update latency estimates
-        inference_duration_ms = (t1 - t0) * 1e3
-        notify_sock.send_pyobj(
-            [
-                CompletionNotification(
+        with nvtx.annotate(f"build_infer_requests bs={len(slot_reqs)}", color="cyan"):
+            infer_requests = [
+                InferRequest(
                     robot_id=sr.robot_id,
+                    observation=sd.obs,
+                    observation_step=sd.observation_step,
                     action_start_step=sd.action_start_step,
-                    request_id=sd.request_id,
-                    batch_size=len(slot_reqs),
-                    inference_duration_ms=inference_duration_ms,
+                    min_execution_horizon=sd.min_execution_horizon,
+                    request_timestamp=sd.request_timestamp,
+                    deadline=sd.deadline,
+                    infer_type=sd.infer_type,
+                    params=_make_rtc_params(sr.robot_id, sd.observation_step, sr.estimated_d_param)
+                    if sd.infer_type == InferType.INFERENCE_TIME_RTC
+                    else sd.params,
+                    noise=sd.noise,
                 )
                 for sr, sd in zip(slot_reqs, slot_datas, strict=True)
-            ],
-        )
+            ]
+
+        logger.debug("Inferring batch of %d", len(infer_requests))
+        with nvtx.annotate(f"infer_batch bs={len(infer_requests)}", color="green"):
+            t0 = time.time()
+            actions = policy.infer_batch(infer_requests)
+            t1 = time.time()
+
+        with nvtx.annotate("build_responses", color="blue"):
+            responses = [
+                InferResponse(
+                    robot_id=sr.robot_id,
+                    request_id=sd.request_id,
+                    observation_step=sd.observation_step,
+                    action_start_step=sd.action_start_step,
+                    request_timestamp=sd.request_timestamp,
+                    execution_horizon=len(action_dict["actions"]),
+                    actions=action_dict["actions"],
+                    noise=action_dict["noise"],
+                    server_arrival_time=sd.arrival_timestamp,
+                    inference_start_time=t0,
+                    inference_end_time=t1,
+                )
+                for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True)
+            ]
+
+            # Update per-robot RTC state
+            for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True):
+                if sd.infer_type == InferType.INFERENCE_TIME_RTC:
+                    prev_action = action_dict["actions"][0]  # shape (ah, ad)
+                    if _action_shape is None:
+                        _action_shape = prev_action.shape
+                    _last_infer_step[sr.robot_id] = sd.observation_step
+                    _prev_actions[sr.robot_id] = prev_action
+
+            # Record served request_ids before sending so the duplicate check stays consistent.
+            for sr, sd in zip(slot_reqs, slot_datas, strict=True):
+                _last_served_request_id[sr.robot_id] = sd.request_id
+
+        # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
+        with nvtx.annotate("send_responses", color="orange"):
+            response_sock.send_pyobj(responses)
+
+        # Notify scheduler of completion so it can update latency estimates
+        with nvtx.annotate("notify_scheduler", color="red"):
+            inference_duration_ms = (t1 - t0) * 1e3
+            notify_sock.send_pyobj(
+                [
+                    CompletionNotification(
+                        robot_id=sr.robot_id,
+                        action_start_step=sd.action_start_step,
+                        request_id=sd.request_id,
+                        batch_size=len(slot_reqs),
+                        inference_duration_ms=inference_duration_ms,
+                    )
+                    for sr, sd in zip(slot_reqs, slot_datas, strict=True)
+                ],
+            )

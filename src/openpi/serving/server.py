@@ -466,6 +466,12 @@ def create_app(
         # TODO: reset server state too
         return {"status": "ok"}
 
+    @app.post("/shutdown")
+    async def shutdown() -> dict:
+        """Gracefully shut down the server process."""
+        os.kill(os.getpid(), signal.SIGTERM)
+        return {"status": "shutting_down"}
+
     dash_app = create_dash_app(metadata, metrics_store)
     app.mount("/", WSGIMiddleware(dash_app.server))
 
