@@ -183,7 +183,6 @@ class Saver(_subscriber.Subscriber):
         self, out_folder: pathlib.Path, data: _EpisodeSaveData
     ) -> None:
         logger.info(f"Saving action chunks to {out_folder}")
-        ActionChunk.to_csv(data.action_chunks, out_folder / "action_chunks.csv")
         ActionChunk.to_parquet(data.action_chunks, out_folder / "action_chunks.parquet")
 
     def _save_video(self, out_folder: pathlib.Path, data: _EpisodeSaveData) -> None:
