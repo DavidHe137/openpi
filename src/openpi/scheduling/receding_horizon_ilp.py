@@ -108,18 +108,12 @@ class RecedingHorizonILPScheduler(RequestScheduler):
     ) -> None:
         super().__init__(batch_queue, max_batch_size, batch_profile)
 
-        if tick_ms < 1:
-            raise ValueError("tick_ms must be >= 1")
-        if horizon_steps < 1:
-            raise ValueError("horizon_steps must be >= 1")
-        if solve_timeout_ms < 1:
-            raise ValueError("solve_timeout_ms must be >= 1")
-        if not (0 < execution_fraction <= 1):
-            raise ValueError("execution_fraction must satisfy 0 < execution_fraction <= 1")
-        if action_horizon_steps < 1:
-            raise ValueError("action_horizon_steps must be >= 1")
-        if default_control_hz <= 0:
-            raise ValueError("default_control_hz must be > 0")
+        assert tick_ms >= 1, "tick_ms must be >= 1"
+        assert horizon_steps >= 1, "horizon_steps must be >= 1"
+        assert solve_timeout_ms >= 1, "solve_timeout_ms must be >= 1"
+        assert 0 < execution_fraction <= 1, "execution_fraction must satisfy 0 < execution_fraction <= 1"
+        assert action_horizon_steps >= 1, "action_horizon_steps must be >= 1"
+        assert default_control_hz > 0, "default_control_hz must be > 0"
 
         self._validate_gurobi_available()
 
