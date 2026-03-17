@@ -486,6 +486,10 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             return
         if now_tick < self._active_plan.boundary_tick:
             return
+        # Do not cut over until the committed prefix has actually been consumed.
+        # This is critical when execution_fraction == 1.0, where boundary == horizon end.
+        if self._active_plan.cursor_tick < self._active_plan.boundary_tick:
+            return
         self._active_plan = self._pending_plan
         self._pending_plan = None
         self._record_metric("ilp_plan_activated", 0.0)
