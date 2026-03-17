@@ -140,7 +140,7 @@ class ParquetDataclass:
 
 
 @dataclass(frozen=True)
-class ActionChunk(ParquetDataclass, CSVDataclass):
+class ActionChunk(ParquetDataclass):
     """
     We store all actions, including past execution horizon, as they might come in handy for debugging later
     """
