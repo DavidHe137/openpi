@@ -74,3 +74,37 @@ def test_infer_returns_null_immediately_when_bootstrap_blocking_disabled():
     assert elapsed_ms < 50.0
     assert action.action_chunk_index is None
     assert action.index_in_chunk is None
+
+
+def test_infer_unblocks_on_shared_start_event_without_local_chunk():
+    ws_mock = MagicMock()
+    blocker = threading.Event()
+    ws_mock.receive.side_effect = lambda: blocker.wait()
+
+    startup_release = threading.Event()
+    broker = ActionChunkBroker(
+        ws_mock,
+        control_hz=20,
+        block_until_first_chunk=True,
+        startup_release_event=startup_release,
+    )
+
+    result: dict[str, object] = {}
+
+    def _run_infer() -> None:
+        result["action"] = broker.infer(_make_obs(0))
+
+    infer_thread = threading.Thread(target=_run_infer)
+    infer_thread.start()
+
+    time.sleep(0.05)
+    assert infer_thread.is_alive()
+    assert ws_mock.send.call_count == 1
+
+    startup_release.set()
+
+    infer_thread.join(timeout=1.0)
+    assert not infer_thread.is_alive()
+    action = result["action"]
+    assert action.action_chunk_index is None
+    assert action.index_in_chunk is None

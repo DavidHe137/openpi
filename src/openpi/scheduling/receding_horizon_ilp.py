@@ -275,6 +275,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         if solve_input is None:
             return
 
+        self._record_metric("ilp_replan_kickoff", 0.0)
         self._solve_seq += 1
         solve_id = self._solve_seq
         d_infer_vals = tuple(solve_input.d_infer_tick.values())
@@ -469,6 +470,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         if self._active_plan is None:
             self._active_plan = new_plan
             self._pending_plan = None
+            self._record_metric("ilp_plan_activated", 0.0)
             if not self._bootstrap_recorded:
                 bootstrap_wait_ms = (time.monotonic() - self._bootstrap_start_monotonic) * 1000.0
                 self._record_metric("bootstrap_wait_ms", bootstrap_wait_ms)
@@ -486,6 +488,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             return
         self._active_plan = self._pending_plan
         self._pending_plan = None
+        self._record_metric("ilp_plan_activated", 0.0)
 
     def _register_dispatched_batch(self, now_tick: int, requests: tuple[SlotRequest, ...]) -> None:
         batch_size = len(requests)

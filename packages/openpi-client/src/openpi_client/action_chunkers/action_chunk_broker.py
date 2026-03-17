@@ -1,12 +1,19 @@
 import time
 from typing import List
 from typing import Optional
+from typing import Protocol
 from openpi_client.schemas import ActionChunk
 from abc import ABC
 from collections import deque
 from openpi_client.client import BidirectionalWebsocket
 from openpi_client.schemas import Action, Observation
 import threading
+
+
+class _StartupReleaseEvent(Protocol):
+    def is_set(self) -> bool: ...
+
+    def set(self) -> None: ...
 
 
 # FIXME: Saver uses action_chunks, but the envy is not clear and it's easy to remove it from this class
@@ -30,6 +37,7 @@ class ActionChunkBroker(ABC):
         realtime: bool = True,
         min_execution_horizon: int = 0,
         block_until_first_chunk: bool = True,
+        startup_release_event: Optional[_StartupReleaseEvent] = None,
     ) -> None:
         self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
@@ -42,6 +50,7 @@ class ActionChunkBroker(ABC):
         self._min_execution_horizon = min_execution_horizon
         self._block_until_first_chunk = block_until_first_chunk
         self._received_first_chunk = False
+        self._startup_release_event = startup_release_event
 
         self._prev_action: Action = self._create_null_action(-1)
 
@@ -65,11 +74,17 @@ class ActionChunkBroker(ABC):
                 action = self._action_queue.popleft()
                 self._next_action_step += 1
             else:
-                if self._block_until_first_chunk and not self._received_first_chunk:
+                # Startup block is released by either:
+                # 1) this robot receiving its first action chunk, or
+                # 2) a shared startup-release event set by another robot's first dispatch.
+                if self._block_until_first_chunk and not self._startup_released():
                     self._infer(obs)
                     request_sent = True
-                    while not self._action_queue:
-                        self._actions_available.wait()
+                    while not self._action_queue and not self._startup_released():
+                        # Poll with timeout so we can observe shared startup release
+                        # without requiring a local chunk arrival notification.
+                        self._actions_available.wait(timeout=0.01)
+                if self._action_queue:
                     action = self._action_queue.popleft()
                     self._next_action_step += 1
                 else:
@@ -107,6 +122,8 @@ class ActionChunkBroker(ABC):
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)
                 self._received_first_chunk = True
+                if self._startup_release_event is not None:
+                    self._startup_release_event.set()
                 self._actions_available.notify_all()
                 first_executed_index = max(0, self._next_action_step - action_chunk.action_start_step)
                 self._ws_client.send_ack(
@@ -149,6 +166,13 @@ class ActionChunkBroker(ABC):
             self._actions_left_history = []
             self._received_first_chunk = False
             self._ws_client.reset()
+
+    def _startup_released(self) -> bool:
+        if self._received_first_chunk:
+            return True
+        if self._startup_release_event is None:
+            return False
+        return self._startup_release_event.is_set()
 
     @property
     def action_chunks(self) -> List[ActionChunk]:

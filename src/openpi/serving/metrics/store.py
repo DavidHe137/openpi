@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 from dataclasses import field
 import itertools
@@ -50,6 +51,7 @@ class Snapshot:
     batch_history: list[dict]
     outbound_delays_ms: dict[str, list[float]]
     scheduler_timings_ms: dict[str, list[float]]
+    replan_times_s: list[float]
     task_events: list[dict]
     task_progress: list[dict]
 
@@ -347,6 +349,17 @@ class MetricsStore(JSONDataclass):
                 )
 
             # ---- batch history for charts ----
+            plan_activation_abs = sorted(
+                sample.recorded_at
+                for sample in self.scheduler_timings
+                if sample.metric_name == "ilp_plan_activated" and sample.recorded_at <= self.end_time
+            )
+            replan_times_s = sorted(
+                round(sample.recorded_at - t0, 3)
+                for sample in self.scheduler_timings
+                if sample.metric_name == "ilp_replan_kickoff" and start_timestamp <= sample.recorded_at < self.end_time
+            )
+
             response_by_id: dict[int, ResponseRecord] = {
                 resp.request.request_id: resp
                 for robot in self.robots.values()
@@ -355,6 +368,11 @@ class MetricsStore(JSONDataclass):
             }
             batch_history = []
             for i, b in enumerate(batches):
+                plan_index = None
+                if plan_activation_abs:
+                    idx = bisect.bisect_right(plan_activation_abs, b.inference_start_time) - 1
+                    if idx >= 0:
+                        plan_index = idx
                 per_req = []
                 for rid, req_id in zip(b.robot_ids, b.request_ids, strict=True):
                     resp = response_by_id.get(req_id)
@@ -391,6 +409,7 @@ class MetricsStore(JSONDataclass):
                         "inference_start_t": round(b.inference_start_time - t0, 3),
                         "inference_end_t": round(b.inference_end_time - t0, 3),
                         "robot_ids": b.robot_ids,
+                        "plan_index": plan_index,
                         "per_request": per_req,
                     }
                 )
@@ -486,6 +505,7 @@ class MetricsStore(JSONDataclass):
                 batch_history=batch_history,
                 outbound_delays_ms=outbound_delays_ms,
                 scheduler_timings_ms=scheduler_timings_ms,
+                replan_times_s=replan_times_s,
                 task_events=task_events,
                 task_progress=task_progress,
             )
