@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 # One-time startup synchronization state.
 _start_barrier = None
 _has_synced_start = False
-_startup_release_event = None
 
 
 @dataclass
@@ -101,9 +100,7 @@ def _execution_horizon_for_robot(args: Args, robot_idx: int) -> int:
     return int(args.execution_horizon[robot_idx])
 
 
-def init_worker(
-    args: Args, counter, progress_queue, start_barrier, startup_release_event
-) -> None:
+def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
     global \
         robot_idx, \
         ws_client, \
@@ -111,7 +108,6 @@ def init_worker(
         agent, \
         _progress_queue, \
         _start_barrier, \
-        _startup_release_event, \
         _has_synced_start
     with counter.get_lock():
         robot_idx = counter.value
@@ -120,7 +116,6 @@ def init_worker(
     # Store queue globally for access in create_runtime
     _progress_queue = progress_queue
     _start_barrier = start_barrier
-    _startup_release_event = startup_release_event
     _has_synced_start = False
 
     ws_client = BidirectionalWebsocket(
@@ -134,7 +129,6 @@ def init_worker(
         ws_client=ws_client,
         control_hz=args.control_hz,
         execution_horizon=_execution_horizon_for_robot(args, robot_idx),
-        startup_release_event=_startup_release_event,
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
@@ -249,14 +243,13 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
 
     if args.debug:
         # Debug mode: no progress manager, single process for pdb compatibility
-        init_worker(args, counter, None, None, None)
+        init_worker(args, counter, None, None)
         for job in jobs:
             _robot_worker((args, job, server_metadata))
     else:
         total_episodes = sum(len(job.initial_states) for job in jobs)
         active_workers = min(args.num_robots, len(jobs))
         start_barrier = multiprocessing.Barrier(active_workers)
-        startup_release_event = multiprocessing.Event()
         logging.info(
             "Using one-time startup barrier across %d worker(s)",
             active_workers,
@@ -271,13 +264,7 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
             with multiprocessing.Pool(
                 processes=active_workers,
                 initializer=init_worker,
-                initargs=(
-                    args,
-                    counter,
-                    progress_manager.queue,
-                    start_barrier,
-                    startup_release_event,
-                ),
+                initargs=(args, counter, progress_manager.queue, start_barrier),
             ) as pool:
                 try:
                     # use imap_unordered so that it exits immediately on any exception

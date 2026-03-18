@@ -1,9 +1,7 @@
 import numpy as np
 from openpi_client.schemas import Action
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
-from openpi_client.action_chunkers.action_chunk_broker import _StartupReleaseEvent
 from openpi_client.client import BidirectionalWebsocket
-from typing import Optional
 from typing_extensions import override
 from typing import List
 
@@ -16,15 +14,7 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
     Larger m = faster incorporation (weights recent predictions more heavily)
     """
 
-    def __init__(
-        self,
-        ws_client: BidirectionalWebsocket,
-        control_hz: int,
-        realtime: bool = True,
-        m_param: float = 1.0,
-        block_until_first_chunk: bool = True,
-        startup_release_event: Optional[_StartupReleaseEvent] = None,
-    ):
+    def __init__(self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, m_param: float = 1.0):
         """
         Args:
             ws_client: websocket client for inference
@@ -32,13 +22,7 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
             realtime: whether to run in realtime mode
             m_param: exponential decay rate (smaller = slower incorporation of new observations)
         """
-        super().__init__(
-            ws_client=ws_client,
-            control_hz=control_hz,
-            realtime=realtime,
-            block_until_first_chunk=block_until_first_chunk,
-            startup_release_event=startup_release_event,
-        )
+        super().__init__(ws_client=ws_client, control_hz=control_hz, realtime=realtime)
         self._m_param = m_param
 
     @override
