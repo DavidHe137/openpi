@@ -74,7 +74,7 @@ class ActionChunkBroker(ABC):
                 action = self._action_queue.popleft()
                 self._next_action_step += 1
             else:
-                # Startup block is released by either:
+                # TODO: can make this cleaner. Startup block is released by either:
                 # 1) this robot receiving its first action chunk, or
                 # 2) a shared startup-release event set by another robot's first dispatch.
                 if self._block_until_first_chunk and not self._startup_released():
@@ -82,7 +82,6 @@ class ActionChunkBroker(ABC):
                     request_sent = True
                     while not self._action_queue and not self._startup_released():
                         # Poll with timeout so we can observe shared startup release
-                        # without requiring a local chunk arrival notification.
                         self._actions_available.wait(timeout=0.01)
                 if self._action_queue:
                     action = self._action_queue.popleft()
@@ -119,10 +118,7 @@ class ActionChunkBroker(ABC):
                     infer_response=infer_response,
                     execution_start_step=self._next_observation_step,
                 )
-                # Discard chunks from a previous episode that arrive after reset.
-                # After reset, _next_observation_step=0 and any legitimate first chunk
-                # must have action_start_step near 0. A stale chunk from step ~500+
-                # of the prior episode would contaminate the new episode's queue.
+                # TODO: can probably make this cleaner. discard chunks from a previous episode that arrive after reset.
                 if (
                     not self._received_first_chunk
                     and action_chunk.action_start_step
