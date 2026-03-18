@@ -64,7 +64,7 @@ class Args:
     log_dir: str = "logs/server"
 
     # Scheduling algorithm for batching requests. # TODO: maybe should use enum?
-    scheduling_algorithm: Literal["greedy", "lookahead", "round_robin", "random"] = "greedy"
+    scheduling_algorithm: Literal["greedy", "lookahead", "round_robin", "random", "receding_horizon_ilp"] = "greedy"
 
     # Lookahead rollout horizon in milliseconds.
     lookahead_horizon_ms: int = 500
@@ -75,8 +75,23 @@ class Args:
     # Control frequency used to convert action chunks to wall-clock duration.
     lookahead_control_hz: int = 20
 
-    # Logging level.
-    log_debug: bool = False
+    # ILP discretization step in milliseconds.
+    ilp_timestep_ms: int = 10
+
+    # ILP planning horizon in discretized timesteps.
+    ilp_horizon_steps: int = 100
+
+    # Fraction of the horizon executed before swapping to the next receding plan.
+    ilp_execution_fraction: float = 0.75
+
+    # Per-solve time budget for the ILP backend.
+    ilp_solve_timeout_ms: int = 1000
+
+    # Optional action chunk length override for ILP. If unset, uses model action_horizon.
+    ilp_action_horizon_steps: int | None = None
+
+    # Logging level (DEBUG, INFO, WARNING, ERROR).
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
 
 # FIXME: may not be needed
@@ -115,15 +130,37 @@ def create_policy(args: Args) -> _policy.Policy:
             )
 
 
+def build_scheduler_kwargs(args: Args, *, action_horizon_steps: int) -> dict[str, object] | None:
+    if args.scheduling_algorithm == "lookahead":
+        return {
+            "horizon_ms": args.lookahead_horizon_ms,
+            "timestep_ms": args.lookahead_timestep_ms,
+            "action_horizon_steps": action_horizon_steps,
+            "control_hz": args.lookahead_control_hz,
+        }
+
+    if args.scheduling_algorithm == "receding_horizon_ilp":
+        ilp_action_horizon = args.ilp_action_horizon_steps or action_horizon_steps or 10
+        if ilp_action_horizon < 1:
+            ilp_action_horizon = 10
+        return {
+            "tick_ms": args.ilp_timestep_ms,
+            "horizon_steps": args.ilp_horizon_steps,
+            "execution_fraction": args.ilp_execution_fraction,
+            "solve_timeout_ms": args.ilp_solve_timeout_ms,
+            "action_horizon_steps": ilp_action_horizon,
+        }
+
+    return None
+
+
 def main(args: Args) -> None:
     log_path = (
         pathlib.Path(args.log_dir)
         / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
     )
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_queue, log_listener = logging_config.setup_logging(
-        log_path=log_path, level=logging.DEBUG if args.log_debug else logging.INFO
-    )
+    log_queue, log_listener = logging_config.setup_logging(log_path=log_path, level=getattr(logging, args.log_level))
 
     # Create policy factory to avoid CUDA context fork issues
     policy_factory = _PolicyFactory(args)
@@ -157,14 +194,7 @@ def main(args: Args) -> None:
     local_ip = socket.gethostbyname(hostname)
     logging.info("Creating server (host: %s, ip: %s)", hostname, local_ip)
 
-    scheduler_kwargs: dict[str, object] | None = None
-    if args.scheduling_algorithm == "lookahead":
-        scheduler_kwargs = {
-            "horizon_ms": args.lookahead_horizon_ms,
-            "timestep_ms": args.lookahead_timestep_ms,
-            "action_horizon_steps": server_metadata.action_horizon,
-            "control_hz": args.lookahead_control_hz,
-        }
+    scheduler_kwargs = build_scheduler_kwargs(args, action_horizon_steps=server_metadata.action_horizon)
 
     server = PolicyServer(
         metadata=server_metadata,
