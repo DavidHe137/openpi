@@ -42,6 +42,7 @@ class _SolveInput:
     horizon_tick: dict[str, int]
     earliest_sched_tick: dict[str, int]
     committed_chunks: dict[str, tuple[_CommittedChunk, ...]]
+    hint_batches_by_tick: dict[int, tuple[str, ...]]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -295,6 +296,17 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                         )
                     )
 
+        hint_batches_by_tick: dict[int, tuple[str, ...]] = {}
+        if self._active_plan is not None:
+            hint_end_tick = start_tick + self._horizon_steps
+            robot_id_set = set(robot_ids)
+            for tick, batch in self._active_plan.batches_by_tick.items():
+                if tick < start_tick or tick >= hint_end_tick:
+                    continue
+                hinted_batch = tuple(robot_id for robot_id in batch if robot_id in robot_id_set)
+                if hinted_batch:
+                    hint_batches_by_tick[tick] = hinted_batch
+
         return _SolveInput(
             start_tick=start_tick,
             horizon_steps=self._horizon_steps,
@@ -308,6 +320,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             horizon_tick=horizon_tick,
             earliest_sched_tick=earliest_sched_tick,
             committed_chunks={robot_id: tuple(chunks) for robot_id, chunks in committed_copy.items()},
+            hint_batches_by_tick=hint_batches_by_tick,
         )
 
     def _poll_solve_completion(self, now_tick: int) -> None:
@@ -589,18 +602,23 @@ class RecedingHorizonILPScheduler(RequestScheduler):
 
             model.setObjective(gp.quicksum(s.values()), gp.GRB.MINIMIZE)
 
-            # Starvation remains primary. Secondary terms encourage denser GPU packing
-            # (more scheduled work and larger batch tiers) among starvation-equivalent plans.
-            # starvation_expr = gp.quicksum(s.values())
-            # scheduled_work_expr = gp.quicksum(x.values())
-            # tier_util_expr = gp.quicksum(tier * var for (_, tier), var in y.items())
-            # max_secondary = (
-            #     solve_input.horizon_steps * len(solve_input.robot_ids)
-            #     + solve_input.horizon_steps * solve_input.max_batch_size
-            # )
-            # starvation_weight = float(max_secondary + 1)
-            # objective_expr = starvation_weight * starvation_expr - scheduled_work_expr - tier_util_expr
-            # model.setObjective(objective_expr, gp.GRB.MINIMIZE)
+            # Warm hints from the previous plan on overlapping ticks. This is a soft
+            # preference only; hints need not satisfy all constraints.
+            for tick, hinted_batch in solve_input.hint_batches_by_tick.items():
+                if tick < start_tick or tick >= horizon_end_tick:
+                    continue
+                hinted_size = len(hinted_batch)
+                if hinted_size < 1 or hinted_size > solve_input.max_batch_size:
+                    continue
+                hinted_set = set(hinted_batch)
+                for tier in tiers:
+                    y[tick, tier].VarHintVal = 1.0 if tier == hinted_size else 0.0
+                for robot_id in solve_input.robot_ids:
+                    for tier in tiers:
+                        if tier == hinted_size and robot_id in hinted_set:
+                            x[tick, robot_id, tier].VarHintVal = 1.0
+                        else:
+                            x[tick, robot_id, tier].VarHintVal = 0.0
 
             for tick in range(start_tick, horizon_end_tick):
                 for robot_id in solve_input.robot_ids:
