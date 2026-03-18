@@ -13,7 +13,6 @@ from openpi.scheduling.baselines import GreedyScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
 from openpi.scheduling.lookahead import LookaheadScheduler
-from openpi.scheduling.receding_horizon_ilp import RecedingHorizonILPScheduler
 from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import BatchProfile
 from openpi.serving.schemas import CompletionNotification
@@ -44,7 +43,6 @@ _SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
     "lookahead": LookaheadScheduler,
     "round_robin": RoundRobinScheduler,
     "random": RandomBatchScheduler,
-    "receding_horizon_ilp": RecedingHorizonILPScheduler,
 }
 
 
@@ -105,7 +103,7 @@ def _run_scheduler(
 
     batch_profile = _recv_batch_profile(result_sock)
 
-    extra_kwargs: dict = dict(scheduler_kwargs or {})
+    extra_kwargs: dict = dict(scheduler_kwargs or {}) if cls is LookaheadScheduler else {}
     scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile, **extra_kwargs)
 
     poller = zmq.Poller()
@@ -130,8 +128,6 @@ def _run_scheduler(
                 scheduler.update_ack(msg)
                 logger.debug("Received ack notification: %s", msg)
             elif isinstance(msg, WarmupSeed):
-                if isinstance(scheduler, RecedingHorizonILPScheduler):
-                    scheduler.update_warmup(msg)
                 for arrival_ts, request_ts in msg.obs_samples:
                     scheduler.latency.update_obs(msg.robot_id, arrival_ts, request_ts)
                 for client_receive_time, server_send_time in msg.delivery_samples:
