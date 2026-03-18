@@ -90,6 +90,12 @@ class Args:
     # Optional action chunk length override for ILP. If unset, uses model action_horizon.
     ilp_action_horizon_steps: int | None = None
 
+    # Secondary ILP tie-break: prioritize earlier scheduling density.
+    ilp_pack_early_weight: float = 0.2
+
+    # Secondary ILP tie-break: prioritize robots with older observations.
+    ilp_obs_staleness_weight: float = 0
+
     # Logging level (DEBUG, INFO, WARNING, ERROR).
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
@@ -149,6 +155,8 @@ def build_scheduler_kwargs(args: Args, *, action_horizon_steps: int) -> dict[str
             "execution_fraction": args.ilp_execution_fraction,
             "solve_timeout_ms": args.ilp_solve_timeout_ms,
             "action_horizon_steps": ilp_action_horizon,
+            "pack_early_weight": args.ilp_pack_early_weight,
+            "obs_staleness_weight": args.ilp_obs_staleness_weight,
         }
 
     return None

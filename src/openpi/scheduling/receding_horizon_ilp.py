@@ -42,7 +42,10 @@ class _SolveInput:
     horizon_tick: dict[str, int]
     earliest_sched_tick: dict[str, int]
     committed_chunks: dict[str, tuple[_CommittedChunk, ...]]
-    hint_batches_by_tick: dict[int, tuple[str, ...]]
+    # hint_batches_by_tick: dict[int, tuple[str, ...]]
+    obs_age_tick_at_start: dict[str, int]
+    pack_early_weight: float
+    obs_staleness_weight: float
 
 
 @dataclasses.dataclass(frozen=True)
@@ -89,6 +92,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         execution_fraction: float = 0.25,
         solve_timeout_ms: int = 500,
         action_horizon_steps: int = 10,
+        pack_early_weight: float = 1.0,
+        obs_staleness_weight: float = 0.1,
     ) -> None:
         super().__init__(batch_queue, max_batch_size, batch_profile)
 
@@ -97,6 +102,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         assert solve_timeout_ms >= 1, "solve_timeout_ms must be >= 1"
         assert 0 < execution_fraction <= 1, "execution_fraction must satisfy 0 < execution_fraction <= 1"
         assert action_horizon_steps >= 1, "action_horizon_steps must be >= 1"
+        assert pack_early_weight >= 0, "pack_early_weight must be >= 0"
+        assert obs_staleness_weight >= 0, "obs_staleness_weight must be >= 0"
 
         self._tick_ms = tick_ms
         self._tick_s = tick_ms / 1000.0
@@ -105,6 +112,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._execute_steps = max(1, math.floor(horizon_steps * execution_fraction))
         self._solve_timeout_s = solve_timeout_ms / 1000.0
         self._action_horizon_steps = action_horizon_steps
+        self._pack_early_weight = pack_early_weight
+        self._obs_staleness_weight = obs_staleness_weight
 
         self._epoch_monotonic = time.monotonic()
         self._bootstrap_start_monotonic = self._epoch_monotonic
@@ -124,13 +133,16 @@ class RecedingHorizonILPScheduler(RequestScheduler):
 
         logger.info(
             "RecedingHorizonILPScheduler configured: tick_ms=%d horizon_steps=%d "
-            "execution_fraction=%.3f execute_steps=%d solve_timeout_ms=%d action_horizon_steps=%d",
+            "execution_fraction=%.3f execute_steps=%d solve_timeout_ms=%d action_horizon_steps=%d "
+            "pack_early_weight=%.3f obs_staleness_weight=%.3f",
             self._tick_ms,
             self._horizon_steps,
             self._execution_fraction,
             self._execute_steps,
             solve_timeout_ms,
             self._action_horizon_steps,
+            self._pack_early_weight,
+            self._obs_staleness_weight,
         )
 
     def update(self, request: SlotRequest) -> None:
@@ -296,16 +308,24 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                         )
                     )
 
-        hint_batches_by_tick: dict[int, tuple[str, ...]] = {}
-        if self._active_plan is not None:
-            hint_end_tick = start_tick + self._horizon_steps
-            robot_id_set = set(robot_ids)
-            for tick, batch in self._active_plan.batches_by_tick.items():
-                if tick < start_tick or tick >= hint_end_tick:
-                    continue
-                hinted_batch = tuple(robot_id for robot_id in batch if robot_id in robot_id_set)
-                if hinted_batch:
-                    hint_batches_by_tick[tick] = hinted_batch
+        # hint_batches_by_tick: dict[int, tuple[str, ...]] = {}
+        # if self._active_plan is not None:
+        #     hint_end_tick = start_tick + self._horizon_steps
+        #     robot_id_set = set(robot_ids)
+        #     for tick, batch in self._active_plan.batches_by_tick.items():
+        #         if tick < start_tick or tick >= hint_end_tick:
+        #             continue
+        #         hinted_batch = tuple(robot_id for robot_id in batch if robot_id in robot_id_set)
+        #         if hinted_batch:
+        #             hint_batches_by_tick[tick] = hinted_batch
+
+        now_wall_time = time.time()
+        obs_age_tick_at_start = {
+            robot_id: self._to_ticks(
+                max(0.0, (now_wall_time - self._latest_requests[robot_id].request_timestamp) * 1000.0)
+            )
+            for robot_id in robot_ids
+        }
 
         return _SolveInput(
             start_tick=start_tick,
@@ -320,7 +340,10 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             horizon_tick=horizon_tick,
             earliest_sched_tick=earliest_sched_tick,
             committed_chunks={robot_id: tuple(chunks) for robot_id, chunks in committed_copy.items()},
-            hint_batches_by_tick=hint_batches_by_tick,
+            # hint_batches_by_tick=hint_batches_by_tick,
+            obs_age_tick_at_start=obs_age_tick_at_start,
+            pack_early_weight=self._pack_early_weight,
+            obs_staleness_weight=self._obs_staleness_weight,
         )
 
     def _poll_solve_completion(self, now_tick: int) -> None:
@@ -600,25 +623,58 @@ class RecedingHorizonILPScheduler(RequestScheduler):
 
             model.update()
 
-            model.setObjective(gp.quicksum(s.values()), gp.GRB.MINIMIZE)
+            starvation_expr = gp.quicksum(s.values())
+            model.ModelSense = gp.GRB.MINIMIZE
+            model.setObjectiveN(
+                starvation_expr,
+                index=0,
+                priority=2,
+                weight=1.0,
+                name="starvation",
+            )
 
-            # Warm hints from the previous plan on overlapping ticks. This is a soft
-            # preference only; hints need not satisfy all constraints.
-            for tick, hinted_batch in solve_input.hint_batches_by_tick.items():
-                if tick < start_tick or tick >= horizon_end_tick:
-                    continue
-                hinted_size = len(hinted_batch)
-                if hinted_size < 1 or hinted_size > solve_input.max_batch_size:
-                    continue
-                hinted_set = set(hinted_batch)
-                for tier in tiers:
-                    y[tick, tier].VarHintVal = 1.0 if tier == hinted_size else 0.0
-                for robot_id in solve_input.robot_ids:
-                    for tier in tiers:
-                        if tier == hinted_size and robot_id in hinted_set:
-                            x[tick, robot_id, tier].VarHintVal = 1.0
-                        else:
-                            x[tick, robot_id, tier].VarHintVal = 0.0
+            # Secondary tie-break objective:
+            # 1) pack work earlier in the horizon, and
+            # 2) prioritize older observations when choosing which robots to schedule.
+            if solve_input.pack_early_weight > 0 or solve_input.obs_staleness_weight > 0:
+                utility_terms: list[Any] = []
+                for tick in range(start_tick, horizon_end_tick):
+                    pack_utility = solve_input.pack_early_weight * (horizon_end_tick - tick)
+                    wait_ticks = tick - start_tick
+                    for robot_id in solve_input.robot_ids:
+                        stale_utility = solve_input.obs_staleness_weight * (
+                            solve_input.obs_age_tick_at_start[robot_id] + wait_ticks
+                        )
+                        coeff = pack_utility + stale_utility
+                        if coeff <= 0:
+                            continue
+                        utility_terms.extend(coeff * x[tick, robot_id, tier] for tier in tiers)
+
+                if utility_terms:
+                    model.setObjectiveN(
+                        -gp.quicksum(utility_terms),
+                        index=1,
+                        priority=1,
+                        weight=1.0,
+                        name="pack_and_staleness_tiebreak",
+                    )
+
+            # # hint stuff. commented out for now
+            # for tick, hinted_batch in solve_input.hint_batches_by_tick.items():
+            #     if tick < start_tick or tick >= horizon_end_tick:
+            #         continue
+            #     hinted_size = len(hinted_batch)
+            #     if hinted_size < 1 or hinted_size > solve_input.max_batch_size:
+            #         continue
+            #     hinted_set = set(hinted_batch)
+            #     for tier in tiers:
+            #         y[tick, tier].VarHintVal = 1.0 if tier == hinted_size else 0.0
+            #     for robot_id in solve_input.robot_ids:
+            #         for tier in tiers:
+            #             if tier == hinted_size and robot_id in hinted_set:
+            #                 x[tick, robot_id, tier].VarHintVal = 1.0
+            #             else:
+            #                 x[tick, robot_id, tier].VarHintVal = 0.0
 
             for tick in range(start_tick, horizon_end_tick):
                 for robot_id in solve_input.robot_ids:
