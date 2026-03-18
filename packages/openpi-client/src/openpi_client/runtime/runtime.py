@@ -93,3 +93,5 @@ class Runtime:
     def close(self) -> None:
         """Closes the runtime."""
         self._environment.close()
+        for subscriber in self._subscribers:
+            subscriber.close()

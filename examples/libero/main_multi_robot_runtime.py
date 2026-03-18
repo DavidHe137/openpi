@@ -4,7 +4,6 @@ import pathlib
 import multiprocessing
 import queue
 import shutil
-from concurrent.futures import ThreadPoolExecutor
 from typing import List, Literal, Optional, Dict, Type
 import random
 import datetime
@@ -49,7 +48,6 @@ _task_suite = None
 _first_episode = None
 _worker_progress_subscriber: Optional[ProgressSubscriber] = None
 _episode_queue = None  # multiprocessing.Queue inherited via initargs
-_save_executor: Optional[ThreadPoolExecutor] = None
 
 
 @dataclass
@@ -132,8 +130,7 @@ def init_worker(
         _task_suite, \
         _first_episode, \
         _worker_progress_subscriber, \
-        _episode_queue, \
-        _save_executor
+        _episode_queue
     with counter.get_lock():
         robot_idx = counter.value
         counter.value += 1
@@ -168,10 +165,6 @@ def init_worker(
 
     # Store episode queue globally so _robot_worker can access it without pickling
     _episode_queue = episode_queue
-
-    # One thread is enough: saves are sequential per worker and we just want
-    # them to happen concurrently with the next episode's execution.
-    _save_executor = ThreadPoolExecutor(max_workers=5)
 
     # Pre-fetch first episode from queue
     _first_episode = None
@@ -269,7 +262,6 @@ def _robot_worker(task_args) -> None:
                 task_id=episode.task_id,
                 task=episode.task,
                 robot_idx=robot_idx,
-                executor=_save_executor,
             ),
             TaskMetricsPublisher(
                 ws_client=ws_client,
@@ -301,10 +293,6 @@ def _robot_worker(task_args) -> None:
             episode = _episode_queue.get_nowait()
         except queue.Empty:
             episode = None
-
-    # Drain any in-flight save before the worker exits
-    if _save_executor is not None:
-        _save_executor.shutdown(wait=True)
 
     # Emit worker_complete
     if _worker_progress_subscriber is not None:
