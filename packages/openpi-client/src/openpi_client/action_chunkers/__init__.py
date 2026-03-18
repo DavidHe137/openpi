@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
-from typing import Optional
 from typing import Type
 
 from openpi_client.client import BidirectionalWebsocket
@@ -19,8 +17,6 @@ class BrokerConfig:
     ws_client: BidirectionalWebsocket
     control_hz: int
     execution_horizon: int
-    block_until_first_chunk: bool = True
-    startup_release_event: Optional[Any] = None
     # Optional parameters for specific brokers
     m_param: float = 1.0  # For temporal_ensembling: exponential decay rate
 
