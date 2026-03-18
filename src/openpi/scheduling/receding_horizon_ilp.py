@@ -42,6 +42,9 @@ class _SolveInput:
     horizon_tick: dict[str, int]
     earliest_sched_tick: dict[str, int]
     committed_chunks: dict[str, tuple[_CommittedChunk, ...]]
+    obs_age_tick_at_start: dict[str, int]
+    pack_early_weight: float
+    obs_staleness_weight: float
 
 
 @dataclasses.dataclass(frozen=True)
@@ -88,6 +91,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         execution_fraction: float = 0.25,
         solve_timeout_ms: int = 500,
         action_horizon_steps: int = 10,
+        pack_early_weight: float = 1.0,
+        obs_staleness_weight: float = 0.1,
     ) -> None:
         super().__init__(batch_queue, max_batch_size, batch_profile)
 
@@ -96,6 +101,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         assert solve_timeout_ms >= 1, "solve_timeout_ms must be >= 1"
         assert 0 < execution_fraction <= 1, "execution_fraction must satisfy 0 < execution_fraction <= 1"
         assert action_horizon_steps >= 1, "action_horizon_steps must be >= 1"
+        assert pack_early_weight >= 0, "pack_early_weight must be >= 0"
+        assert obs_staleness_weight >= 0, "obs_staleness_weight must be >= 0"
 
         self._tick_ms = tick_ms
         self._tick_s = tick_ms / 1000.0
@@ -104,6 +111,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._execute_steps = max(1, math.floor(horizon_steps * execution_fraction))
         self._solve_timeout_s = solve_timeout_ms / 1000.0
         self._action_horizon_steps = action_horizon_steps
+        self._pack_early_weight = pack_early_weight
+        self._obs_staleness_weight = obs_staleness_weight
 
         self._epoch_monotonic = time.monotonic()
         self._bootstrap_start_monotonic = self._epoch_monotonic
@@ -123,13 +132,16 @@ class RecedingHorizonILPScheduler(RequestScheduler):
 
         logger.info(
             "RecedingHorizonILPScheduler configured: tick_ms=%d horizon_steps=%d "
-            "execution_fraction=%.3f execute_steps=%d solve_timeout_ms=%d action_horizon_steps=%d",
+            "execution_fraction=%.3f execute_steps=%d solve_timeout_ms=%d action_horizon_steps=%d "
+            "pack_early_weight=%.3f obs_staleness_weight=%.3f",
             self._tick_ms,
             self._horizon_steps,
             self._execution_fraction,
             self._execute_steps,
             solve_timeout_ms,
             self._action_horizon_steps,
+            self._pack_early_weight,
+            self._obs_staleness_weight,
         )
 
     def update(self, request: SlotRequest) -> None:
@@ -214,10 +226,10 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._record_metric("ilp_replan_kickoff", 0.0)
         self._solve_seq += 1
         solve_id = self._solve_seq
-        d_infer_vals = tuple(solve_input.d_infer_tick.values())
-        d_send_vals = tuple(solve_input.d_send_tick.values())
-        d_recv_vals = tuple(solve_input.d_recv_tick.values())
-        horizon_vals = tuple(solve_input.horizon_tick.values())
+        # d_infer_vals = tuple(solve_input.d_infer_tick.values())
+        # d_send_vals = tuple(solve_input.d_send_tick.values())
+        # d_recv_vals = tuple(solve_input.d_recv_tick.values())
+        # horizon_vals = tuple(solve_input.horizon_tick.values())
         impossible_robots = 0
         for robot_id in solve_input.robot_ids:
             d_send = solve_input.d_send_tick[robot_id]
@@ -238,22 +250,22 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             solve_input.execute_steps,
             len(solve_input.robot_ids),
         )
-        logger.info(
-            "ILP discretization: solve_id=%d d_infer_tick[min,max]=[%d,%d] "
-            "d_send_tick[min,max]=[%d,%d] d_recv_tick[min,max]=[%d,%d] "
-            "chunk_horizon_tick[min,max]=[%d,%d] impossible_robots=%d/%d",
-            solve_id,
-            min(d_infer_vals),
-            max(d_infer_vals),
-            min(d_send_vals),
-            max(d_send_vals),
-            min(d_recv_vals),
-            max(d_recv_vals),
-            min(horizon_vals),
-            max(horizon_vals),
-            impossible_robots,
-            len(solve_input.robot_ids),
-        )
+        # logger.info(
+        #     "ILP discretization: solve_id=%d d_infer_tick[min,max]=[%d,%d] "
+        #     "d_send_tick[min,max]=[%d,%d] d_recv_tick[min,max]=[%d,%d] "
+        #     "chunk_horizon_tick[min,max]=[%d,%d] impossible_robots=%d/%d",
+        #     solve_id,
+        #     min(d_infer_vals),
+        #     max(d_infer_vals),
+        #     min(d_send_vals),
+        #     max(d_send_vals),
+        #     min(d_recv_vals),
+        #     max(d_recv_vals),
+        #     min(horizon_vals),
+        #     max(horizon_vals),
+        #     impossible_robots,
+        #     len(solve_input.robot_ids),
+        # )
         self._solve_kickoff_monotonic = time.monotonic()
         self._inflight_solve_id = solve_id
         self._solve_future = self._executor.submit(self._solve_ilp, solve_input)
@@ -295,6 +307,14 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                         )
                     )
 
+        now_wall_time = time.time()
+        obs_age_tick_at_start = {
+            robot_id: self._to_ticks(
+                max(0.0, (now_wall_time - self._latest_requests[robot_id].request_timestamp) * 1000.0)
+            )
+            for robot_id in robot_ids
+        }
+
         return _SolveInput(
             start_tick=start_tick,
             horizon_steps=self._horizon_steps,
@@ -308,6 +328,9 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             horizon_tick=horizon_tick,
             earliest_sched_tick=earliest_sched_tick,
             committed_chunks={robot_id: tuple(chunks) for robot_id, chunks in committed_copy.items()},
+            obs_age_tick_at_start=obs_age_tick_at_start,
+            pack_early_weight=self._pack_early_weight,
+            obs_staleness_weight=self._obs_staleness_weight,
         )
 
     def _poll_solve_completion(self, now_tick: int) -> None:
@@ -454,7 +477,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         if last is None:
             return start_tick
 
-        required_action_step = last.action_start_step + last.execution_horizon
+        required_action_step = last.action_start_step + 0  # TODO hardcode test
         remaining_steps = required_action_step - request.action_start_step
         if remaining_steps <= 0:
             return start_tick
@@ -586,7 +609,42 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                     y[tick, tier] = model.addVar(vtype=gp.GRB.BINARY)
 
             model.update()
-            model.setObjective(gp.quicksum(s.values()), gp.GRB.MINIMIZE)
+
+            starvation_expr = gp.quicksum(s.values())
+            model.ModelSense = gp.GRB.MINIMIZE
+            model.setObjectiveN(
+                starvation_expr,
+                index=0,
+                priority=2,
+                weight=1.0,
+                name="starvation",
+            )
+
+            # Secondary tie-break objective:
+            # 1) pack work earlier in the horizon, and
+            # 2) prioritize older observations when choosing which robots to schedule.
+            if solve_input.pack_early_weight > 0 or solve_input.obs_staleness_weight > 0:
+                utility_terms: list[Any] = []
+                for tick in range(start_tick, horizon_end_tick):
+                    pack_utility = solve_input.pack_early_weight * (horizon_end_tick - tick)
+                    wait_ticks = tick - start_tick
+                    for robot_id in solve_input.robot_ids:
+                        stale_utility = solve_input.obs_staleness_weight * (
+                            solve_input.obs_age_tick_at_start[robot_id] + wait_ticks
+                        )
+                        coeff = pack_utility + stale_utility
+                        if coeff <= 0:
+                            continue
+                        utility_terms.extend(coeff * x[tick, robot_id, tier] for tier in tiers)
+
+                if utility_terms:
+                    model.setObjectiveN(
+                        -gp.quicksum(utility_terms),
+                        index=1,
+                        priority=1,
+                        weight=1.0,
+                        name="pack_and_staleness_tiebreak",
+                    )
 
             for tick in range(start_tick, horizon_end_tick):
                 for robot_id in solve_input.robot_ids:
