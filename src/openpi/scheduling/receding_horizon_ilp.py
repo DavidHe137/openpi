@@ -586,7 +586,21 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                     y[tick, tier] = model.addVar(vtype=gp.GRB.BINARY)
 
             model.update()
+
             model.setObjective(gp.quicksum(s.values()), gp.GRB.MINIMIZE)
+
+            # Starvation remains primary. Secondary terms encourage denser GPU packing
+            # (more scheduled work and larger batch tiers) among starvation-equivalent plans.
+            # starvation_expr = gp.quicksum(s.values())
+            # scheduled_work_expr = gp.quicksum(x.values())
+            # tier_util_expr = gp.quicksum(tier * var for (_, tier), var in y.items())
+            # max_secondary = (
+            #     solve_input.horizon_steps * len(solve_input.robot_ids)
+            #     + solve_input.horizon_steps * solve_input.max_batch_size
+            # )
+            # starvation_weight = float(max_secondary + 1)
+            # objective_expr = starvation_weight * starvation_expr - scheduled_work_expr - tier_util_expr
+            # model.setObjective(objective_expr, gp.GRB.MINIMIZE)
 
             for tick in range(start_tick, horizon_end_tick):
                 for robot_id in solve_input.robot_ids:
