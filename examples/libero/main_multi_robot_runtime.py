@@ -413,6 +413,25 @@ def create_episodes(args: Args) -> List[Episode]:
     return episodes
 
 
+def _fetch_server_metadata(
+    host: str, port: int, timeout_s: float = 120.0
+) -> ServerMetadata:
+    """Fetch server metadata, retrying until timeout_s seconds have elapsed."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            resp = requests.get(f"http://{host}:{port}/metadata", timeout=5.0)
+            resp.raise_for_status()
+            return ServerMetadata(**resp.json())
+        except Exception as e:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Server at {host}:{port} did not respond within {timeout_s:.0f}s"
+                ) from e
+            logging.info("Waiting for server to be ready (%s); retrying in 5s...", e)
+            time.sleep(5.0)
+
+
 def main(args: Args) -> None:
     # Set up a temporary console-only logger until the output dir is ready.
     logging_config.setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
@@ -444,12 +463,8 @@ def main(args: Args) -> None:
 
     episodes = create_episodes(args)
 
-    # Fetch server metadata over HTTP to avoid creating a temporary websocket robot.
-    metadata_resp = requests.get(
-        f"http://{args.host}:{args.port}/metadata", timeout=5.0
-    )
-    metadata_resp.raise_for_status()
-    server_metadata = ServerMetadata(**metadata_resp.json())
+    # Fetch server metadata over HTTP, retrying for up to 2 minutes.
+    server_metadata = _fetch_server_metadata(args.host, args.port)
 
     # Create runtime metadata
     runtime_metadata = RuntimeMetadata(
