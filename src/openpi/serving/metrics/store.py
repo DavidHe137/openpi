@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass
 from dataclasses import field
 import itertools
+import logging
 import threading
 import time
 
@@ -22,6 +24,8 @@ from openpi.serving.metrics.schemas import RobotID
 from openpi.serving.metrics.schemas import window_filter
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
+
+logger = logging.getLogger(__name__)
 
 # TODO: make sure nans are nans and not 0s
 # TODO: make sure s, ms, and ns are consistent
@@ -50,6 +54,8 @@ class Snapshot:
     batch_history: list[dict]
     outbound_delays_ms: dict[str, list[float]]
     scheduler_timing_ms: dict[str, list[float]]
+    replan_markers: list[dict]
+    kickoff_markers: list[dict]
     task_events: list[dict]
     task_progress: list[dict]
     scheduling_decisions: list[dict]
@@ -57,7 +63,9 @@ class Snapshot:
     @property
     def uptime_s(self) -> float:
         uptime_s = self.end_time - self.start_time
-        assert uptime_s >= 0, "Uptime cannot be negative"
+        if uptime_s < 0:
+            logger.warning("Uptime is negative: %s", uptime_s)
+            return 0.0
         return uptime_s
 
     @property
@@ -116,7 +124,12 @@ class Snapshot:
 
     @property
     def tp_suc_per_sec_all(self) -> float:
-        return sum(1 for _, ep in self.completed_episodes if ep.success) / self.uptime_s
+        return sum(1 for _, ep in self.completed_episodes if ep.success) / self.uptime_s if self.uptime_s > 0 else 0.0
+
+    @property
+    def replan_times_s(self) -> list[float]:
+        """Backward-compat shim for older dashboard code paths."""
+        return [float(marker.get("t", 0.0)) for marker in self.replan_markers]
 
 
 @dataclass
@@ -348,6 +361,39 @@ class MetricsStore(JSONDataclass):
                 )
 
             # ---- batch history for charts ----
+            plan_activation_abs = sorted(
+                sample.recorded_at
+                for sample in self.scheduler_decisions
+                if sample.metric_name == "ilp_plan_activated" and sample.recorded_at <= self.end_time
+            )
+            kickoff_abs = sorted(
+                sample.recorded_at
+                for sample in self.scheduler_decisions
+                if sample.metric_name == "ilp_replan_kickoff" and sample.recorded_at <= self.end_time
+            )
+            replan_markers = [
+                {
+                    "t": round(ts - t0, 3),
+                    "plan_index": idx,
+                }
+                for idx, ts in enumerate(plan_activation_abs)
+                if start_timestamp <= ts < self.end_time
+            ]
+            kickoff_markers = []
+            kickoff_cursor = 0
+            for plan_index, activation_ts in enumerate(plan_activation_abs):
+                while kickoff_cursor + 1 < len(kickoff_abs) and kickoff_abs[kickoff_cursor + 1] <= activation_ts:
+                    kickoff_cursor += 1
+                if kickoff_cursor < len(kickoff_abs) and kickoff_abs[kickoff_cursor] <= activation_ts:
+                    kickoff_ts = kickoff_abs[kickoff_cursor]
+                    if start_timestamp <= kickoff_ts < self.end_time:
+                        kickoff_markers.append(
+                            {
+                                "t": round(kickoff_ts - t0, 3),
+                                "plan_index": plan_index,
+                            }
+                        )
+
             response_by_id: dict[int, ResponseRecord] = {
                 resp.request.request_id: resp
                 for robot in self.robots.values()
@@ -356,6 +402,11 @@ class MetricsStore(JSONDataclass):
             }
             batch_history = []
             for i, b in enumerate(batches):
+                plan_index = None
+                if plan_activation_abs:
+                    idx = bisect.bisect_right(plan_activation_abs, b.inference_start_time) - 1
+                    if idx >= 0:
+                        plan_index = idx
                 per_req = []
                 for rid, req_id in zip(b.robot_ids, b.request_ids, strict=True):
                     resp = response_by_id.get(req_id)
@@ -392,6 +443,7 @@ class MetricsStore(JSONDataclass):
                         "inference_start_t": round(b.inference_start_time - t0, 3),
                         "inference_end_t": round(b.inference_end_time - t0, 3),
                         "robot_ids": b.robot_ids,
+                        "plan_index": plan_index,
                         "per_request": per_req,
                     }
                 )
@@ -497,6 +549,8 @@ class MetricsStore(JSONDataclass):
                 batch_history=batch_history,
                 outbound_delays_ms=outbound_delays_ms,
                 scheduler_timing_ms=scheduler_timing_ms,
+                replan_markers=replan_markers,
+                kickoff_markers=kickoff_markers,
                 task_events=task_events,
                 task_progress=task_progress,
                 scheduling_decisions=scheduling_decisions,

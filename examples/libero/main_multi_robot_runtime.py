@@ -456,15 +456,12 @@ def main(args: Args) -> None:
 
     episodes = create_episodes(args)
 
-    # Connect to get server metadata
-    temp_client = BidirectionalWebsocket(
-        robot_id="robot",
-        host=args.host,
-        port=args.port,
-        control_hz=args.control_hz,
+    # Fetch server metadata over HTTP to avoid creating a temporary websocket robot.
+    metadata_resp = requests.get(
+        f"http://{args.host}:{args.port}/metadata", timeout=5.0
     )
-    server_metadata = temp_client.server_metadata
-    temp_client.close()
+    metadata_resp.raise_for_status()
+    server_metadata = ServerMetadata(**metadata_resp.json())
 
     # Create runtime metadata
     runtime_metadata = RuntimeMetadata(

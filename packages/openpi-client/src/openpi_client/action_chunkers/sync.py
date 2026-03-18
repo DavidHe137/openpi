@@ -12,11 +12,7 @@ class SyncBroker(ActionChunkBroker):
     """
 
     def __init__(
-        self,
-        ws_client: BidirectionalWebsocket,
-        control_hz: int,
-        realtime: bool = True,
-        execution_horizon: int = 0,
+        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
     ):
         super().__init__(
             ws_client=ws_client,
