@@ -24,7 +24,11 @@ class ActionChunkBroker(ABC):
     """
 
     def __init__(
-        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
+        self,
+        ws_client: BidirectionalWebsocket,
+        control_hz: int,
+        realtime: bool = True,
+        execution_horizon: int = 0,
     ) -> None:
         self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
@@ -86,7 +90,6 @@ class ActionChunkBroker(ABC):
                     infer_response=infer_response,
                     execution_start_step=self._next_observation_step,
                 )
-
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)
                 first_executed_index = max(0, self._next_action_step - action_chunk.action_start_step)
@@ -128,7 +131,6 @@ class ActionChunkBroker(ABC):
             self._action_queue.clear()
             self._action_chunks = []
             self._actions_left_history = []
-            self._received_first_chunk = False
             self._ws_client.reset()
 
     @property

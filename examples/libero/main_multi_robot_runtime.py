@@ -370,12 +370,15 @@ def main(args: Args) -> None:
 
     jobs = create_jobs(args)
 
-    # Fetch server metadata over HTTP to avoid creating a temporary websocket robot.
-    metadata_resp = requests.get(
-        f"http://{args.host}:{args.port}/metadata", timeout=5.0
+    # Connect to get server metadata
+    temp_client = BidirectionalWebsocket(
+        robot_id="robot",
+        host=args.host,
+        port=args.port,
+        control_hz=args.control_hz,
     )
-    metadata_resp.raise_for_status()
-    server_metadata = ServerMetadata(**metadata_resp.json())
+    server_metadata = temp_client.server_metadata
+    temp_client.close()
 
     # Create runtime metadata
     runtime_metadata = RuntimeMetadata(
