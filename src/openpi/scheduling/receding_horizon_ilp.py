@@ -214,10 +214,10 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._record_metric("ilp_replan_kickoff", 0.0)
         self._solve_seq += 1
         solve_id = self._solve_seq
-        d_infer_vals = tuple(solve_input.d_infer_tick.values())
-        d_send_vals = tuple(solve_input.d_send_tick.values())
-        d_recv_vals = tuple(solve_input.d_recv_tick.values())
-        horizon_vals = tuple(solve_input.horizon_tick.values())
+        # d_infer_vals = tuple(solve_input.d_infer_tick.values())
+        # d_send_vals = tuple(solve_input.d_send_tick.values())
+        # d_recv_vals = tuple(solve_input.d_recv_tick.values())
+        # horizon_vals = tuple(solve_input.horizon_tick.values())
         impossible_robots = 0
         for robot_id in solve_input.robot_ids:
             d_send = solve_input.d_send_tick[robot_id]
@@ -238,22 +238,22 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             solve_input.execute_steps,
             len(solve_input.robot_ids),
         )
-        logger.info(
-            "ILP discretization: solve_id=%d d_infer_tick[min,max]=[%d,%d] "
-            "d_send_tick[min,max]=[%d,%d] d_recv_tick[min,max]=[%d,%d] "
-            "chunk_horizon_tick[min,max]=[%d,%d] impossible_robots=%d/%d",
-            solve_id,
-            min(d_infer_vals),
-            max(d_infer_vals),
-            min(d_send_vals),
-            max(d_send_vals),
-            min(d_recv_vals),
-            max(d_recv_vals),
-            min(horizon_vals),
-            max(horizon_vals),
-            impossible_robots,
-            len(solve_input.robot_ids),
-        )
+        # logger.info(
+        #     "ILP discretization: solve_id=%d d_infer_tick[min,max]=[%d,%d] "
+        #     "d_send_tick[min,max]=[%d,%d] d_recv_tick[min,max]=[%d,%d] "
+        #     "chunk_horizon_tick[min,max]=[%d,%d] impossible_robots=%d/%d",
+        #     solve_id,
+        #     min(d_infer_vals),
+        #     max(d_infer_vals),
+        #     min(d_send_vals),
+        #     max(d_send_vals),
+        #     min(d_recv_vals),
+        #     max(d_recv_vals),
+        #     min(horizon_vals),
+        #     max(horizon_vals),
+        #     impossible_robots,
+        #     len(solve_input.robot_ids),
+        # )
         self._solve_kickoff_monotonic = time.monotonic()
         self._inflight_solve_id = solve_id
         self._solve_future = self._executor.submit(self._solve_ilp, solve_input)
@@ -454,7 +454,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         if last is None:
             return start_tick
 
-        required_action_step = last.action_start_step + last.execution_horizon
+        required_action_step = last.action_start_step + 0  # TODO hardcode test
         remaining_steps = required_action_step - request.action_start_step
         if remaining_steps <= 0:
             return start_tick
