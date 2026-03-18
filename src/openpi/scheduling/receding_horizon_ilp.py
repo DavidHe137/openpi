@@ -42,7 +42,6 @@ class _SolveInput:
     horizon_tick: dict[str, int]
     earliest_sched_tick: dict[str, int]
     committed_chunks: dict[str, tuple[_CommittedChunk, ...]]
-    # hint_batches_by_tick: dict[int, tuple[str, ...]]
     obs_age_tick_at_start: dict[str, int]
     pack_early_weight: float
     obs_staleness_weight: float
@@ -308,17 +307,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                         )
                     )
 
-        # hint_batches_by_tick: dict[int, tuple[str, ...]] = {}
-        # if self._active_plan is not None:
-        #     hint_end_tick = start_tick + self._horizon_steps
-        #     robot_id_set = set(robot_ids)
-        #     for tick, batch in self._active_plan.batches_by_tick.items():
-        #         if tick < start_tick or tick >= hint_end_tick:
-        #             continue
-        #         hinted_batch = tuple(robot_id for robot_id in batch if robot_id in robot_id_set)
-        #         if hinted_batch:
-        #             hint_batches_by_tick[tick] = hinted_batch
-
         now_wall_time = time.time()
         obs_age_tick_at_start = {
             robot_id: self._to_ticks(
@@ -340,7 +328,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             horizon_tick=horizon_tick,
             earliest_sched_tick=earliest_sched_tick,
             committed_chunks={robot_id: tuple(chunks) for robot_id, chunks in committed_copy.items()},
-            # hint_batches_by_tick=hint_batches_by_tick,
             obs_age_tick_at_start=obs_age_tick_at_start,
             pack_early_weight=self._pack_early_weight,
             obs_staleness_weight=self._obs_staleness_weight,
@@ -658,23 +645,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                         weight=1.0,
                         name="pack_and_staleness_tiebreak",
                     )
-
-            # # hint stuff. commented out for now
-            # for tick, hinted_batch in solve_input.hint_batches_by_tick.items():
-            #     if tick < start_tick or tick >= horizon_end_tick:
-            #         continue
-            #     hinted_size = len(hinted_batch)
-            #     if hinted_size < 1 or hinted_size > solve_input.max_batch_size:
-            #         continue
-            #     hinted_set = set(hinted_batch)
-            #     for tier in tiers:
-            #         y[tick, tier].VarHintVal = 1.0 if tier == hinted_size else 0.0
-            #     for robot_id in solve_input.robot_ids:
-            #         for tier in tiers:
-            #             if tier == hinted_size and robot_id in hinted_set:
-            #                 x[tick, robot_id, tier].VarHintVal = 1.0
-            #             else:
-            #                 x[tick, robot_id, tier].VarHintVal = 0.0
 
             for tick in range(start_tick, horizon_end_tick):
                 for robot_id in solve_input.robot_ids:
