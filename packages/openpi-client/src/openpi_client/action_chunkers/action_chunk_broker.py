@@ -35,7 +35,7 @@ class ActionChunkBroker(ABC):
         ws_client: BidirectionalWebsocket,
         control_hz: int,
         realtime: bool = True,
-        min_execution_horizon: int = 0,
+        execution_horizon: int = 0,
         block_until_first_chunk: bool = True,
         startup_release_event: Optional[_StartupReleaseEvent] = None,
     ) -> None:
@@ -47,7 +47,7 @@ class ActionChunkBroker(ABC):
 
         self._step_duration = 1 / control_hz
         self._realtime = realtime
-        self._min_execution_horizon = min_execution_horizon
+        self.execution_horizon = execution_horizon
         self._block_until_first_chunk = block_until_first_chunk
         self._received_first_chunk = False
         self._startup_release_event = startup_release_event
@@ -164,7 +164,7 @@ class ActionChunkBroker(ABC):
             obs,
             self.deadline,
             self._next_action_step,
-            min_execution_horizon=self._min_execution_horizon,
+            execution_horizon=self.execution_horizon,
         )
 
     def reset(self) -> None:

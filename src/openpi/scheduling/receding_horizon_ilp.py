@@ -13,7 +13,7 @@ from typing import Any
 import gurobipy as gp
 
 from openpi.scheduling import RequestScheduler
-from openpi.serving.schemas import SchedulerTimingSample
+from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import WarmupSeed
 
@@ -56,8 +56,6 @@ class _SolveResult:
     d_recv_tick: dict[str, int]
     horizon_tick: dict[str, int]
     solve_ms: float
-    success: bool
-    error: str | None = None
     status_code: int | None = None
     status_name: str | None = None
     sol_count: int | None = None
@@ -80,8 +78,6 @@ class _PlanState:
 
 
 class RecedingHorizonILPScheduler(RequestScheduler):
-    """Asynchronous receding-horizon ILP scheduler with 10ms default discretization."""
-
     def __init__(
         self,
         batch_queue: mp.Queue,
@@ -140,7 +136,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         )
 
     def update(self, request: SlotRequest) -> None:
-        """Update latest request and latency; deadlines are intentionally ignored."""
+        # ignore deadlines, maybe a todo
         self._latest_requests[request.robot_id] = request
         self.latency.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
 
@@ -152,7 +148,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             return
 
         now_tick = self._now_tick()
-        with self.record_timing("schedule_decision"):
+        with self.record_timing():
             candidate = self._compute_dispatch_candidate(now_tick)
 
         if candidate is None:
@@ -187,7 +183,9 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._poll_solve_completion(now_tick)
 
         if self._active_plan is None:
-            missing_bootstrap = self._missing_bootstrap_robot_ids()
+            missing_bootstrap = tuple(
+                sorted(robot_id for robot_id in self._bootstrap_robot_ids if robot_id not in self._latest_requests)
+            )
             if missing_bootstrap:
                 if self._bootstrap_waiting_missing_ids != missing_bootstrap:
                     logger.info(
@@ -203,7 +201,13 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             return None
 
         self._swap_pending_if_ready(now_tick)
-        self._kickoff_next_receding_solve(now_tick)
+        if self._pending_plan is None and self._solve_future is None:
+            target = (
+                now_tick
+                if self._active_plan.cursor_tick >= self._active_plan.horizon_end_tick
+                else max(now_tick, self._active_plan.boundary_tick)
+            )
+            self._kickoff_solve(start_tick=target, now_tick=now_tick)
 
         if now_tick < self._server_available_tick:
             return None
@@ -219,25 +223,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         _, robot_ids = dispatch
         selected = tuple(schedulable[robot_id] for robot_id in robot_ids if robot_id in schedulable)
         return selected or None
-
-    def _missing_bootstrap_robot_ids(self) -> tuple[str, ...]:
-        if not self._bootstrap_robot_ids:
-            return ()
-        return tuple(
-            sorted(robot_id for robot_id in self._bootstrap_robot_ids if robot_id not in self._latest_requests)
-        )
-
-    def _kickoff_next_receding_solve(self, now_tick: int) -> None:
-        if self._active_plan is None:
-            return
-        if self._pending_plan is not None or self._solve_future is not None:
-            return
-
-        if self._active_plan.cursor_tick >= self._active_plan.horizon_end_tick:
-            target = now_tick
-        else:
-            target = max(now_tick, self._active_plan.boundary_tick)
-        self._kickoff_solve(start_tick=target, now_tick=now_tick)
 
     def _kickoff_solve(self, *, start_tick: int, now_tick: int) -> None:
         if self._solve_future is not None:
@@ -358,26 +343,13 @@ class RecedingHorizonILPScheduler(RequestScheduler):
 
         try:
             result = future.result()
-        except Exception as exc:  # pragma: no cover - defensive path
-            logger.exception("ILP solve crashed: solve_id=%s", solve_id)
+        except Exception:  # pragma: no cover - defensive path
+            logger.exception("ILP solve failed: solve_id=%s", solve_id)
             self._record_metric("ilp_solve_ms", 0.0)
             self._record_metric("plan_kickoff_to_ready_ms", kickoff_to_ready_ms)
             self._record_metric("ilp_solve_error", 0.0)
             self._solve_kickoff_monotonic = None
-            result = _SolveResult(
-                start_tick=now_tick,
-                horizon_end_tick=now_tick,
-                boundary_tick=now_tick,
-                batches_by_tick={},
-                d_infer_tick={},
-                d_send_tick={},
-                d_recv_tick={},
-                horizon_tick={},
-                solve_ms=0.0,
-                success=False,
-                error=str(exc),
-                status_name="exception",
-            )
+            return
 
         self._record_metric("ilp_solve_ms", result.solve_ms)
         self._record_metric("plan_kickoff_to_ready_ms", kickoff_to_ready_ms)
@@ -388,22 +360,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         timed_out = result.timed_out
         objective = result.objective
         mip_gap = result.mip_gap
-
-        if not result.success:
-            logger.warning(
-                "ILP solve failed: solve_id=%s start_tick=%d boundary_tick=%d solve_ms=%.2f "
-                "kickoff_to_ready_ms=%.2f status=%s(%s) sol_count=%s error=%s",
-                solve_id,
-                result.start_tick,
-                result.boundary_tick,
-                result.solve_ms,
-                kickoff_to_ready_ms,
-                status_name,
-                status_code,
-                sol_count,
-                result.error,
-            )
-            return
 
         log_fn = logger.warning if timed_out else logger.info
         log_fn(
@@ -456,8 +412,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             return
         if now_tick < self._active_plan.boundary_tick:
             return
-        # Do not cut over until the committed prefix has actually been consumed.
-        # This is critical when execution_fraction == 1.0, where boundary == horizon end.
+        # Do not cut over until the committed prefix has actually been consumed
         if self._active_plan.cursor_tick < self._active_plan.boundary_tick:
             return
         self._active_plan = self._pending_plan
@@ -496,23 +451,23 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         return value
 
     def _infer_ticks(self, batch_size: int) -> int:
-        return self._to_positive_ticks(self._infer_ms(batch_size))
+        return self._to_ticks(self._infer_ms(batch_size), minimum=1)
 
     def _send_ticks(self, robot_id: str) -> int:
         value = self.latency.obs_network_ms(robot_id)
         if value is None:
             return 0
-        return self._to_nonnegative_ticks(max(0.0, value))
+        return self._to_ticks(max(0.0, value))
 
     def _recv_ticks(self, robot_id: str) -> int:
         value = self.latency.action_delivery_ms(robot_id)
         if value is None:
             return 0
-        return self._to_nonnegative_ticks(max(0.0, value))
+        return self._to_ticks(max(0.0, value))
 
     def _chunk_horizon_ticks(self, control_hz: float) -> int:
         duration_ms = (self._action_horizon_steps * 1000.0) / control_hz
-        return self._to_positive_ticks(duration_ms)
+        return self._to_ticks(duration_ms, minimum=1)
 
     def _earliest_sched_tick(self, robot_id: str, start_tick: int) -> int:
         request = self._latest_requests[robot_id]
@@ -520,22 +475,19 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         if last is None:
             return start_tick
 
-        required_action_step = last.action_start_step + last.min_execution_horizon
+        required_action_step = last.action_start_step + last.execution_horizon
         remaining_steps = required_action_step - request.action_start_step
         if remaining_steps <= 0:
             return start_tick
 
         wait_ms = remaining_steps * (1000.0 / request.control_hz)
-        return start_tick + self._to_nonnegative_ticks(wait_ms)
+        return start_tick + self._to_ticks(wait_ms)
 
     def _now_tick(self) -> int:
         return math.floor((time.monotonic() - self._epoch_monotonic) / self._tick_s)
 
-    def _to_positive_ticks(self, duration_ms: float) -> int:
-        return max(1, math.ceil(duration_ms / self._tick_ms))
-
-    def _to_nonnegative_ticks(self, duration_ms: float) -> int:
-        return max(0, math.ceil(duration_ms / self._tick_ms))
+    def _to_ticks(self, duration_ms: float, *, minimum: int = 0) -> int:
+        return max(minimum, math.ceil(duration_ms / self._tick_ms))
 
     def _kickoff_to_ready_ms(self) -> float:
         if self._solve_kickoff_monotonic is None:
@@ -543,8 +495,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         return (time.monotonic() - self._solve_kickoff_monotonic) * 1000.0
 
     def _record_metric(self, metric_name: str, duration_ms: float) -> None:
-        self._timing_samples.append(
-            SchedulerTimingSample(
+        self._decisions.append(
+            SchedulerDecision(
                 scheduler_name=self.__class__.__name__,
                 metric_name=metric_name,
                 duration_ms=duration_ms,
@@ -623,7 +575,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                 **common,
                 batches_by_tick={},
                 solve_ms=(time.perf_counter() - t0) * 1000.0,
-                success=True,
                 status_name="EMPTY_ROBOT_SET",
                 status_code=0,
                 sol_count=0,
@@ -727,18 +678,10 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                 mip_gap = None
 
             if sol_count < 1:
-                return _SolveResult(
-                    **common,
-                    batches_by_tick={},
-                    solve_ms=solve_ms,
-                    success=False,
-                    error=f"gurobi status={status_name}({status_code}), no feasible solution",
-                    status_code=status_code,
-                    status_name=status_name,
-                    sol_count=sol_count,
-                    timed_out=timed_out,
-                    objective=objective,
-                    mip_gap=mip_gap,
+                raise RuntimeError(
+                    "No feasible ILP solution: "
+                    f"status={status_name}({status_code}) sol_count={sol_count} "
+                    f"timed_out={timed_out} objective={objective} mip_gap={mip_gap}"
                 )
 
             batches_by_tick: dict[int, tuple[str, ...]] = {}
@@ -755,23 +698,12 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                 **common,
                 batches_by_tick=batches_by_tick,
                 solve_ms=solve_ms,
-                success=True,
                 status_code=status_code,
                 status_name=status_name,
                 sol_count=sol_count,
                 timed_out=timed_out,
                 objective=objective,
                 mip_gap=mip_gap,
-            )
-
-        except Exception as exc:
-            return _SolveResult(
-                **common,
-                batches_by_tick={},
-                solve_ms=(time.perf_counter() - t0) * 1000.0,
-                success=False,
-                error=str(exc),
-                status_name="exception",
             )
         finally:
             if model is not None:

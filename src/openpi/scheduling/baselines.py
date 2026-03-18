@@ -17,11 +17,10 @@ class GreedyScheduler(RequestScheduler):
         if not candidates:
             return []
 
-        with self.record_timing("schedule_decision"):
-            candidates = sorted(candidates, key=lambda r: r.deadline)
-            earliest_deadline = candidates[0].deadline
-            batch_size = self.get_largest_batch_size(earliest_deadline)
-            return [candidates[:batch_size]]
+        candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
+        earliest_deadline = self._deadlines.get(candidates[0].robot_id, candidates[0].deadline)
+        batch_size = self.get_largest_batch_size(earliest_deadline)
+        return [candidates[:batch_size]]
 
     def get_largest_batch_size(self, deadline: float) -> int:
         """Return the largest batch size whose profiled latency fits within the time remaining until deadline."""
@@ -40,6 +39,8 @@ class GreedyScheduler(RequestScheduler):
 
 
 class RoundRobinScheduler(RequestScheduler):
+    """Cycle through robots starting from the current pointer, fill to max_batch_size."""
+
     def __init__(
         self,
         batch_queue: mp.Queue,
@@ -49,8 +50,6 @@ class RoundRobinScheduler(RequestScheduler):
         super().__init__(batch_queue, max_batch_size, batch_profile)
         self._rr_index: int = 0
         self._rr_robot_order: list[str] = []
-
-    """Cycle through robots starting from the current pointer, fill to max_batch_size."""
 
     def update(self, request: SlotRequest) -> None:
         super().update(request)
@@ -66,25 +65,27 @@ class RoundRobinScheduler(RequestScheduler):
         if not candidate_by_robot or n_robots == 0:
             return []
 
-        with self.record_timing("schedule_decision"):
-            batch: list[SlotRequest] = []
-            idx = self._rr_index % n_robots
-            for _ in range(n_robots):
-                robot_id = self._rr_robot_order[idx]
-                if robot_id in candidate_by_robot:
-                    batch.append(candidate_by_robot[robot_id])
-                idx = (idx + 1) % n_robots
-                if len(batch) == self._max_batch_size:
-                    break
+        batch: list[SlotRequest] = []
+        idx = self._rr_index % n_robots
+        for _ in range(n_robots):
+            robot_id = self._rr_robot_order[idx]
+            if robot_id in candidate_by_robot:
+                batch.append(candidate_by_robot[robot_id])
+            idx = (idx + 1) % n_robots
+            if len(batch) == self._max_batch_size:
+                break
 
-            self._rr_index = idx
-            return [batch] if batch else []
+        self._rr_index = idx
+        return [batch] if batch else []
 
     def reset_robot(self, robot_id: str) -> None:
         super().reset_robot(robot_id)
         # FIXME: temporary hack to remove robot on reset
         if robot_id in self._rr_robot_order:
+            removed_index = self._rr_robot_order.index(robot_id)
             self._rr_robot_order.remove(robot_id)
+            if removed_index < self._rr_index:
+                self._rr_index = max(0, self._rr_index - 1)
 
 
 class RandomBatchScheduler(RequestScheduler):
@@ -98,6 +99,5 @@ class RandomBatchScheduler(RequestScheduler):
         if not candidates:
             return []
 
-        with self.record_timing("schedule_decision"):
-            k = min(self._max_batch_size, len(candidates))
-            return [random.sample(candidates, random.randint(1, k))]
+        k = min(self._max_batch_size, len(candidates))
+        return [random.sample(candidates, random.randint(1, k))]

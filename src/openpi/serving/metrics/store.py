@@ -22,7 +22,7 @@ from openpi.serving.metrics.schemas import ResponseRecord
 from openpi.serving.metrics.schemas import Robot
 from openpi.serving.metrics.schemas import RobotID
 from openpi.serving.metrics.schemas import window_filter
-from openpi.serving.schemas import SchedulerTimingSample
+from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 
 logger = logging.getLogger(__name__)
@@ -53,11 +53,12 @@ class Snapshot:
     # Chart data (formerly in history())
     batch_history: list[dict]
     outbound_delays_ms: dict[str, list[float]]
-    scheduler_timings_ms: dict[str, list[float]]
+    scheduler_timing_ms: dict[str, list[float]]
     replan_markers: list[dict]
     kickoff_markers: list[dict]
     task_events: list[dict]
     task_progress: list[dict]
+    scheduling_decisions: list[dict]
 
     @property
     def uptime_s(self) -> float:
@@ -139,7 +140,7 @@ class MetricsStore(JSONDataclass):
     end_time: float = 0.0
     robots: dict[RobotID, Robot] = field(default_factory=dict)
     batches: list[BatchSummary] = field(default_factory=list)
-    scheduler_timings: list[SchedulerTimingSample] = field(default_factory=list)
+    scheduler_decisions: list[SchedulerDecision] = field(default_factory=list)
 
     def __post_init__(self):
         self.batches = [BatchSummary.from_json(b) for b in self.batches]
@@ -151,7 +152,7 @@ class MetricsStore(JSONDataclass):
             else Robot(robot_id=robot_id, episodes=[])
             for robot_id, v in self.robots.items()
         }
-        self.scheduler_timings = [SchedulerTimingSample.from_json(s) for s in self.scheduler_timings]
+        self.scheduler_decisions = [SchedulerDecision.from_json(s) for s in self.scheduler_decisions]
 
     def record_batch(self, responses: list[InferResponse]) -> None:
         """Called once per batch by _router_task."""
@@ -166,10 +167,10 @@ class MetricsStore(JSONDataclass):
                 )
             )
 
-    def record_scheduler_timings(self, samples: list[SchedulerTimingSample]) -> None:
+    def record_scheduler_decisions(self, samples: list[SchedulerDecision]) -> None:
         """Called from the server process when the scheduler publishes timing samples."""
         with lock:
-            self.scheduler_timings.extend(samples)
+            self.scheduler_decisions.extend(samples)
 
     # request/response lifecycle
 
@@ -181,7 +182,7 @@ class MetricsStore(JSONDataclass):
                 request_id=request.request_id,
                 observation_step=request.observation_step,
                 action_start_step=request.action_start_step,
-                min_execution_horizon=request.min_execution_horizon,
+                execution_horizon=request.execution_horizon,
                 request_timestamp=request.request_timestamp,
                 server_arrival_time=request.arrival_timestamp,  # FIXME: make timestamp/arrival time naming convention consistent
             )
@@ -362,12 +363,12 @@ class MetricsStore(JSONDataclass):
             # ---- batch history for charts ----
             plan_activation_abs = sorted(
                 sample.recorded_at
-                for sample in self.scheduler_timings
+                for sample in self.scheduler_decisions
                 if sample.metric_name == "ilp_plan_activated" and sample.recorded_at <= self.end_time
             )
             kickoff_abs = sorted(
                 sample.recorded_at
-                for sample in self.scheduler_timings
+                for sample in self.scheduler_decisions
                 if sample.metric_name == "ilp_replan_kickoff" and sample.recorded_at <= self.end_time
             )
             replan_markers = [
@@ -459,12 +460,22 @@ class MetricsStore(JSONDataclass):
                 if delays:
                     outbound_delays_ms[robot_id] = delays
 
-            # ---- scheduler timings ----
-            scheduler_timings_ms: dict[str, list[float]] = {}
-            for sample in self.scheduler_timings:
-                scheduler_timings_ms.setdefault(f"{sample.scheduler_name}.{sample.metric_name}", []).append(
-                    round(sample.duration_ms, 3)
-                )
+            # ---- scheduler timings + scheduling decisions ----
+            scheduler_timing_ms: dict[str, list[float]] = {}
+            scheduling_decisions: list[dict] = []
+            for sample in self.scheduler_decisions:
+                if sample.metric_name == "batch_scheduled":
+                    scheduling_decisions.append(
+                        {
+                            "t": round(sample.recorded_at - t0, 3),
+                            "candidates": sample.candidates,
+                            "scheduled": sample.scheduled,
+                        }
+                    )
+                else:
+                    scheduler_timing_ms.setdefault(f"{sample.scheduler_name}.{sample.metric_name}", []).append(
+                        round(sample.duration_ms, 3)
+                    )
 
             # ---- task events (completed episodes in window) ----
             task_events = []
@@ -537,16 +548,17 @@ class MetricsStore(JSONDataclass):
                 healthy_robots_over_time=healthy_robots_over_time,
                 batch_history=batch_history,
                 outbound_delays_ms=outbound_delays_ms,
-                scheduler_timings_ms=scheduler_timings_ms,
+                scheduler_timing_ms=scheduler_timing_ms,
                 replan_markers=replan_markers,
                 kickoff_markers=kickoff_markers,
                 task_events=task_events,
                 task_progress=task_progress,
+                scheduling_decisions=scheduling_decisions,
             )
 
     def reset(self) -> None:
         """Clear all accumulated metrics and reset counters."""
         with lock:
             self.batches.clear()
-            self.scheduler_timings.clear()
+            self.scheduler_decisions.clear()
             self.robots.clear()

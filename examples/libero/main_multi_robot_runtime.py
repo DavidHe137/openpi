@@ -57,7 +57,7 @@ class Args:
     port: int = 8080
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
-    min_execution_horizon: int = 0
+    execution_horizon: List[int] = field(default_factory=list)
     latency_ms: List[float] = field(
         default_factory=list
     )  # Optional per-robot artificial latency (ms); length <= num_robots
@@ -94,6 +94,13 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
     return float(args.latency_ms[robot_idx])
 
 
+def _execution_horizon_for_robot(args: Args, robot_idx: int) -> int:
+    """Return the execution horizon for a given robot index."""
+    if not args.execution_horizon:
+        return 10
+    return int(args.execution_horizon[robot_idx])
+
+
 def init_worker(
     args: Args, counter, progress_queue, start_barrier, startup_release_event
 ) -> None:
@@ -126,7 +133,7 @@ def init_worker(
     config = BrokerConfig(
         ws_client=ws_client,
         control_hz=args.control_hz,
-        min_execution_horizon=args.min_execution_horizon,
+        execution_horizon=_execution_horizon_for_robot(args, robot_idx),
         startup_release_event=_startup_release_event,
     )
     broker = args.action_chunk_broker_type.create(config)
@@ -395,6 +402,7 @@ def main(args: Args) -> None:
         seed=args.seed,
         resize_size=args.resize_size,
         latency_ms=args.latency_ms,
+        execution_horizon=args.execution_horizon,
     )
 
     output_path = pathlib.Path(args.output_dir)

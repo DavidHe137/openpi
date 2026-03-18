@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field
 import itertools
 
 import numpy as np
@@ -9,7 +10,6 @@ from openpi_client.messages import RTCParams
 from openpi_client.messages import TrainTimeRTCParams
 from openpi_client.messages import VlashParams
 
-DEFAULT_EXECUTION_HORIZON = 10
 _request_id_counter = itertools.count(1)
 
 
@@ -25,7 +25,7 @@ class SlotRequest:
     action_start_step: int
     request_timestamp: float
     deadline: float
-    min_execution_horizon: int
+    execution_horizon: int
     infer_type: InferType
     params: RTCParams | VlashParams | TrainTimeRTCParams | None
     noise: np.ndarray | None
@@ -68,17 +68,19 @@ class WarmupSeed:
     delivery_samples: list[tuple[float, float]]  # (client_receive_time, server_send_time) per ack
 
 
-@dataclass(frozen=True)
-class SchedulerTimingSample:
-    """A single scheduler timing sample emitted by the scheduler process."""
+@dataclass
+class SchedulerDecision:
+    """A scheduler decision: a batch scheduling event."""
 
     scheduler_name: str
     metric_name: str
     duration_ms: float
     recorded_at: float
+    candidates: list[dict] = field(default_factory=list)
+    scheduled: list[dict] = field(default_factory=list)
 
     @classmethod
-    def from_json(cls, data: SchedulerTimingSample | dict) -> SchedulerTimingSample:
+    def from_json(cls, data: SchedulerDecision | dict) -> SchedulerDecision:
         if isinstance(data, cls):
             return data
         return cls(**data)

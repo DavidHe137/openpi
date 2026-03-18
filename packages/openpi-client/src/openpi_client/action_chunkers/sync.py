@@ -18,7 +18,7 @@ class SyncBroker(ActionChunkBroker):
         ws_client: BidirectionalWebsocket,
         control_hz: int,
         realtime: bool = True,
-        min_execution_horizon: int = 0,
+        execution_horizon: int = 0,
         block_until_first_chunk: bool = True,
         startup_release_event: Optional[_StartupReleaseEvent] = None,
     ):
@@ -26,17 +26,15 @@ class SyncBroker(ActionChunkBroker):
             ws_client=ws_client,
             control_hz=control_hz,
             realtime=realtime,
-            min_execution_horizon=ws_client.server_metadata.action_horizon,
+            execution_horizon=ws_client.server_metadata.action_horizon,
             block_until_first_chunk=block_until_first_chunk,
             startup_release_event=startup_release_event,
         )
-        assert self._min_execution_horizon == ws_client.server_metadata.action_horizon
+        assert self.execution_horizon == ws_client.server_metadata.action_horizon
 
     @override
     def _infer(self, obs: Observation) -> None:
         if len(self._action_queue) > 0:
             return
 
-        self._ws_client.send(
-            obs, self.deadline, self._next_action_step, min_execution_horizon=self._min_execution_horizon
-        )
+        self._ws_client.send(obs, self.deadline, self._next_action_step, execution_horizon=self.execution_horizon)
