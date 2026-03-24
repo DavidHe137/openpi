@@ -1,0 +1,34 @@
+{
+  "toxiproxy": {
+    "api_url": "http://127.0.0.1:8474",
+    "listen_host": "127.0.0.1",
+    "listen_port_base": 18080,
+    "server_args": []
+  },
+  "sampling": {
+    "default_seed": 7,
+    "resample_every_requests": 1
+  },
+  "robots": {
+    "robot_0":  {"rtt_median_ms": 4.937203,   "rtt_sigma": 0.158990},
+    "robot_1":  {"rtt_median_ms": 11.907335,  "rtt_sigma": 0.124516},
+    "robot_2":  {"rtt_median_ms": 24.821921,  "rtt_sigma": 0.119571},
+    "robot_3":  {"rtt_median_ms": 49.751860,  "rtt_sigma": 0.099751},
+    "robot_4":  {"rtt_median_ms": 79.602975,  "rtt_sigma": 0.099751},
+    "robot_5":  {"rtt_median_ms": 119.073345, "rtt_sigma": 0.124516},
+    "robot_6":  {"rtt_median_ms": 178.288609, "rtt_sigma": 0.138226},
+    "robot_7":  {"rtt_median_ms": 243.096825, "rtt_sigma": 0.236648},
+    "robot_8":  {"rtt_median_ms": 383.130514, "rtt_sigma": 0.293560},
+    "robot_9":  {"rtt_median_ms": 89.977786,  "rtt_sigma": 0.022219},
+    "robot_10": {"rtt_median_ms": 6.260990,   "rtt_sigma": 0.472381},
+    "robot_11": {"rtt_median_ms": 14.991674,  "rtt_sigma": 0.033324},
+    "robot_12": {"rtt_median_ms": 33.108108,  "rtt_sigma": 0.333376},
+    "robot_13": {"rtt_median_ms": 59.991668,  "rtt_sigma": 0.016666},
+    "robot_14": {"rtt_median_ms": 92.962230,  "rtt_sigma": 0.208248},
+    "robot_15": {"rtt_median_ms": 109.959114, "rtt_sigma": 0.027268},
+    "robot_16": {"rtt_median_ms": 152.716796, "rtt_sigma": 0.305249},
+    "robot_17": {"rtt_median_ms": 199.937529, "rtt_sigma": 0.024996},
+    "robot_18": {"rtt_median_ms": 298.511157, "rtt_sigma": 0.099751},
+    "robot_19": {"rtt_median_ms": 449.888930, "rtt_sigma": 0.022219}
+  }
+}

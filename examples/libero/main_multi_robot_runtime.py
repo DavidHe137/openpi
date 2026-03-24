@@ -3,6 +3,7 @@ import logging
 import pathlib
 import multiprocessing
 import shutil
+import time
 from typing import List, Literal, Optional, Dict, Type
 import datetime
 
@@ -11,6 +12,10 @@ import numpy as np
 from jaxtyping import Float
 from libero.libero import benchmark
 from openpi_client.client import BidirectionalWebsocket
+from openpi_client.network_emulation import load_network_emulation_config
+from openpi_client.network_emulation import NetworkEmulationManager
+from openpi_client.network_emulation import RobotNetworkHook
+from openpi_client.network_emulation import WorkerNetworkContext
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import ActionChunkBrokerType, BrokerConfig
@@ -35,6 +40,7 @@ logger = logging.getLogger(__name__)
 # One-time startup synchronization state.
 _start_barrier = None
 _has_synced_start = False
+network_hook = None
 
 
 @dataclass
@@ -73,6 +79,12 @@ class Args:
     control_hz: int = 20  # Target control frequency for each sim #NOTE: int because this is the fps of the video
 
     #################################################################################################################
+    # Network emulation parameters
+    #################################################################################################################
+    network_config: Optional[str] = None
+    toxiproxy_server_bin: Optional[str] = None
+
+    #################################################################################################################
     # Utils
     #################################################################################################################
     seed: int = 7  # Random Seed (for reproducibility)
@@ -90,7 +102,33 @@ def _execution_horizon_for_robot(args: Args, robot_idx: int) -> int:
     return int(args.execution_horizon[robot_idx])
 
 
-def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
+def _wait_for_server_metadata(
+    host: str, port: int, *, request_timeout: float = 5.0, poll_interval: float = 5.0
+) -> dict:
+    """Poll GET /metadata until the server accepts connections.
+
+    Same behavior as BidirectionalWebsocket._wait_for_server so main() does not exit
+    before a policy server that starts slightly later is listening.
+    """
+    url = f"http://{host}:{port}/metadata"
+    logging.info("Waiting for server at %s ...", url)
+    while True:
+        try:
+            metadata_resp = requests.get(url, timeout=request_timeout)
+            metadata_resp.raise_for_status()
+            return metadata_resp.json()
+        except requests.exceptions.RequestException:
+            logging.info("Still waiting for server...")
+            time.sleep(poll_interval)
+
+
+def init_worker(
+    args: Args,
+    counter,
+    progress_queue,
+    start_barrier,
+    network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None,
+) -> None:
     global \
         robot_idx, \
         ws_client, \
@@ -98,7 +136,8 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
         agent, \
         _progress_queue, \
         _start_barrier, \
-        _has_synced_start
+        _has_synced_start, \
+        network_hook
     with counter.get_lock():
         robot_idx = counter.value
         counter.value += 1
@@ -108,10 +147,28 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
     _start_barrier = start_barrier
     _has_synced_start = False
 
+    robot_id = f"robot_{robot_idx}"
+    ws_host = args.host
+    ws_port = args.port
+    pre_send_hook = None
+    network_hook = None
+
+    if network_worker_contexts:
+        context = network_worker_contexts.get(robot_id)
+        if context is None:
+            raise RuntimeError(
+                f"Missing network context for worker robot_id={robot_id}"
+            )
+        ws_host = context.proxy_host
+        ws_port = context.proxy_port
+        network_hook = RobotNetworkHook(context)
+        pre_send_hook = network_hook.before_send
+
     ws_client = BidirectionalWebsocket(
-        robot_id=f"robot_{robot_idx}",
-        host=args.host,
-        port=args.port,
+        robot_id=robot_id,
+        host=ws_host,
+        port=ws_port,
+        pre_send_hook=pre_send_hook,
     )
 
     # Create broker config and instantiate
@@ -217,13 +274,23 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
 
 def _robot_worker(task_args) -> None:
     """Worker process that handles jobs for a specific robot index."""
+    global network_hook
     args, job, _server_metadata = task_args
     runtime = create_runtime(args, job)
-    runtime.run()
-    runtime.close()
+    try:
+        runtime.run()
+    finally:
+        runtime.close()
+        if network_hook is not None:
+            network_hook.flush_trace()
 
 
-def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> None:
+def run_robots(
+    args: Args,
+    jobs: List[Job],
+    server_metadata: ServerMetadata,
+    network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None,
+) -> None:
     if not jobs:
         logging.info("No jobs to run; skipping robot startup")
         return
@@ -232,7 +299,7 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
 
     if args.debug:
         # Debug mode: no progress manager, single process for pdb compatibility
-        init_worker(args, counter, None, None)
+        init_worker(args, counter, None, None, network_worker_contexts)
         for job in jobs:
             _robot_worker((args, job, server_metadata))
     else:
@@ -253,7 +320,13 @@ def run_robots(args: Args, jobs: List[Job], server_metadata: ServerMetadata) -> 
             with multiprocessing.Pool(
                 processes=active_workers,
                 initializer=init_worker,
-                initargs=(args, counter, progress_manager.queue, start_barrier),
+                initargs=(
+                    args,
+                    counter,
+                    progress_manager.queue,
+                    start_barrier,
+                    network_worker_contexts,
+                ),
             ) as pool:
                 try:
                     # use imap_unordered so that it exits immediately on any exception
@@ -351,13 +424,10 @@ def main(args: Args) -> None:
     np.random.seed(args.seed)
 
     jobs = create_jobs(args)
+    active_workers = 1 if args.debug and jobs else min(args.num_robots, len(jobs))
 
     # Fetch server metadata over HTTP to avoid creating a temporary websocket robot.
-    metadata_resp = requests.get(
-        f"http://{args.host}:{args.port}/metadata", timeout=5.0
-    )
-    metadata_resp.raise_for_status()
-    server_metadata = ServerMetadata(**metadata_resp.json())
+    server_metadata = ServerMetadata(**_wait_for_server_metadata(args.host, args.port))
 
     # Create runtime metadata
     runtime_metadata = RuntimeMetadata(
@@ -382,6 +452,33 @@ def main(args: Args) -> None:
     server_metadata.to_json(output_path / "server_metadata.json")
     logging.info(f"Saved server metadata to {output_path / 'server_metadata.json'}")
 
+    network_manager = None
+    network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None
+    if args.network_config is not None:
+        if not args.toxiproxy_server_bin:
+            raise ValueError(
+                "--toxiproxy-server-bin is required when --network-config is set"
+            )
+
+        network_config = load_network_emulation_config(args.network_config)
+        network_output_dir = output_path / "network_emulation"
+        network_manager = NetworkEmulationManager(
+            network_config,
+            toxiproxy_server_bin=args.toxiproxy_server_bin,
+            upstream_host=args.host,
+            upstream_port=args.port,
+            worker_count=active_workers,
+            output_dir=network_output_dir,
+        )
+        try:
+            network_worker_contexts = network_manager.start()
+        except Exception:
+            network_manager.close()
+            raise
+        logging.info(
+            "Network emulation enabled for %d worker(s)", len(network_worker_contexts)
+        )
+
     # Reset server-side metrics so this experiment gets a clean slate
     server_base = f"http://{args.host}:{args.port}"
     try:
@@ -390,8 +487,14 @@ def main(args: Args) -> None:
     except Exception as e:
         logging.warning(f"Could not reset server metrics: {e}")
 
-    # Run robots
-    run_robots(args, jobs, server_metadata)
+    try:
+        # Run robots
+        run_robots(
+            args, jobs, server_metadata, network_worker_contexts=network_worker_contexts
+        )
+    finally:
+        if network_manager is not None:
+            network_manager.close()
 
     # Dump server-side metrics history for offline analysis
     try:
