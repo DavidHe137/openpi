@@ -1,0 +1,29 @@
+{
+  "experiment": {
+    "action_chunk_broker_type": "rtc",
+    "num_robots": 10,
+    "trials_per_robot": 5
+  },
+  "toxiproxy": {
+    "api_url": "http://127.0.0.1:8474",
+    "listen_host": "127.0.0.1",
+    "listen_port_base": 18080,
+    "server_args": []
+  },
+  "sampling": {
+    "default_seed": 7,
+    "resample_every_requests": 1
+  },
+  "robots": {
+    "robot_0":  {"rtt_median_ms": 4.0,   "rtt_sigma": 0.15, "execution_horizon": 6},
+    "robot_1":  {"rtt_median_ms": 5.0,  "rtt_sigma": 0.5, "execution_horizon": 10},
+    "robot_2":  {"rtt_median_ms": 6.0,  "rtt_sigma": 0.12, "execution_horizon": 7},
+    "robot_3":  {"rtt_median_ms": 7.0,  "rtt_sigma": 0.09, "execution_horizon": 8},
+    "robot_4":  {"rtt_median_ms": 12.0,  "rtt_sigma": 0.1, "execution_horizon": 9},
+    "robot_5":  {"rtt_median_ms": 20.0, "rtt_sigma": 0.45, "execution_horizon": 10},
+    "robot_6":  {"rtt_median_ms": 30.0, "rtt_sigma": 0.14, "execution_horizon": 9},
+    "robot_7":  {"rtt_median_ms": 40.0, "rtt_sigma": 0.23, "execution_horizon": 8},
+    "robot_8":  {"rtt_median_ms": 50.0, "rtt_sigma": 0.29, "execution_horizon": 10},
+    "robot_9":  {"rtt_median_ms": 35.0,  "rtt_sigma": 0.02, "execution_horizon": 7}
+  }
+}

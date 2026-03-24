@@ -19,7 +19,8 @@ import requests
 DEFAULT_TOXIC_UPSTREAM = "latency_upstream"
 DEFAULT_TOXIC_DOWNSTREAM = "latency_downstream"
 
-NetworkEmulationConfig = Dict[str, Any]
+ExperimentConfig = Dict[str, Any]
+NetworkEmulationConfig = ExperimentConfig
 WorkerNetworkContext = Dict[str, Any]
 
 
@@ -27,23 +28,38 @@ class NetworkEmulationConfigError(ValueError):
     """Raised when network emulation config is invalid."""
 
 
-def load_network_emulation_config(path: Union[str, pathlib.Path]) -> NetworkEmulationConfig:
-    """Load and validate network emulation config, returning a normalized dict."""
+def load_experiment_config(path: Union[str, pathlib.Path]) -> ExperimentConfig:
+    """Load and validate experiment config, returning a normalized dict."""
 
     raw = json.loads(pathlib.Path(path).read_text())
     if not isinstance(raw, dict):
-        raise NetworkEmulationConfigError("Network config must be a JSON object")
+        raise NetworkEmulationConfigError("Experiment config must be a JSON object")
 
+    experiment_raw = raw.get("experiment")
     toxi_raw = raw.get("toxiproxy") or {}
     sampling_raw = raw.get("sampling") or {}
     robots_raw = raw.get("robots")
 
+    if not isinstance(experiment_raw, dict):
+        raise NetworkEmulationConfigError("experiment_config.experiment must be an object")
     if not isinstance(toxi_raw, dict):
-        raise NetworkEmulationConfigError("network_config.toxiproxy must be an object")
+        raise NetworkEmulationConfigError("experiment_config.toxiproxy must be an object")
     if not isinstance(sampling_raw, dict):
-        raise NetworkEmulationConfigError("network_config.sampling must be an object")
+        raise NetworkEmulationConfigError("experiment_config.sampling must be an object")
     if not isinstance(robots_raw, dict) or not robots_raw:
-        raise NetworkEmulationConfigError("network_config.robots must be a non-empty object")
+        raise NetworkEmulationConfigError("experiment_config.robots must be a non-empty object")
+
+    experiment = {
+        "action_chunk_broker_type": str(experiment_raw.get("action_chunk_broker_type", "")).strip().lower(),
+        "num_robots": int(experiment_raw.get("num_robots", 0)),
+        "trials_per_robot": int(experiment_raw.get("trials_per_robot", 0)),
+    }
+    if experiment["action_chunk_broker_type"] not in {"rtc", "sync"}:
+        raise NetworkEmulationConfigError("experiment.action_chunk_broker_type must be one of: rtc, sync")
+    if experiment["num_robots"] <= 0:
+        raise NetworkEmulationConfigError("experiment.num_robots must be > 0")
+    if experiment["trials_per_robot"] <= 0:
+        raise NetworkEmulationConfigError("experiment.trials_per_robot must be > 0")
 
     toxiproxy = {
         "api_url": str(toxi_raw.get("api_url", "http://127.0.0.1:8474")),
@@ -70,25 +86,35 @@ def load_network_emulation_config(path: Union[str, pathlib.Path]) -> NetworkEmul
     for robot_id, robot_cfg in robots_raw.items():
         if not isinstance(robot_cfg, dict):
             raise NetworkEmulationConfigError(f"robot config for {robot_id!r} must be an object")
-        if "rtt_median_ms" not in robot_cfg or "rtt_sigma" not in robot_cfg:
-            raise NetworkEmulationConfigError(
-                f"{robot_id} must define rtt_median_ms and rtt_sigma (mean/std fields are not supported)"
-            )
+        if "rtt_median_ms" not in robot_cfg or "rtt_sigma" not in robot_cfg or "execution_horizon" not in robot_cfg:
+            raise NetworkEmulationConfigError(f"{robot_id} must define rtt_median_ms, rtt_sigma, and execution_horizon")
 
         median = float(robot_cfg["rtt_median_ms"])
         sigma = float(robot_cfg["rtt_sigma"])
+        execution_horizon = int(robot_cfg["execution_horizon"])
         if median <= 0:
             raise NetworkEmulationConfigError(f"{robot_id}.rtt_median_ms must be > 0")
         if sigma < 0:
             raise NetworkEmulationConfigError(f"{robot_id}.rtt_sigma must be >= 0")
+        if execution_horizon <= 0:
+            raise NetworkEmulationConfigError(f"{robot_id}.execution_horizon must be > 0")
 
         robots[str(robot_id)] = {
             "rtt_median_ms": median,
             "rtt_sigma": sigma,
+            "execution_horizon": execution_horizon,
             "seed": int(robot_cfg["seed"]) if robot_cfg.get("seed") is not None else None,
         }
 
+    for idx in range(experiment["num_robots"]):
+        robot_id = f"robot_{idx}"
+        if robot_id not in robots:
+            raise NetworkEmulationConfigError(
+                f"Missing robots.{robot_id} in experiment config for num_robots={experiment['num_robots']}"
+            )
+
     return {
+        "experiment": experiment,
         "toxiproxy": toxiproxy,
         "sampling": sampling,
         "robots": robots,
@@ -386,6 +412,7 @@ class NetworkEmulationManager:
     def _write_resolved_config(self) -> None:
         self._output_dir.mkdir(parents=True, exist_ok=True)
         payload = {
+            "experiment": self._config["experiment"],
             "toxiproxy": self._config["toxiproxy"],
             "sampling": self._config["sampling"],
             "upstream": {

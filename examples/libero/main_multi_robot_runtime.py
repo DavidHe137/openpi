@@ -12,7 +12,7 @@ import numpy as np
 from jaxtyping import Float
 from libero.libero import benchmark
 from openpi_client.client import BidirectionalWebsocket
-from openpi_client.network_emulation import load_network_emulation_config
+from openpi_client.network_emulation import load_experiment_config
 from openpi_client.network_emulation import NetworkEmulationManager
 from openpi_client.network_emulation import RobotNetworkHook
 from openpi_client.network_emulation import WorkerNetworkContext
@@ -81,7 +81,7 @@ class Args:
     #################################################################################################################
     # Network emulation parameters
     #################################################################################################################
-    network_config: Optional[str] = None
+    experiment_config: Optional[str] = None
     toxiproxy_server_bin: Optional[str] = None
 
     #################################################################################################################
@@ -100,6 +100,24 @@ def _execution_horizon_for_robot(args: Args, robot_idx: int) -> int:
     if not args.execution_horizon:
         return 10
     return int(args.execution_horizon[robot_idx])
+
+
+def _apply_experiment_config(args: Args, experiment_config: Dict[str, object]) -> None:
+    """Apply experiment config settings onto runtime args."""
+    experiment = experiment_config["experiment"]
+    robots = experiment_config["robots"]
+    if not isinstance(experiment, dict) or not isinstance(robots, dict):
+        raise ValueError("Experiment config is malformed")
+
+    args.action_chunk_broker_type = ActionChunkBrokerType.from_string(
+        str(experiment["action_chunk_broker_type"])
+    )
+    args.num_robots = int(experiment["num_robots"])
+    args.num_trials_per_task = int(experiment["trials_per_robot"])
+    args.execution_horizon = [
+        int(robots[f"robot_{idx}"]["execution_horizon"])
+        for idx in range(args.num_robots)
+    ]
 
 
 def _wait_for_server_metadata(
@@ -421,6 +439,22 @@ def main(args: Args) -> None:
             shutil.rmtree(args.output_dir, ignore_errors=True)
         pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
+    experiment_config = None
+    if args.experiment_config is not None:
+        if not args.toxiproxy_server_bin:
+            raise ValueError(
+                "--toxiproxy-server-bin is required when --experiment-config is set"
+            )
+        experiment_config = load_experiment_config(args.experiment_config)
+        _apply_experiment_config(args, experiment_config)
+        logging.info(
+            "Loaded experiment config from %s: mode=%s num_robots=%d trials_per_robot=%d",
+            args.experiment_config,
+            args.action_chunk_broker_type.value,
+            args.num_robots,
+            args.num_trials_per_task,
+        )
+
     np.random.seed(args.seed)
 
     jobs = create_jobs(args)
@@ -428,6 +462,22 @@ def main(args: Args) -> None:
 
     # Fetch server metadata over HTTP to avoid creating a temporary websocket robot.
     server_metadata = ServerMetadata(**_wait_for_server_metadata(args.host, args.port))
+
+    if args.execution_horizon:
+        if len(args.execution_horizon) < active_workers:
+            raise ValueError(
+                "execution_horizon must provide at least one value per active worker "
+                f"(got {len(args.execution_horizon)} values for {active_workers} workers)"
+            )
+        for idx in range(active_workers):
+            h = int(args.execution_horizon[idx])
+            if h <= 0:
+                raise ValueError(f"execution_horizon[{idx}] must be > 0, got {h}")
+            if h > server_metadata.action_horizon:
+                raise ValueError(
+                    "execution_horizon cannot exceed server action horizon "
+                    f"({server_metadata.action_horizon}); got execution_horizon[{idx}]={h}"
+                )
 
     # Create runtime metadata
     runtime_metadata = RuntimeMetadata(
@@ -454,16 +504,10 @@ def main(args: Args) -> None:
 
     network_manager = None
     network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None
-    if args.network_config is not None:
-        if not args.toxiproxy_server_bin:
-            raise ValueError(
-                "--toxiproxy-server-bin is required when --network-config is set"
-            )
-
-        network_config = load_network_emulation_config(args.network_config)
+    if experiment_config is not None:
         network_output_dir = output_path / "network_emulation"
         network_manager = NetworkEmulationManager(
-            network_config,
+            experiment_config,
             toxiproxy_server_bin=args.toxiproxy_server_bin,
             upstream_host=args.host,
             upstream_port=args.port,

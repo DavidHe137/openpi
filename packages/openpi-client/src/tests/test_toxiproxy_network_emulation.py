@@ -4,11 +4,16 @@ import pytest
 
 from openpi_client.network_emulation.toxiproxy import NetworkEmulationConfigError
 from openpi_client.network_emulation.toxiproxy import RobotNetworkHook
-from openpi_client.network_emulation.toxiproxy import load_network_emulation_config
+from openpi_client.network_emulation.toxiproxy import load_experiment_config
 
 
 def _minimal_config() -> dict:
     return {
+        "experiment": {
+            "action_chunk_broker_type": "rtc",
+            "num_robots": 1,
+            "trials_per_robot": 10,
+        },
         "toxiproxy": {
             "api_url": "http://127.0.0.1:8474",
             "listen_host": "127.0.0.1",
@@ -19,25 +24,33 @@ def _minimal_config() -> dict:
             "resample_every_requests": 1,
         },
         "robots": {
-            "robot_0": {"rtt_median_ms": 25.0, "rtt_sigma": 0.2},
+            "robot_0": {"rtt_median_ms": 25.0, "rtt_sigma": 0.2, "execution_horizon": 10},
         },
     }
 
 
-def test_load_network_config_applies_defaults(tmp_path) -> None:
+def test_load_experiment_config_applies_defaults(tmp_path) -> None:
     path = tmp_path / "config.json"
     path.write_text(
         json.dumps(
             {
+                "experiment": {
+                    "action_chunk_broker_type": "sync",
+                    "num_robots": 1,
+                    "trials_per_robot": 7,
+                },
                 "robots": {
-                    "robot_0": {"rtt_median_ms": 25.0, "rtt_sigma": 0.2},
-                }
+                    "robot_0": {"rtt_median_ms": 25.0, "rtt_sigma": 0.2, "execution_horizon": 4},
+                },
             }
         ),
         encoding="utf-8",
     )
 
-    cfg = load_network_emulation_config(path)
+    cfg = load_experiment_config(path)
+    assert cfg["experiment"]["action_chunk_broker_type"] == "sync"
+    assert cfg["experiment"]["num_robots"] == 1
+    assert cfg["experiment"]["trials_per_robot"] == 7
     assert cfg["toxiproxy"]["api_url"] == "http://127.0.0.1:8474"
     assert cfg["toxiproxy"]["listen_host"] == "127.0.0.1"
     assert cfg["toxiproxy"]["listen_port_base"] == 18080
@@ -45,14 +58,24 @@ def test_load_network_config_applies_defaults(tmp_path) -> None:
     assert cfg["sampling"]["resample_every_requests"] == 1
 
 
-def test_network_config_rejects_legacy_mean_std_fields(tmp_path) -> None:
-    path = tmp_path / "bad_config.json"
+def test_experiment_config_rejects_legacy_mean_std_fields(tmp_path) -> None:
+    path = tmp_path / "bad_experiment.json"
     data = _minimal_config()
-    data["robots"]["robot_0"] = {"rtt_mean_ms": 25.0, "rtt_std_ms": 3.0}
+    data["robots"]["robot_0"] = {"rtt_mean_ms": 25.0, "rtt_std_ms": 3.0, "execution_horizon": 10}
     path.write_text(json.dumps(data), encoding="utf-8")
 
-    with pytest.raises(NetworkEmulationConfigError, match="rtt_median_ms and rtt_sigma"):
-        load_network_emulation_config(path)
+    with pytest.raises(NetworkEmulationConfigError, match="rtt_median_ms"):
+        load_experiment_config(path)
+
+
+def test_experiment_config_requires_profiles_for_all_active_robots(tmp_path) -> None:
+    path = tmp_path / "bad_experiment_missing_robot.json"
+    data = _minimal_config()
+    data["experiment"]["num_robots"] = 2
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(NetworkEmulationConfigError, match="robots.robot_1"):
+        load_experiment_config(path)
 
 
 def test_hook_sampling_is_deterministic_for_fixed_seed(monkeypatch, tmp_path) -> None:
