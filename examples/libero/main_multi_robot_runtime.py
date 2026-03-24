@@ -57,9 +57,6 @@ class Args:
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
     execution_horizon: List[int] = field(default_factory=list)
-    latency_ms: List[float] = field(
-        default_factory=list
-    )  # Optional per-robot artificial latency (ms); length <= num_robots
 
     #################################################################################################################
     # LIBERO environment-specific parameters
@@ -84,13 +81,6 @@ class Args:
     progress_type: Literal["verbose", "concise", "logging", None] = "verbose"
     log_dir: Optional[str] = None
     debug: bool = False  # Run in single process with immediate progress output
-
-
-def _latency_for_robot(args: Args, robot_idx: int) -> float:
-    """Return the latency (in ms) to use for a given robot index."""
-    if not args.latency_ms:
-        return 0.0
-    return float(args.latency_ms[robot_idx])
 
 
 def _execution_horizon_for_robot(args: Args, robot_idx: int) -> int:
@@ -174,7 +164,6 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
         resize_size=args.resize_size,
         num_steps_wait=args.num_steps_wait,
         max_episode_steps=args.max_steps,
-        latency_ms=_latency_for_robot(args, robot_idx),
         control_hz=args.control_hz,
     )
 
@@ -359,13 +348,6 @@ def main(args: Args) -> None:
             shutil.rmtree(args.output_dir, ignore_errors=True)
         pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    # Validate latency specification
-    if args.latency_ms and len(args.latency_ms) != args.num_robots:
-        raise ValueError(
-            f"latency_ms must either be empty or have exactly {args.num_robots} values "
-            f"(one per robot), but got {len(args.latency_ms)} values"
-        )
-
     np.random.seed(args.seed)
 
     jobs = create_jobs(args)
@@ -388,7 +370,6 @@ def main(args: Args) -> None:
         broker_type=args.action_chunk_broker_type.value,
         seed=args.seed,
         resize_size=args.resize_size,
-        latency_ms=args.latency_ms,
         execution_horizon=args.execution_horizon,
     )
 
