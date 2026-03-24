@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
-from dataclasses import dataclass
-from dataclasses import field
 import json
 import math
 import pathlib
@@ -22,155 +19,100 @@ import requests
 DEFAULT_TOXIC_UPSTREAM = "latency_upstream"
 DEFAULT_TOXIC_DOWNSTREAM = "latency_downstream"
 
+NetworkEmulationConfig = Dict[str, Any]
+WorkerNetworkContext = Dict[str, Any]
+
 
 class NetworkEmulationConfigError(ValueError):
     """Raised when network emulation config is invalid."""
 
 
-@dataclass(frozen=True)
-class ToxiproxyConfig:
-    api_url: str = "http://127.0.0.1:8474"
-    listen_host: str = "127.0.0.1"
-    listen_port_base: int = 18080
-    server_args: List[str] = field(default_factory=list)
+def load_network_emulation_config(path: Union[str, pathlib.Path]) -> NetworkEmulationConfig:
+    """Load and validate network emulation config, returning a normalized dict."""
 
+    raw = json.loads(pathlib.Path(path).read_text())
+    if not isinstance(raw, dict):
+        raise NetworkEmulationConfigError("Network config must be a JSON object")
 
-@dataclass(frozen=True)
-class SamplingConfig:
-    default_seed: int = 0
-    resample_every_requests: int = 1
+    toxi_raw = raw.get("toxiproxy") or {}
+    sampling_raw = raw.get("sampling") or {}
+    robots_raw = raw.get("robots")
 
+    if not isinstance(toxi_raw, dict):
+        raise NetworkEmulationConfigError("network_config.toxiproxy must be an object")
+    if not isinstance(sampling_raw, dict):
+        raise NetworkEmulationConfigError("network_config.sampling must be an object")
+    if not isinstance(robots_raw, dict) or not robots_raw:
+        raise NetworkEmulationConfigError("network_config.robots must be a non-empty object")
 
-@dataclass(frozen=True)
-class RobotLatencyConfig:
-    rtt_median_ms: float
-    rtt_sigma: float
-    seed: Optional[int] = None
+    toxiproxy = {
+        "api_url": str(toxi_raw.get("api_url", "http://127.0.0.1:8474")),
+        "listen_host": str(toxi_raw.get("listen_host", "127.0.0.1")),
+        "listen_port_base": int(toxi_raw.get("listen_port_base", 18080)),
+        "server_args": [str(x) for x in toxi_raw.get("server_args", [])],
+    }
 
+    sampling = {
+        "default_seed": int(sampling_raw.get("default_seed", 0)),
+        "resample_every_requests": int(sampling_raw.get("resample_every_requests", 1)),
+    }
 
-@dataclass(frozen=True)
-class NetworkEmulationConfig:
-    toxiproxy: ToxiproxyConfig
-    sampling: SamplingConfig
-    robots: Dict[str, RobotLatencyConfig]
+    if not toxiproxy["api_url"].startswith("http://"):
+        raise NetworkEmulationConfigError("toxiproxy.api_url must start with http://")
+    if not toxiproxy["listen_host"]:
+        raise NetworkEmulationConfigError("toxiproxy.listen_host must be non-empty")
+    if toxiproxy["listen_port_base"] <= 0:
+        raise NetworkEmulationConfigError("toxiproxy.listen_port_base must be > 0")
+    if sampling["resample_every_requests"] <= 0:
+        raise NetworkEmulationConfigError("sampling.resample_every_requests must be >= 1")
 
-    @classmethod
-    def from_json(cls, path: Union[str, pathlib.Path]) -> "NetworkEmulationConfig":
-        data = json.loads(pathlib.Path(path).read_text())
-        return cls.from_dict(data)
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "NetworkEmulationConfig":
-        if not isinstance(data, dict):
-            raise NetworkEmulationConfigError("Network config must be a JSON object")
-
-        toxi_data = data.get("toxiproxy") or {}
-        sampling_data = data.get("sampling") or {}
-        robots_data = data.get("robots")
-
-        if not isinstance(robots_data, dict) or not robots_data:
-            raise NetworkEmulationConfigError("network_config.robots must be a non-empty object")
-
-        toxiproxy = ToxiproxyConfig(
-            api_url=str(toxi_data.get("api_url", ToxiproxyConfig.api_url)),
-            listen_host=str(toxi_data.get("listen_host", ToxiproxyConfig.listen_host)),
-            listen_port_base=int(toxi_data.get("listen_port_base", ToxiproxyConfig.listen_port_base)),
-            server_args=[str(x) for x in toxi_data.get("server_args", [])],
-        )
-        sampling = SamplingConfig(
-            default_seed=int(sampling_data.get("default_seed", SamplingConfig.default_seed)),
-            resample_every_requests=int(
-                sampling_data.get("resample_every_requests", SamplingConfig.resample_every_requests)
-            ),
-        )
-
-        robots: Dict[str, RobotLatencyConfig] = {}
-        for robot_id, robot_cfg in robots_data.items():
-            if not isinstance(robot_cfg, dict):
-                raise NetworkEmulationConfigError(f"robot config for {robot_id!r} must be an object")
-            if "rtt_median_ms" not in robot_cfg or "rtt_sigma" not in robot_cfg:
-                raise NetworkEmulationConfigError(
-                    f"{robot_id} must define rtt_median_ms and rtt_sigma (mean/std fields are no longer supported)"
-                )
-            robots[str(robot_id)] = RobotLatencyConfig(
-                rtt_median_ms=float(robot_cfg["rtt_median_ms"]),
-                rtt_sigma=float(robot_cfg["rtt_sigma"]),
-                seed=int(robot_cfg["seed"]) if robot_cfg.get("seed") is not None else None,
+    robots: Dict[str, Dict[str, Any]] = {}
+    for robot_id, robot_cfg in robots_raw.items():
+        if not isinstance(robot_cfg, dict):
+            raise NetworkEmulationConfigError(f"robot config for {robot_id!r} must be an object")
+        if "rtt_median_ms" not in robot_cfg or "rtt_sigma" not in robot_cfg:
+            raise NetworkEmulationConfigError(
+                f"{robot_id} must define rtt_median_ms and rtt_sigma (mean/std fields are not supported)"
             )
 
-        config = cls(toxiproxy=toxiproxy, sampling=sampling, robots=robots)
-        config.validate()
-        return config
-
-    def validate(self) -> None:
-        if not self.toxiproxy.api_url.startswith("http://"):
-            raise NetworkEmulationConfigError("toxiproxy.api_url must start with http://")
-        if not self.toxiproxy.listen_host:
-            raise NetworkEmulationConfigError("toxiproxy.listen_host must be non-empty")
-        if self.toxiproxy.listen_port_base <= 0:
-            raise NetworkEmulationConfigError("toxiproxy.listen_port_base must be > 0")
-        if self.sampling.resample_every_requests <= 0:
-            raise NetworkEmulationConfigError("sampling.resample_every_requests must be >= 1")
-
-        for robot_id, robot_cfg in self.robots.items():
-            if robot_cfg.rtt_median_ms <= 0:
-                raise NetworkEmulationConfigError(f"{robot_id}.rtt_median_ms must be > 0")
-            if robot_cfg.rtt_sigma < 0:
-                raise NetworkEmulationConfigError(f"{robot_id}.rtt_sigma must be >= 0")
-
-
-@dataclass(frozen=True)
-class WorkerNetworkContext:
-    robot_id: str
-    proxy_name: str
-    proxy_host: str
-    proxy_port: int
-    api_url: str
-    rtt_median_ms: float
-    rtt_sigma: float
-    seed: int
-    resample_every_requests: int
-    trace_path: str
-
-
-@dataclass(frozen=True)
-class LatencyTraceEntry:
-    request_index: int
-    sampled_rtt_ms: float
-    upstream_latency_ms: int
-    downstream_latency_ms: int
-    resampled: bool
-    timestamp: float
-
-
-class LogNormalRttSampler:
-    """Samples RTT (milliseconds) from LogNormal(log(median_ms), sigma)."""
-
-    def __init__(self, median_ms: float, sigma: float, seed: int) -> None:
-        if median_ms <= 0:
-            raise ValueError("median_ms must be > 0")
+        median = float(robot_cfg["rtt_median_ms"])
+        sigma = float(robot_cfg["rtt_sigma"])
+        if median <= 0:
+            raise NetworkEmulationConfigError(f"{robot_id}.rtt_median_ms must be > 0")
         if sigma < 0:
-            raise ValueError("sigma must be >= 0")
+            raise NetworkEmulationConfigError(f"{robot_id}.rtt_sigma must be >= 0")
 
-        self._median_ms = float(median_ms)
-        self._sigma = float(sigma)
-        self._rng = np.random.default_rng(seed)
+        robots[str(robot_id)] = {
+            "rtt_median_ms": median,
+            "rtt_sigma": sigma,
+            "seed": int(robot_cfg["seed"]) if robot_cfg.get("seed") is not None else None,
+        }
 
-        self._mu = math.log(self._median_ms)
+    return {
+        "toxiproxy": toxiproxy,
+        "sampling": sampling,
+        "robots": robots,
+    }
 
-    def sample(self) -> float:
-        if self._sigma == 0:
-            return self._median_ms
-        return float(self._rng.lognormal(self._mu, self._sigma))
 
+class ToxiproxyController:
+    """Small helper for toxiproxy API control and optional local server lifecycle."""
 
-class ToxiproxyHttpClient:
-    """Minimal toxiproxy HTTP client with idempotent proxy/toxic helpers."""
-
-    def __init__(self, api_url: str, *, session: Optional[requests.Session] = None, timeout_s: float = 2.0) -> None:
+    def __init__(
+        self,
+        api_url: str,
+        *,
+        server_bin: Optional[str] = None,
+        server_args: Optional[List[str]] = None,
+        session: Optional[requests.Session] = None,
+        timeout_s: float = 2.0,
+    ) -> None:
         self._api_url = api_url.rstrip("/")
+        self._server_bin = server_bin
+        self._server_args = list(server_args or [])
         self._session = session or requests.Session()
         self._timeout_s = timeout_s
+        self._proc: Optional[subprocess.Popen] = None
 
     def _url(self, path: str) -> str:
         return f"{self._api_url}{path}"
@@ -200,96 +142,36 @@ class ToxiproxyHttpClient:
 
         raise TimeoutError(f"Timed out waiting for toxiproxy API at {self._api_url}: {last_error}")
 
-    def create_proxy(self, name: str, listen: str, upstream: str) -> None:
-        payload = {
-            "name": name,
-            "listen": listen,
-            "upstream": upstream,
-            "enabled": True,
-        }
-        response = self._request("POST", "/proxies", expected=(200, 201, 409), json=payload)
-        if response.status_code == 409:
-            self.delete_proxy(name)
-            self._request("POST", "/proxies", expected=(200, 201), json=payload)
-
-    def delete_proxy(self, name: str) -> None:
-        self._request("DELETE", f"/proxies/{name}", expected=(200, 204, 404))
-
-    def upsert_latency_toxic(
-        self,
-        proxy_name: str,
-        toxic_name: str,
-        stream: str,
-        latency_ms: int,
-        *,
-        jitter_ms: int = 0,
-        toxicity: float = 1.0,
-    ) -> None:
-        payload = {
-            "name": toxic_name,
-            "type": "latency",
-            "stream": stream,
-            "toxicity": float(toxicity),
-            "attributes": {
-                "latency": int(latency_ms),
-                "jitter": int(jitter_ms),
-            },
-        }
-
-        response = self._request(
-            "POST",
-            f"/proxies/{proxy_name}/toxics/{toxic_name}",
-            expected=(200, 201, 404, 405),
-            json=payload,
-        )
-        if response.status_code in (404, 405):
-            self._request(
-                "POST",
-                f"/proxies/{proxy_name}/toxics",
-                expected=(200, 201),
-                json=payload,
-            )
-
-
-class LocalToxiproxyServer:
-    """Starts/stops a local toxiproxy server process."""
-
-    def __init__(self, server_bin: str, api_url: str, server_args: Optional[List[str]] = None) -> None:
-        self._server_bin = server_bin
-        self._server_args = list(server_args or [])
-        self._client = ToxiproxyHttpClient(api_url)
-        self._proc: Optional[subprocess.Popen] = None
-
-    def start(self) -> None:
+    def start_server(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
+        if not self._server_bin:
+            raise ValueError("ToxiproxyController.start_server requires server_bin")
 
         bin_path = pathlib.Path(self._server_bin)
         if not bin_path.exists():
             raise FileNotFoundError(f"toxiproxy server binary not found: {bin_path}")
 
-        # This mode owns lifecycle for this run and should not silently reuse a pre-existing server.
+        # We own lifecycle for this run and should not reuse an already-running local API.
         try:
-            self._client.wait_until_ready(timeout_s=0.25, poll_interval_s=0.05)
+            self.wait_until_ready(timeout_s=0.25, poll_interval_s=0.05)
         except TimeoutError:
             pass
         else:
             raise RuntimeError("toxiproxy API is already reachable; refusing to reuse an existing server instance")
 
-        cmd = [str(bin_path), *self._server_args]
         self._proc = subprocess.Popen(
-            cmd,
+            [str(bin_path), *self._server_args],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-
         try:
-            self._client.wait_until_ready(timeout_s=15.0, poll_interval_s=0.1)
+            self.wait_until_ready(timeout_s=15.0, poll_interval_s=0.1)
         except Exception:
-            self.stop()
+            self.stop_server()
             raise
 
-    def stop(self) -> None:
+    def stop_server(self) -> None:
         if self._proc is None:
             return
         if self._proc.poll() is None:
@@ -301,72 +183,105 @@ class LocalToxiproxyServer:
                 self._proc.wait(timeout=5)
         self._proc = None
 
+    def create_proxy(self, name: str, listen: str, upstream: str) -> None:
+        payload = {"name": name, "listen": listen, "upstream": upstream, "enabled": True}
+        response = self._request("POST", "/proxies", expected=(200, 201, 409), json=payload)
+        if response.status_code == 409:
+            self.delete_proxy(name)
+            self._request("POST", "/proxies", expected=(200, 201), json=payload)
+
+    def delete_proxy(self, name: str) -> None:
+        self._request("DELETE", f"/proxies/{name}", expected=(200, 204, 404))
+
+    def _upsert_latency_toxic(self, proxy_name: str, toxic_name: str, stream: str, latency_ms: int) -> None:
+        payload = {
+            "name": toxic_name,
+            "type": "latency",
+            "stream": stream,
+            "toxicity": 1.0,
+            "attributes": {
+                "latency": int(latency_ms),
+                "jitter": 0,
+            },
+        }
+
+        response = self._request(
+            "POST",
+            f"/proxies/{proxy_name}/toxics/{toxic_name}",
+            expected=(200, 201, 404, 405),
+            json=payload,
+        )
+        if response.status_code in (404, 405):
+            self._request("POST", f"/proxies/{proxy_name}/toxics", expected=(200, 201), json=payload)
+
+    def set_latency(self, proxy_name: str, upstream_ms: int, downstream_ms: int) -> None:
+        self._upsert_latency_toxic(proxy_name, DEFAULT_TOXIC_UPSTREAM, "upstream", upstream_ms)
+        self._upsert_latency_toxic(proxy_name, DEFAULT_TOXIC_DOWNSTREAM, "downstream", downstream_ms)
+
 
 class RobotNetworkHook:
     """Worker-local hook that updates toxics before each inference request."""
 
     def __init__(self, context: WorkerNetworkContext) -> None:
         self._context = context
-        self._client = ToxiproxyHttpClient(context.api_url)
-        self._sampler = LogNormalRttSampler(
-            median_ms=context.rtt_median_ms,
-            sigma=context.rtt_sigma,
-            seed=context.seed,
-        )
+        self._controller = ToxiproxyController(str(context["api_url"]))
+
+        self._median_ms = float(context["rtt_median_ms"])
+        self._sigma = float(context["rtt_sigma"])
+        self._rng = np.random.default_rng(int(context["seed"]))
+        self._mu = math.log(self._median_ms)
+
         self._request_index = 0
-        self._resample_every = max(1, context.resample_every_requests)
-        half = max(0, int(round(context.rtt_median_ms / 2.0)))
+        self._resample_every = max(1, int(context["resample_every_requests"]))
+        half = max(0, int(round(self._median_ms / 2.0)))
         self._last_upstream_ms = half
         self._last_downstream_ms = half
-        self._trace: List[LatencyTraceEntry] = []
+
+        self._trace: List[Dict[str, Any]] = []
         self._flushed_count = 0
 
-    def _apply_latency(self, upstream_ms: int, downstream_ms: int) -> None:
-        self._client.upsert_latency_toxic(
-            self._context.proxy_name,
-            DEFAULT_TOXIC_UPSTREAM,
-            "upstream",
-            upstream_ms,
-        )
-        self._client.upsert_latency_toxic(
-            self._context.proxy_name,
-            DEFAULT_TOXIC_DOWNSTREAM,
-            "downstream",
-            downstream_ms,
-        )
+    def _sample_rtt(self) -> float:
+        if self._sigma == 0:
+            return self._median_ms
+        return float(self._rng.lognormal(self._mu, self._sigma))
 
     def before_send(self) -> None:
         self._request_index += 1
         should_resample = self._request_index == 1 or ((self._request_index - 1) % self._resample_every == 0)
-        sampled = float(self._last_upstream_ms + self._last_downstream_ms)
 
         if should_resample:
-            sampled = self._sampler.sample()
-            half = max(0, int(round(sampled / 2.0)))
+            sampled_rtt = self._sample_rtt()
+            half = max(0, int(round(sampled_rtt / 2.0)))
             self._last_upstream_ms = half
             self._last_downstream_ms = half
-            self._apply_latency(self._last_upstream_ms, self._last_downstream_ms)
+            self._controller.set_latency(
+                str(self._context["proxy_name"]),
+                self._last_upstream_ms,
+                self._last_downstream_ms,
+            )
+        else:
+            sampled_rtt = float(self._last_upstream_ms + self._last_downstream_ms)
 
         self._trace.append(
-            LatencyTraceEntry(
-                request_index=self._request_index,
-                sampled_rtt_ms=sampled,
-                upstream_latency_ms=self._last_upstream_ms,
-                downstream_latency_ms=self._last_downstream_ms,
-                resampled=should_resample,
-                timestamp=time.time(),
-            )
+            {
+                "request_index": self._request_index,
+                "sampled_rtt_ms": sampled_rtt,
+                "upstream_latency_ms": self._last_upstream_ms,
+                "downstream_latency_ms": self._last_downstream_ms,
+                "resampled": should_resample,
+                "timestamp": time.time(),
+            }
         )
 
     def flush_trace(self) -> None:
         if self._flushed_count >= len(self._trace):
             return
 
-        path = pathlib.Path(self._context.trace_path)
+        path = pathlib.Path(str(self._context["trace_path"]))
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             for entry in self._trace[self._flushed_count :]:
-                handle.write(json.dumps(asdict(entry), sort_keys=True) + "\n")
+                handle.write(json.dumps(entry, sort_keys=True) + "\n")
         self._flushed_count = len(self._trace)
 
     def close(self) -> None:
@@ -374,7 +289,7 @@ class RobotNetworkHook:
 
 
 class NetworkEmulationManager:
-    """Main-process manager: starts server, provisions proxies, and builds worker contexts."""
+    """Main-process manager: start server, create proxies, and build worker contexts."""
 
     def __init__(
         self,
@@ -391,12 +306,14 @@ class NetworkEmulationManager:
         self._upstream_port = upstream_port
         self._worker_count = worker_count
         self._output_dir = pathlib.Path(output_dir)
-        self._client = ToxiproxyHttpClient(config.toxiproxy.api_url)
-        self._server = LocalToxiproxyServer(
-            toxiproxy_server_bin,
-            config.toxiproxy.api_url,
-            server_args=config.toxiproxy.server_args,
+
+        toxi = self._config["toxiproxy"]
+        self._controller = ToxiproxyController(
+            str(toxi["api_url"]),
+            server_bin=toxiproxy_server_bin,
+            server_args=list(toxi.get("server_args", [])),
         )
+
         self._worker_contexts: Dict[str, WorkerNetworkContext] = {}
         self._active_proxy_names: List[str] = []
 
@@ -404,73 +321,55 @@ class NetworkEmulationManager:
     def worker_contexts(self) -> Dict[str, WorkerNetworkContext]:
         return dict(self._worker_contexts)
 
-    def _build_worker_contexts(self) -> Dict[str, WorkerNetworkContext]:
-        contexts: Dict[str, WorkerNetworkContext] = {}
+    def start(self) -> Dict[str, WorkerNetworkContext]:
+        self._worker_contexts = {}
+        self._active_proxy_names = []
+
+        if self._worker_count == 0:
+            self._write_resolved_config()
+            return {}
+
+        self._controller.start_server()
+
+        robots_cfg = self._config["robots"]
+        sampling_cfg = self._config["sampling"]
+        toxi_cfg = self._config["toxiproxy"]
+
         for idx in range(self._worker_count):
             robot_id = f"robot_{idx}"
-            robot_cfg = self._config.robots.get(robot_id)
+            robot_cfg = robots_cfg.get(robot_id)
             if robot_cfg is None:
                 raise NetworkEmulationConfigError(
                     f"Missing robots.{robot_id} in network config for worker_count={self._worker_count}"
                 )
-            seed = robot_cfg.seed if robot_cfg.seed is not None else self._config.sampling.default_seed + idx
-            contexts[robot_id] = WorkerNetworkContext(
-                robot_id=robot_id,
-                proxy_name=f"openpi_{robot_id}_proxy",
-                proxy_host=self._config.toxiproxy.listen_host,
-                proxy_port=self._config.toxiproxy.listen_port_base + idx,
-                api_url=self._config.toxiproxy.api_url,
-                rtt_median_ms=robot_cfg.rtt_median_ms,
-                rtt_sigma=robot_cfg.rtt_sigma,
-                seed=int(seed),
-                resample_every_requests=self._config.sampling.resample_every_requests,
-                trace_path=str(self._output_dir / f"{robot_id}_latency_trace.jsonl"),
-            )
-        return contexts
 
-    def _write_resolved_config(self) -> None:
-        self._output_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "toxiproxy": asdict(self._config.toxiproxy),
-            "sampling": asdict(self._config.sampling),
-            "upstream": {
-                "host": self._upstream_host,
-                "port": self._upstream_port,
-            },
-            "worker_contexts": {robot_id: asdict(ctx) for robot_id, ctx in self._worker_contexts.items()},
-        }
-        (self._output_dir / "resolved_config.json").write_text(json.dumps(payload, indent=2))
+            seed = robot_cfg.get("seed")
+            if seed is None:
+                seed = int(sampling_cfg["default_seed"]) + idx
 
-    def start(self) -> Dict[str, WorkerNetworkContext]:
-        if self._worker_count == 0:
-            self._worker_contexts = {}
-            self._write_resolved_config()
-            return {}
-
-        self._server.start()
-        self._worker_contexts = self._build_worker_contexts()
+            context: WorkerNetworkContext = {
+                "robot_id": robot_id,
+                "proxy_name": f"openpi_{robot_id}_proxy",
+                "proxy_host": str(toxi_cfg["listen_host"]),
+                "proxy_port": int(toxi_cfg["listen_port_base"]) + idx,
+                "api_url": str(toxi_cfg["api_url"]),
+                "rtt_median_ms": float(robot_cfg["rtt_median_ms"]),
+                "rtt_sigma": float(robot_cfg["rtt_sigma"]),
+                "seed": int(seed),
+                "resample_every_requests": int(sampling_cfg["resample_every_requests"]),
+                "trace_path": str(self._output_dir / f"{robot_id}_latency_trace.jsonl"),
+            }
+            self._worker_contexts[robot_id] = context
 
         upstream = f"{self._upstream_host}:{self._upstream_port}"
-        self._active_proxy_names = []
-
         for context in self._worker_contexts.values():
-            listen = f"{context.proxy_host}:{context.proxy_port}"
-            self._client.create_proxy(context.proxy_name, listen=listen, upstream=upstream)
+            proxy_name = str(context["proxy_name"])
+            listen = f"{context['proxy_host']}:{context['proxy_port']}"
+            self._controller.create_proxy(proxy_name, listen=listen, upstream=upstream)
 
-            half = max(0, int(round(context.rtt_median_ms / 2.0)))
-            self._client.upsert_latency_toxic(
-                context.proxy_name,
-                DEFAULT_TOXIC_UPSTREAM,
-                "upstream",
-                half,
-            )
-            self._client.upsert_latency_toxic(
-                context.proxy_name,
-                DEFAULT_TOXIC_DOWNSTREAM,
-                "downstream",
-                half,
-            )
-            self._active_proxy_names.append(context.proxy_name)
+            half = max(0, int(round(float(context["rtt_median_ms"]) / 2.0)))
+            self._controller.set_latency(proxy_name, half, half)
+            self._active_proxy_names.append(proxy_name)
 
         self._write_resolved_config()
         return dict(self._worker_contexts)
@@ -478,13 +377,21 @@ class NetworkEmulationManager:
     def close(self) -> None:
         for proxy_name in self._active_proxy_names:
             try:
-                self._client.delete_proxy(proxy_name)
+                self._controller.delete_proxy(proxy_name)
             except Exception:
-                # Best-effort cleanup.
                 pass
         self._active_proxy_names = []
-        self._server.stop()
+        self._controller.stop_server()
 
-
-def load_network_emulation_config(path: Union[str, pathlib.Path]) -> NetworkEmulationConfig:
-    return NetworkEmulationConfig.from_json(path)
+    def _write_resolved_config(self) -> None:
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "toxiproxy": self._config["toxiproxy"],
+            "sampling": self._config["sampling"],
+            "upstream": {
+                "host": self._upstream_host,
+                "port": self._upstream_port,
+            },
+            "worker_contexts": self._worker_contexts,
+        }
+        (self._output_dir / "resolved_config.json").write_text(json.dumps(payload, indent=2))

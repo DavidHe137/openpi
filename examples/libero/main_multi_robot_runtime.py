@@ -159,8 +159,8 @@ def init_worker(
             raise RuntimeError(
                 f"Missing network context for worker robot_id={robot_id}"
             )
-        ws_host = context.proxy_host
-        ws_port = context.proxy_port
+        ws_host = str(context["proxy_host"])
+        ws_port = int(context["proxy_port"])
         network_hook = RobotNetworkHook(context)
         pre_send_hook = network_hook.before_send
 
