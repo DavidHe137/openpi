@@ -278,7 +278,7 @@ def run_robots(
                     pool.join()
 
 
-def fetch_server_metadata(args: Args, timeout_s: float = 120.0) -> ServerMetadata:
+def fetch_server_metadata(args: Args, timeout_s: float = 300.0) -> ServerMetadata:
     """Fetch server metadata, retrying until timeout_s seconds have elapsed."""
     deadline = time.monotonic() + timeout_s
     while True:
