@@ -11,12 +11,13 @@
 #SBATCH --array=0-2
 
 set -e
+source sbatch/utils.sh
 
 SCHEDULERS=(greedy round_robin lookahead)
 SCHEDULER=${SCHEDULERS[$SLURM_ARRAY_TASK_ID]}
 NUM_ROBOTS_LIST=(20 15 10 5)
 NUM_TRIALS_PER_TASK=10
-PORT=$((8080 + ${SLURM_ARRAY_TASK_ID:-0}))
+PORT=$(find_free_port)
 
 echo "======================================"
 echo "Job ID: $SLURM_JOB_ID  Array task: $SLURM_ARRAY_TASK_ID"
