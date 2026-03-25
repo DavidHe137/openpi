@@ -22,13 +22,17 @@ import pandas as pd
 
 SCHEDULER_STYLES = {
     "greedy": {"color": "#555555", "marker": "o", "linestyle": "-"},
+    "greedy_plus": {"color": "#000000", "marker": "D", "linestyle": "-"},
     "round_robin": {"color": "#e05c5c", "marker": "s", "linestyle": "-"},
+    "wdrr": {"color": "#d18f1b", "marker": "P", "linestyle": "-"},
     "lookahead": {"color": "#1f77b4", "marker": "^", "linestyle": "-"},
 }
 
 SCHEDULER_LABELS = {
     "greedy": "Greedy",
+    "greedy_plus": "Greedy+",
     "round_robin": "Round Robin",
+    "wdrr": "WDRR",
     "lookahead": "Lookahead",
 }
 

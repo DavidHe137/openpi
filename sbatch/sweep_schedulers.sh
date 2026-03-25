@@ -8,12 +8,12 @@
 #SBATCH --cpus-per-task=26
 #SBATCH --gpus-per-node="l40s:2"
 #SBATCH --mem-per-gpu=64
-#SBATCH --array=0-0
+#SBATCH --array=0-4
 #SBATCH --exclude="dynamics"
 
 set -e
 
-SCHEDULERS=(lookahead)
+SCHEDULERS=(greedy round_robin lookahead greedy_plus wdrr)
 SCHEDULER=${SCHEDULERS[$SLURM_ARRAY_TASK_ID]}
 NUM_ROBOTS_LIST=(20 15 10 5)
 PORT=$((8000 + ${SLURM_ARRAY_TASK_ID:-0}))
@@ -73,7 +73,7 @@ MONITOR_PID=$!
 NUM_RUNS=1
 for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
     for RUN_IDX in $(seq 0 $((NUM_RUNS - 1))); do
-        TEMPLATE_EXPERIMENT_CONFIG="/coc/flash7/rbansal66/vvla/openpi/examples/libero/${NUM_ROBOTS}_het_robots_realistic.jsonc"
+        TEMPLATE_EXPERIMENT_CONFIG="/coc/flash7/rbansal66/vvla/openpi/examples/libero/exp_conf/${NUM_ROBOTS}_het_robots_realistic.jsonc"
         if [ ! -f "$TEMPLATE_EXPERIMENT_CONFIG" ]; then
             echo "ERROR: missing template experiment config: $TEMPLATE_EXPERIMENT_CONFIG"
             exit 1
@@ -115,7 +115,7 @@ if [ "$SCHEDULER" = "greedy" ]; then
     echo "======================================"
     for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
         for RUN_IDX in $(seq 0 $((NUM_RUNS - 1))); do
-            TEMPLATE_EXPERIMENT_CONFIG="/coc/flash7/rbansal66/vvla/openpi/examples/libero/${NUM_ROBOTS}_het_robots_realistic.jsonc"
+            TEMPLATE_EXPERIMENT_CONFIG="/coc/flash7/rbansal66/vvla/openpi/examples/libero/exp_conf/${NUM_ROBOTS}_het_robots_realistic.jsonc"
             if [ ! -f "$TEMPLATE_EXPERIMENT_CONFIG" ]; then
                 echo "ERROR: missing template experiment config: $TEMPLATE_EXPERIMENT_CONFIG"
                 exit 1

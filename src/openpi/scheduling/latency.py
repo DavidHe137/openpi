@@ -54,6 +54,22 @@ class LatencyTracker:
             return None
         return infer + delivery
 
+    @property
+    def alpha(self) -> float:
+        return self._alpha
+
+    @property
+    def obs_network_map(self) -> dict[str, float]:
+        return dict(self._obs_network_ms)
+
+    @property
+    def action_delivery_map(self) -> dict[str, float]:
+        return dict(self._action_delivery_ms)
+
+    @property
+    def infer_map(self) -> dict[int, float]:
+        return dict(self._infer_ms)
+
     def reset_robot(self, robot_id: str) -> None:
         self._obs_network_ms.pop(robot_id, None)
         self._action_delivery_ms.pop(robot_id, None)
