@@ -51,5 +51,7 @@ def create_episodes(task_suite_name: str, num_trials_per_task: int) -> List[Epis
                 )
             )
     random.shuffle(episodes)
+    for i, episode in enumerate(episodes):
+        episode.idx = i + 1
 
     return episodes
