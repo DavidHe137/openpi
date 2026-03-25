@@ -6,7 +6,7 @@ from typing import List
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
 from examples.libero.env import LiberoSimEnvironment
-from examples.libero.main_multi_robot_runtime import Episode
+from examples.libero.episodes import Episode
 
 
 class ProgressSubscriber(_subscriber.Subscriber):

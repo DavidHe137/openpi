@@ -12,12 +12,10 @@ from typing import (
     Dict,
     Type,
 )  # Any used for shared globals
-import random
 import datetime
 import time
 
 import numpy as np
-from jaxtyping import Float
 from libero.libero import benchmark
 from openpi_client.client import BidirectionalWebsocket
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
@@ -31,6 +29,7 @@ from dataclasses import dataclass, field
 from examples.libero import utils
 from examples.libero import logging_config
 from examples.libero.env import LiberoSimEnvironment
+from examples.libero.episodes import Episode, create_episodes
 from examples.libero.progress_manager import get_progress_manager
 from examples.libero.subscribers.saver import Saver
 from examples.libero.subscribers.task_metrics_publisher import TaskMetricsPublisher
@@ -38,20 +37,6 @@ from examples.libero.metrics import calculate_metrics, generate_all_plots
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Episode:
-    """A single episode: one task, one initial state."""
-
-    idx: int  # 1-indexed
-    task_suite_name: str
-    task_id: int
-    task: benchmark.Task
-    initial_state: np.ndarray
-
-    def __str__(self) -> str:
-        return f"Episode(task_suite_name={self.task_suite_name}, task_id={self.task_id}, task={self.task.language})"
 
 
 @dataclass
@@ -293,56 +278,6 @@ def run_robots(
                     pool.join()
 
 
-def create_episodes(args: Args) -> List[Episode]:
-    benchmark_dict: Dict[str, Type[benchmark.Benchmark]] = (
-        benchmark.get_benchmark_dict()
-    )
-    task_suite: benchmark.Benchmark = benchmark_dict[args.task_suite_name]()
-    num_tasks_in_suite = task_suite.n_tasks
-
-    logging.info(
-        "Setting up multi-robot LIBERO runtime over suite '%s' with %d tasks, num_robots=%d, trials_per_task=%d, control_hz=%d",
-        args.task_suite_name,
-        num_tasks_in_suite,
-        args.num_robots,
-        args.num_trials_per_task,
-        args.control_hz,
-    )
-
-    episodes: List[Episode] = []
-    for task_id in range(num_tasks_in_suite):
-        task: benchmark.Task = task_suite.get_task(task_id)
-        all_initial_states: Float[np.ndarray, "n_initial_states state_dim"] = (
-            task_suite.get_task_init_states(task_id)
-        )
-
-        if len(all_initial_states) < args.num_trials_per_task:
-            logging.error(
-                "Task %d has less initial states than trials per task; skipping",
-                task_id,
-            )
-            continue
-
-        initial_states = all_initial_states[: args.num_trials_per_task]
-        for state in initial_states:
-            episodes.append(
-                Episode(
-                    idx=len(episodes) + 1,
-                    task_suite_name=args.task_suite_name,
-                    task_id=task_id,
-                    task=task,
-                    initial_state=state,
-                )
-            )
-
-    logging.info(
-        "Created %d episodes across %d tasks", len(episodes), num_tasks_in_suite
-    )
-    random.shuffle(episodes)
-
-    return episodes
-
-
 def fetch_server_metadata(args: Args, timeout_s: float = 120.0) -> ServerMetadata:
     """Fetch server metadata, retrying until timeout_s seconds have elapsed."""
     deadline = time.monotonic() + timeout_s
@@ -417,7 +352,7 @@ def main(args: Args) -> None:
         )
 
     utils.seed_everything(args.seed)
-    episodes = create_episodes(args)
+    episodes = create_episodes(args.task_suite_name, args.num_trials_per_task)
 
     server_metadata = fetch_server_metadata(args)
 
@@ -453,6 +388,5 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
-    # FIXME: look into this
     multiprocessing.set_start_method("spawn")  # allows multiple processes with envs
     main(tyro.cli(Args))
