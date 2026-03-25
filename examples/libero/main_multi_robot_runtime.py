@@ -30,8 +30,6 @@ from examples.libero.subscribers.task_metrics_publisher import TaskMetricsPublis
 from examples.libero.metrics import calculate_metrics, generate_all_plots
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
-LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
-
 logger = logging.getLogger(__name__)
 
 # One-time startup synchronization state.
