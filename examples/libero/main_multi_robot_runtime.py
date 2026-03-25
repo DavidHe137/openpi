@@ -4,7 +4,14 @@ import pathlib
 import multiprocessing
 import queue
 import shutil
-from typing import List, Literal, Optional, Dict, Type
+from typing import (
+    Any,
+    List,
+    Literal,
+    Optional,
+    Dict,
+    Type,
+)  # Any used for shared globals
 import random
 import datetime
 import time
@@ -32,26 +39,12 @@ from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
 logger = logging.getLogger(__name__)
 
-# One-time startup synchronization state.
-_start_barrier = None
-_has_synced_start = False
-
-# Per-worker globals (set in init_worker, used in _robot_worker)
-robot_idx: int = 0
-ws_client = None
-broker = None
-agent = None
-_progress_queue = None
-_task_suite = None
-_first_episode = None
-_worker_progress_subscriber: Optional[ProgressSubscriber] = None
-_episode_queue = None  # multiprocessing.Queue inherited via initargs
-
 
 @dataclass
 class Episode:
     """A single episode: one task, one initial state."""
 
+    idx: int  # 1-indexed
     task_suite_name: str
     task_id: int
     task: benchmark.Task
@@ -79,7 +72,6 @@ class Args:
     # LIBERO environment-specific parameters
     #################################################################################################################
     task_suite_name: str = "libero_10"
-    num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
     num_trials_per_task: int = 10  # Number of rollouts per task
     max_steps: int = 600  # Maximum number of control steps per episode
 
@@ -115,31 +107,61 @@ class Args:
         return f"http://{self.host}:{self.port}"
 
 
-def init_worker(
-    args: Args, counter, progress_queue, start_barrier, episode_queue=None
-) -> None:
-    global \
-        robot_idx, \
-        ws_client, \
-        broker, \
-        agent, \
-        _progress_queue, \
-        _start_barrier, \
-        _has_synced_start, \
-        _task_suite, \
-        _first_episode, \
-        _worker_progress_subscriber, \
-        _episode_queue
-    with counter.get_lock():
-        robot_idx = counter.value
-        counter.value += 1
+# Shared worker state: set via pool initializer so these are inherited by spawned
+# processes rather than pickled as task arguments (multiprocessing.Queue and Barrier
+# cannot be pickled after spawning).
+_episode_queue: Optional[Any] = None
+_progress_queue: Optional[Any] = None
+_start_barrier: Optional[Any] = None
 
-    # Store queue globally for access in _robot_worker
+
+def _init_worker_shared(episode_queue, progress_queue, start_barrier) -> None:
+    global _episode_queue, _progress_queue, _start_barrier
+    _episode_queue = episode_queue
     _progress_queue = progress_queue
     _start_barrier = start_barrier
-    _has_synced_start = False
 
-    # to avoid flooding the server with simultaneous warmup
+
+@dataclass
+class _WorkerArgs:
+    args: Args
+    server_metadata: ServerMetadata
+    robot_idx: int
+
+
+class _StartupSyncSubscriber(_subscriber.Subscriber):
+    """One-shot startup synchronization right before first episode steps."""
+
+    def __init__(self) -> None:
+        self._done = False
+
+    def on_episode_start(self) -> None:
+        if self._done:
+            return
+        if _start_barrier is not None:
+            _start_barrier.wait()
+        self._done = True
+        # Notify the progress manager that this worker has crossed the start barrier.
+        # The manager sets its start_time on the first such message it receives.
+        if _progress_queue is not None:
+            try:
+                _progress_queue.put_nowait({"type": "run_start"})
+            except Exception:
+                pass
+
+    def on_step(self, observation, action) -> None:
+        return
+
+    def on_episode_end(self) -> None:
+        return
+
+
+def _robot_worker(worker_args: _WorkerArgs) -> None:
+    """Worker process: initialize, then pull episodes from the shared queue until empty."""
+    args = worker_args.args
+    robot_idx = worker_args.robot_idx
+
+    # Stagger startup to avoid flooding the server with simultaneous warmup.
     time.sleep(robot_idx * 0.5)
 
     ws_client = BidirectionalWebsocket(
@@ -147,8 +169,6 @@ def init_worker(
         host=args.host,
         port=args.port,
     )
-
-    # Create broker config and instantiate
     config = BrokerConfig(
         ws_client=ws_client,
         control_hz=args.control_hz,
@@ -160,80 +180,19 @@ def init_worker(
     benchmark_dict: Dict[str, Type[benchmark.Benchmark]] = (
         benchmark.get_benchmark_dict()
     )
-    _task_suite = benchmark_dict[args.task_suite_name]()
+    task_suite = benchmark_dict[args.task_suite_name]()
 
-    # Store episode queue globally so _robot_worker can access it without pickling
-    _episode_queue = episode_queue
+    # Single instance reused across episodes so _done persists across iterations.
+    startup_sync = _StartupSyncSubscriber()
 
-    # Pre-fetch first episode from queue
-    _first_episode = None
-    if episode_queue is not None:
+    while True:
         try:
-            _first_episode = episode_queue.get_nowait()
+            episode = _episode_queue.get_nowait()
         except queue.Empty:
-            pass
+            break
 
-    # Create progress subscriber using first episode's task info
-    _worker_progress_subscriber = None
-    if progress_queue is not None and _first_episode is not None:
-        job_info = {
-            "task_suite_name": _first_episode.task_suite_name,
-            "task_id": _first_episode.task_id,
-        }
-        _worker_progress_subscriber = ProgressSubscriber(
-            queue=progress_queue,
-            robot_idx=robot_idx,
-            job_info=job_info,
-            environment=None,
-            update_frequency=10,
-        )
-
-
-def _wait_for_initial_start_sync() -> None:
-    """Block on a one-time startup barrier before first control step."""
-    global _has_synced_start  # NOTE: shared between workers. maybe can persist worker state elsewhere to avoid global, but I think this is fine
-    if _has_synced_start:
-        return
-
-    if _start_barrier is None:
-        _has_synced_start = True
-    else:
-        _start_barrier.wait()
-        _has_synced_start = True
-
-    # Notify the progress manager that this worker has crossed the start barrier.
-    # The manager sets its start_time on the first such message it receives.
-    if _progress_queue is not None:
-        try:
-            _progress_queue.put_nowait({"type": "run_start"})
-        except Exception:
-            pass
-
-
-class _StartupSyncSubscriber(_subscriber.Subscriber):
-    """One-shot startup synchronization right before first episode steps."""
-
-    def on_episode_start(self) -> None:
-        _wait_for_initial_start_sync()
-
-    def on_step(self, observation, action) -> None:
-        return
-
-    def on_episode_end(self) -> None:
-        return
-
-
-def _robot_worker(task_args) -> None:
-    """Worker process that pulls episodes from the shared queue until empty."""
-    args, server_metadata = task_args
-
-    episode = _first_episode  # pre-fetched in init_worker
-    total_completed = 0
-    total_successes = 0
-
-    while episode is not None:
         raw_env, _ = utils._get_libero_env(
-            _task_suite.get_task(episode.task_id),
+            task_suite.get_task(episode.task_id),
             seed=args.seed + robot_idx,
         )
         env = LiberoSimEnvironment(
@@ -241,17 +200,12 @@ def _robot_worker(task_args) -> None:
             task_description=episode.task.language,
             initial_states=np.array([episode.initial_state]),
             resize_size=args.resize_size,
-            num_steps_wait=args.num_steps_wait,
             max_episode_steps=args.max_steps,
-            latency_ms=args.latency_for_robot(robot_idx),
             control_hz=args.control_hz,
         )
 
-        if _worker_progress_subscriber is not None:
-            _worker_progress_subscriber.environment = env
-
         subscribers: List[_subscriber.Subscriber] = [
-            _StartupSyncSubscriber(),
+            startup_sync,
             Saver(
                 out_dir=args.output_dir,
                 environment=env,
@@ -268,9 +222,14 @@ def _robot_worker(task_args) -> None:
                 task_id=episode.task_id,
                 task=episode.task,
             ),
+            ProgressSubscriber(
+                queue=_progress_queue,
+                robot_idx=robot_idx,
+                episode=episode,
+                environment=env,
+                update_frequency=10,
+            ),
         ]
-        if _worker_progress_subscriber is not None:
-            subscribers.append(_worker_progress_subscriber)
 
         runtime = _runtime.Runtime(
             environment=env,
@@ -281,48 +240,29 @@ def _robot_worker(task_args) -> None:
             max_episode_steps=env._max_episode_steps,  # type: ignore[attr-defined]
         )
         runtime.run()
-        raw_env.close()
-
-        total_completed += 1
-        if env.current_success:
-            total_successes += 1
-
-        try:
-            episode = _episode_queue.get_nowait()
-        except queue.Empty:
-            episode = None
-
-    # Emit worker_complete
-    if _worker_progress_subscriber is not None:
-        _worker_progress_subscriber.close(total_completed, total_successes)
+        runtime.close()
 
 
 def run_robots(
     args: Args, episodes: List[Episode], server_metadata: ServerMetadata
 ) -> None:
-    if not episodes:
-        logging.info("No episodes to run; skipping robot startup")
-        return
-
-    counter = multiprocessing.Value("i", 0)  # for assigning robot indices
-
     if args.debug:
-        # Debug mode: no progress manager, single process for pdb compatibility
+        # Debug mode: single process for pdb compatibility, no progress manager.
         ep_queue: queue.Queue = queue.Queue()
         for ep in episodes:
             ep_queue.put(ep)
-        init_worker(args, counter, None, None, ep_queue)
-        _robot_worker((args, server_metadata))
+        _init_worker_shared(ep_queue, None, None)
+        _robot_worker(
+            _WorkerArgs(args=args, server_metadata=server_metadata, robot_idx=0)
+        )
     else:
         total_episodes = len(episodes)
         active_workers = min(args.num_robots, total_episodes)
         start_barrier = multiprocessing.Barrier(active_workers, timeout=60)
         logging.info(
-            "Using one-time startup barrier across %d worker(s)",
-            active_workers,
+            "Using one-time startup barrier across %d worker(s)", active_workers
         )
 
-        # Build shared episode queue
         mp_episode_queue: multiprocessing.Queue = multiprocessing.Queue()
         for ep in episodes:
             mp_episode_queue.put(ep)
@@ -332,29 +272,22 @@ def run_robots(
             total_episodes=total_episodes,
             max_steps=args.max_steps,
         ) as progress_manager:
-            # Pass queue to worker initializer
+            worker_args = [
+                _WorkerArgs(args=args, server_metadata=server_metadata, robot_idx=i)
+                for i in range(active_workers)
+            ]
             with multiprocessing.Pool(
                 processes=active_workers,
-                initializer=init_worker,
-                initargs=(
-                    args,
-                    counter,
-                    progress_manager.queue,
-                    start_barrier,
-                    mp_episode_queue,
-                ),
+                initializer=_init_worker_shared,
+                initargs=(mp_episode_queue, progress_manager.queue, start_barrier),
             ) as pool:
                 try:
-                    # use imap_unordered so that it exits immediately on any exception
-                    _ = list(
-                        pool.imap_unordered(
-                            _robot_worker,
-                            [(args, server_metadata)] * active_workers,
-                        )
-                    )
+                    # use imap_unordered so that exceptions surface immediately
+                    for _ in pool.imap_unordered(_robot_worker, worker_args):
+                        pass
                 except Exception as e:
                     logging.error(f"Error in robot worker: {e}")
-                    raise e
+                    raise
                 finally:
                     pool.close()
                     pool.join()
@@ -394,6 +327,7 @@ def create_episodes(args: Args) -> List[Episode]:
         for state in initial_states:
             episodes.append(
                 Episode(
+                    idx=len(episodes) + 1,
                     task_suite_name=args.task_suite_name,
                     task_id=task_id,
                     task=task,
@@ -445,13 +379,22 @@ def save_server_metrics_history(args: Args) -> None:
 
 
 def validate_args(args: Args) -> None:
-    if not args.overwrite and args.output_dir.exists():
-        raise ValueError(f"Output path {args.output_dir} already exists")
-    if args.latency_ms and len(args.latency_ms) != args.num_robots:
-        raise ValueError(
-            f"latency_ms must either be empty or have exactly {args.num_robots} values "
-            f"(one per robot), but got {len(args.latency_ms)} values"
-        )
+    assert args.overwrite or not args.output_dir.exists(), (
+        f"Output path {args.output_dir} already exists"
+    )
+    assert not args.latency_ms or len(args.latency_ms) == args.num_robots, (
+        f"latency_ms must either be empty or have exactly {args.num_robots} values (one per robot), but got {len(args.latency_ms)} values"
+    )
+    assert (
+        not args.execution_horizon or len(args.execution_horizon) == args.num_robots
+    ), (
+        f"execution_horizon must either be empty or have exactly {args.num_robots} values (one per robot), but got {len(args.execution_horizon)} values"
+    )
+    assert args.num_robots > 0, "num_robots must be positive"
+    assert args.num_trials_per_task > 0, "num_trials_per_task must be positive"
+    assert args.max_steps > 0, "max_steps must be positive"
+    assert args.seed >= 0, "seed must be non-negative"
+    assert args.resize_size > 0, "resize_size must be positive"
 
 
 def main(args: Args) -> None:
@@ -468,6 +411,10 @@ def main(args: Args) -> None:
         logging_config.setup_logging(
             log_path=log_file_path, level=logging.DEBUG if args.debug else logging.INFO
         )
+    else:
+        logging_config.setup_logging(
+            level=logging.DEBUG if args.debug else logging.INFO
+        )
 
     utils.seed_everything(args.seed)
     episodes = create_episodes(args)
@@ -476,7 +423,6 @@ def main(args: Args) -> None:
 
     runtime_metadata = RuntimeMetadata(
         task_suite_name=args.task_suite_name,
-        num_steps_wait=args.num_steps_wait,
         num_trials_per_task=args.num_trials_per_task,
         max_steps=args.max_steps,
         num_robots=args.num_robots,

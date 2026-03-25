@@ -280,13 +280,13 @@ class ProgressManager:
     def _handle_worker_init(self, message: dict):
         """Handle worker initialization message."""
         robot_idx = message["robot_idx"]
-        job_info = message["job_info"]
+        episode = message["episode"]
 
         # Create robot state
         robot_state = RobotState(
             robot_idx=robot_idx,
-            task_id=job_info["task_id"],
-            task_suite_name=job_info["task_suite_name"],
+            task_id=episode.task_id,
+            task_suite_name=episode.task_suite_name,
             max_steps=self.max_steps,
             active=True,
         )
@@ -546,13 +546,13 @@ class ConciseProgressManager(ProgressManager):
     def _handle_worker_init(self, message: dict):
         """Handle worker initialization message (no individual progress bars)."""
         robot_idx = message["robot_idx"]
-        job_info = message["job_info"]
+        episode = message["episode"]
 
         # Create robot state (without progress bars)
         robot_state = RobotState(
             robot_idx=robot_idx,
-            task_id=job_info["task_id"],
-            task_suite_name=job_info["task_suite_name"],
+            task_id=episode.task_id,
+            task_suite_name=episode.task_suite_name,
             max_steps=self.max_steps,
             active=True,
         )
@@ -635,16 +635,18 @@ class LoggingProgressManager(ProgressManager):
                     self.job_stats.start_time = time.time()
             elif msg_type == "worker_init":
                 self._handle_worker_init(message)
+                episode = message["episode"]
                 self.console.print(
-                    f"[cyan][Robot {message['robot_idx']}][/cyan] Starting task {message['job_info']['task_id']} "
-                    f"({message['job_info']['task_suite_name']})"
+                    f"[cyan][Robot {message['robot_idx']}][/cyan] Starting task {episode.task_id} "
+                    f"({episode.task_suite_name})"
                 )
             elif msg_type == "episode_start":
                 self._handle_episode_start(message)
                 robot_idx = message["robot_idx"]
                 if robot_idx in self.robot_states:
+                    episode = message["episode"]
                     self.console.print(
-                        f"[cyan][Robot {robot_idx}][/cyan] Episode {message['episode_idx'] + 1}/{self.job_stats.total_episodes} started"
+                        f"[cyan][Robot {robot_idx}][/cyan] Episode {episode.idx}/{self.job_stats.total_episodes} started"
                     )
             elif msg_type == "episode_end":
                 robot_idx = message["robot_idx"]
@@ -654,8 +656,9 @@ class LoggingProgressManager(ProgressManager):
                         if message["success"]
                         else "[red]FAILURE[/red]"
                     )
+                    episode = message["episode"]
                     self.console.print(
-                        f"[cyan][Robot {robot_idx}][/cyan] Episode {message['episode_idx'] + 1}/{self.job_stats.total_episodes} ended: {status}"
+                        f"[cyan][Robot {robot_idx}][/cyan] Episode {episode.idx}/{self.job_stats.total_episodes} ended: {status}"
                     )
                 self._handle_episode_end(message)
             elif msg_type == "step_batch":
@@ -673,13 +676,13 @@ class LoggingProgressManager(ProgressManager):
     def _handle_worker_init(self, message: dict):
         """Handle worker initialization message."""
         robot_idx = message["robot_idx"]
-        job_info = message["job_info"]
+        episode = message["episode"]
 
         # Create robot state (without progress bars)
         robot_state = RobotState(
             robot_idx=robot_idx,
-            task_id=job_info["task_id"],
-            task_suite_name=job_info["task_suite_name"],
+            task_id=episode.task_id,
+            task_suite_name=episode.task_suite_name,
             max_steps=self.max_steps,
             active=True,
         )
@@ -709,16 +712,16 @@ class DebugQueue:
         msg_type = message["type"]
         if msg_type == "worker_init":
             print(
-                f"[Robot {message['robot_idx']}] Starting task {message['job_info']['task_id']}"
+                f"[Robot {message['robot_idx']}] Starting task {message['episode'].task_id}"
             )
         elif msg_type == "episode_start":
             print(
-                f"[Robot {message['robot_idx']}] Episode {message['episode_idx']} started"
+                f"[Robot {message['robot_idx']}] Episode {message['episode'].idx} started"
             )
         elif msg_type == "episode_end":
             status = "SUCCESS" if message["success"] else "FAILURE"
             print(
-                f"[Robot {message['robot_idx']}] Episode {message['episode_idx']} ended: {status}"
+                f"[Robot {message['robot_idx']}] Episode {message['episode'].idx} ended: {status}"
             )
         elif msg_type == "step_batch":
             print(f"[Robot {message['robot_idx']}] Step {message['step_count']}")

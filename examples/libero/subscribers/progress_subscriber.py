@@ -10,6 +10,7 @@ from typing_extensions import override
 
 if TYPE_CHECKING:
     from examples.libero.env import LiberoSimEnvironment
+    from examples.libero.main_multi_robot_runtime import Episode
 
 
 class ProgressSubscriber(_subscriber.Subscriber):
@@ -17,21 +18,18 @@ class ProgressSubscriber(_subscriber.Subscriber):
     Subscriber that sends progress updates through a multiprocessing queue.
 
     This subscriber:
-    - Tracks episode and step progress
+    - Tracks step progress
     - Sends updates every N steps (configurable)
     - Reports success/failure from environment
-    - Sends messages on episode boundaries
 
-    Designed to be created once per worker and reused across multiple episodes
-    (potentially spanning different tasks). Call close() when the worker is done
-    to emit the final worker_complete message.
+    Designed to be created once per episode
     """
 
     def __init__(
         self,
         queue: multiprocessing.Queue,
         robot_idx: int,
-        job_info: dict,
+        episode: Episode,
         environment: Optional["LiberoSimEnvironment"],
         update_frequency: int = 10,
     ):
@@ -48,12 +46,11 @@ class ProgressSubscriber(_subscriber.Subscriber):
         """
         self.queue = queue
         self.robot_idx = robot_idx
-        self.job_info = job_info
+        self.episode = episode
         self.environment = environment
         self.update_frequency = update_frequency
 
         # State tracking
-        self.current_episode_idx = 0
         self.current_step_count = 0
         self.total_successes = 0
         self.step_times: List[List[float]] = []
@@ -63,7 +60,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
             {
                 "type": "worker_init",
                 "robot_idx": robot_idx,
-                "job_info": job_info,
+                "episode": episode,
             }
         )
 
@@ -86,7 +83,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
             {
                 "type": "episode_start",
                 "robot_idx": self.robot_idx,
-                "episode_idx": self.current_episode_idx,
+                "episode": self.episode,
             }
         )
 
@@ -110,7 +107,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
                 {
                     "type": "step_batch",
                     "robot_idx": self.robot_idx,
-                    "episode_idx": self.current_episode_idx,
+                    "episode": self.episode,
                     "step_count": self.current_step_count,
                     "steps/s": self._calculate_steps_per_sec(),
                 }
@@ -119,32 +116,11 @@ class ProgressSubscriber(_subscriber.Subscriber):
     @override
     def on_episode_end(self) -> None:
         """Called when an episode ends. Report success/failure."""
-        # Get success from environment
-        success = (
-            self.environment.current_success if self.environment is not None else False
-        )
-
-        if success:
-            self.total_successes += 1
-
         self._send_message(
             {
                 "type": "episode_end",
                 "robot_idx": self.robot_idx,
-                "episode_idx": self.current_episode_idx,
-                "success": success,
-            }
-        )
-
-        self.current_episode_idx += 1
-
-    def close(self, total_completed: int, total_successes: int) -> None:
-        """Send worker_complete message. Call when the worker has finished all episodes."""
-        self._send_message(
-            {
-                "type": "worker_complete",
-                "robot_idx": self.robot_idx,
-                "total_episodes": total_completed,
-                "total_successes": total_successes,
+                "episode": self.episode,
+                "success": self.environment.current_success,
             }
         )
