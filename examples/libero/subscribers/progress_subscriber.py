@@ -1,16 +1,12 @@
 from __future__ import annotations
-
 import multiprocessing
 import time
 import numpy as np
-from typing import TYPE_CHECKING, List, Optional
-
+from typing import List
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
-
-if TYPE_CHECKING:
-    from examples.libero.env import LiberoSimEnvironment
-    from examples.libero.main_multi_robot_runtime import Episode
+from examples.libero.env import LiberoSimEnvironment
+from examples.libero.main_multi_robot_runtime import Episode
 
 
 class ProgressSubscriber(_subscriber.Subscriber):
@@ -30,7 +26,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
         queue: multiprocessing.Queue,
         robot_idx: int,
         episode: Episode,
-        environment: Optional["LiberoSimEnvironment"],
+        environment: LiberoSimEnvironment,
         update_frequency: int = 10,
     ):
         """
