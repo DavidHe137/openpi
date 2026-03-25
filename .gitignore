@@ -182,6 +182,7 @@ log/
 benchmarks/
 *.lprof
 jax_cache/
+.ruff_cache/
 
 # AI
 .claude/
