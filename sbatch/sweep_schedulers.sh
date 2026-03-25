@@ -88,7 +88,7 @@ for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
         srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=22 --overlap --exact -w $NODE bash -c "
             set -e
             echo 'Starting client on $NODE: scheduler=$SCHEDULER num_robots=$NUM_ROBOTS run=$RUN_IDX'
-            source scripts/libero_client.sh
+            source scripts/bash/libero_client.sh
             ./examples/libero/.venv/bin/python examples/libero/main_multi_robot_runtime.py \
                 --host $NODE \
                 --port $PORT \
@@ -130,7 +130,7 @@ if [ "$SCHEDULER" = "greedy" ]; then
             srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=22 --overlap --exact -w $NODE bash -c "
                 set -e
                 echo 'Starting sync client on $NODE: scheduler=$SCHEDULER num_robots=$NUM_ROBOTS run=$RUN_IDX'
-                source scripts/libero_client.sh
+                source scripts/bash/libero_client.sh
                 ./examples/libero/.venv/bin/python examples/libero/main_multi_robot_runtime.py \
                     --host $NODE \
                     --port $PORT \

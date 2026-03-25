@@ -66,6 +66,10 @@ class Runtime:
             self._step()
             self._episode_steps += 1
 
+            next_step_time = last_step_time + step_time
+            sleep_duration = (next_step_time - time.perf_counter()) - 0.005
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
             while time.perf_counter() - last_step_time < step_time:
                 pass
             last_step_time = time.perf_counter()
@@ -93,3 +97,5 @@ class Runtime:
     def close(self) -> None:
         """Closes the runtime."""
         self._environment.close()
+        for subscriber in self._subscribers:
+            subscriber.close()
