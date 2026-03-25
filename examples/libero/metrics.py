@@ -10,7 +10,9 @@ from rich.console import Console
 from rich.table import Table
 from examples.libero.subscribers.saver import Result
 from openpi_client.schemas import RuntimeMetadata, pathlib, ActionChunk
+import logging
 
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Data Loading
@@ -376,7 +378,7 @@ def plot_task_breakdown(
         title_pad: Optional extra padding (points) between suptitle and subplots
     """
     if df.empty:
-        print(f"No data for {column}")
+        logger.warning(f"No data for {column}")
         return
 
     # Create task labels and group
@@ -426,7 +428,7 @@ def plot_task_breakdown(
     fig.savefig(filename, dpi=150)
     plt.close(fig)
 
-    print(f"Saved {filename}")
+    logger.info(f"Saved {filename}")
 
 
 # =============================================================================
@@ -454,7 +456,7 @@ def generate_success_rate_plot(output_path: pathlib.Path) -> None:
     """Success rate bar chart by task."""
     df = load_episodes(output_path)
     if df.empty:
-        print("No episode data for success rate plot")
+        logger.warning("No episode data for success rate plot")
         return
 
     # Aggregate by task
@@ -499,14 +501,14 @@ def generate_success_rate_plot(output_path: pathlib.Path) -> None:
     fig.savefig(plots_dir / "success_rate.png", dpi=150)
     plt.close(fig)
 
-    print(f"Saved {plots_dir / 'success_rate.png'}")
+    logger.info(f"Saved {plots_dir / 'success_rate.png'}")
 
 
 def generate_steps_plot(output_path: pathlib.Path) -> None:
     """Steps analysis: successful episodes histogram + per-task violin plot."""
     df = load_episodes(output_path)
     if df.empty:
-        print("No episode data for steps plot")
+        logger.warning("No episode data for steps plot")
         return
 
     fig = plt.figure(figsize=(16, 10), layout="constrained")
@@ -562,7 +564,7 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
     fig.savefig(plots_dir / "steps_taken.png", dpi=150)
     plt.close(fig)
 
-    print(f"Saved {plots_dir / 'steps_taken.png'}")
+    logger.info(f"Saved {plots_dir / 'steps_taken.png'}")
 
 
 def generate_actions_left_heatmap(
@@ -577,7 +579,7 @@ def generate_actions_left_heatmap(
     """
     by_robot = load_actions_left(output_path)
     if not by_robot:
-        print("No actions_left.npy data found")
+        logger.warning("No actions_left.npy data found")
         return
 
     robots = sorted(list(by_robot.keys()), reverse=True)
@@ -652,14 +654,14 @@ def generate_actions_left_heatmap(
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / "actions_left_heatmap.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved {plots_dir / 'actions_left_heatmap.png'}")
+    logger.info(f"Saved {plots_dir / 'actions_left_heatmap.png'}")
 
 
 def generate_per_robot_success_rate_plot(output_path: pathlib.Path) -> None:
     """Success rate bar chart broken down by robot."""
     df = load_episodes(output_path)
     if df.empty:
-        print("No episode data for per-robot success rate plot")
+        logger.warning("No episode data for per-robot success rate plot")
         return
 
     robot_summary = (
@@ -707,14 +709,14 @@ def generate_per_robot_success_rate_plot(output_path: pathlib.Path) -> None:
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / "per_robot_success_rate.png", dpi=150)
     plt.close(fig)
-    print(f"Saved {plots_dir / 'per_robot_success_rate.png'}")
+    logger.info(f"Saved {plots_dir / 'per_robot_success_rate.png'}")
 
 
 def generate_starvation_plot(output_path: pathlib.Path) -> None:
     """Per-robot starvation rate bar chart."""
     starvation_df = load_planner_starvation_metrics(output_path)
     if starvation_df.empty:
-        print("No starvation data found")
+        logger.warning("No starvation data found")
         return
 
     robot_starvation = (
@@ -765,7 +767,7 @@ def generate_starvation_plot(output_path: pathlib.Path) -> None:
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / "starvation_rate.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved {plots_dir / 'starvation_rate.png'}")
+    logger.info(f"Saved {plots_dir / 'starvation_rate.png'}")
 
 
 def generate_staleness_plot(output_path: pathlib.Path) -> None:
@@ -775,7 +777,7 @@ def generate_staleness_plot(output_path: pathlib.Path) -> None:
     """
     by_robot = load_actions_left(output_path)
     if not by_robot:
-        print("No actions_left data found")
+        logger.warning("No actions_left data found")
         return
 
     robots = sorted(by_robot.keys(), key=int)
@@ -786,7 +788,7 @@ def generate_staleness_plot(output_path: pathlib.Path) -> None:
 
     valid_robots = [r for r in robots if len(robot_actions.get(r, [])) > 0]
     if not valid_robots:
-        print("No non-starvation actions_left data found")
+        logger.warning("No non-starvation actions_left data found")
         return
 
     data = [robot_actions[r] for r in valid_robots]
@@ -843,12 +845,12 @@ def generate_staleness_plot(output_path: pathlib.Path) -> None:
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / "staleness_distribution.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"Saved {plots_dir / 'staleness_distribution.png'}")
+    logger.info(f"Saved {plots_dir / 'staleness_distribution.png'}")
 
 
 def generate_all_plots(output_path: pathlib.Path) -> None:
     """Generate all plots."""
-    print("Generating plots...")
+    logger.info("Generating plots...")
     generate_latency_plot(output_path)
     generate_success_rate_plot(output_path)
     generate_steps_plot(output_path)
@@ -856,7 +858,7 @@ def generate_all_plots(output_path: pathlib.Path) -> None:
     generate_actions_left_heatmap(output_path)
     generate_starvation_plot(output_path)
     generate_staleness_plot(output_path)
-    print("Done!")
+    logger.info("Done!")
 
 
 # =============================================================================
@@ -868,7 +870,7 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     """Aggregate results and display summary table."""
     df = load_episodes(output_path)
     if df.empty:
-        print("No results found")
+        logger.warning("No results found")
         return
 
     planner_starvation_df = load_planner_starvation_metrics(output_path)
