@@ -86,22 +86,39 @@ def load_experiment_config(path: Union[str, pathlib.Path]) -> ExperimentConfig:
     for robot_id, robot_cfg in robots_raw.items():
         if not isinstance(robot_cfg, dict):
             raise NetworkEmulationConfigError(f"robot config for {robot_id!r} must be an object")
-        if "rtt_median_ms" not in robot_cfg or "rtt_sigma" not in robot_cfg or "execution_horizon" not in robot_cfg:
-            raise NetworkEmulationConfigError(f"{robot_id} must define rtt_median_ms, rtt_sigma, and execution_horizon")
+        required_fields = (
+            "uplink_median_ms",
+            "uplink_sigma",
+            "downlink_median_ms",
+            "downlink_sigma",
+            "execution_horizon",
+        )
+        if any(field not in robot_cfg for field in required_fields):
+            raise NetworkEmulationConfigError(
+                f"{robot_id} must define uplink_median_ms, uplink_sigma, downlink_median_ms, downlink_sigma, and execution_horizon"
+            )
 
-        median = float(robot_cfg["rtt_median_ms"])
-        sigma = float(robot_cfg["rtt_sigma"])
+        uplink_median = float(robot_cfg["uplink_median_ms"])
+        uplink_sigma = float(robot_cfg["uplink_sigma"])
+        downlink_median = float(robot_cfg["downlink_median_ms"])
+        downlink_sigma = float(robot_cfg["downlink_sigma"])
         execution_horizon = int(robot_cfg["execution_horizon"])
-        if median <= 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.rtt_median_ms must be > 0")
-        if sigma < 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.rtt_sigma must be >= 0")
+        if uplink_median <= 0:
+            raise NetworkEmulationConfigError(f"{robot_id}.uplink_median_ms must be > 0")
+        if uplink_sigma < 0:
+            raise NetworkEmulationConfigError(f"{robot_id}.uplink_sigma must be >= 0")
+        if downlink_median <= 0:
+            raise NetworkEmulationConfigError(f"{robot_id}.downlink_median_ms must be > 0")
+        if downlink_sigma < 0:
+            raise NetworkEmulationConfigError(f"{robot_id}.downlink_sigma must be >= 0")
         if execution_horizon <= 0:
             raise NetworkEmulationConfigError(f"{robot_id}.execution_horizon must be > 0")
 
         robots[str(robot_id)] = {
-            "rtt_median_ms": median,
-            "rtt_sigma": sigma,
+            "uplink_median_ms": uplink_median,
+            "uplink_sigma": uplink_sigma,
+            "downlink_median_ms": downlink_median,
+            "downlink_sigma": downlink_sigma,
             "execution_horizon": execution_horizon,
             "seed": int(robot_cfg["seed"]) if robot_cfg.get("seed") is not None else None,
         }
@@ -252,46 +269,59 @@ class RobotNetworkHook:
         self._context = context
         self._controller = ToxiproxyController(str(context["api_url"]))
 
-        self._median_ms = float(context["rtt_median_ms"])
-        self._sigma = float(context["rtt_sigma"])
+        self._uplink_median_ms = float(context["uplink_median_ms"])
+        self._uplink_sigma = float(context["uplink_sigma"])
+        self._downlink_median_ms = float(context["downlink_median_ms"])
+        self._downlink_sigma = float(context["downlink_sigma"])
         self._rng = np.random.default_rng(int(context["seed"]))
-        self._mu = math.log(self._median_ms)
+        self._uplink_mu = math.log(self._uplink_median_ms)
+        self._downlink_mu = math.log(self._downlink_median_ms)
 
         self._request_index = 0
         self._resample_every = max(1, int(context["resample_every_requests"]))
-        half = max(0, int(round(self._median_ms / 2.0)))
-        self._last_upstream_ms = half
-        self._last_downstream_ms = half
+        self._last_upstream_ms = max(0, int(round(self._uplink_median_ms)))
+        self._last_downstream_ms = max(0, int(round(self._downlink_median_ms)))
 
         self._trace: List[Dict[str, Any]] = []
         self._flushed_count = 0
 
-    def _sample_rtt(self) -> float:
-        if self._sigma == 0:
-            return self._median_ms
-        return float(self._rng.lognormal(self._mu, self._sigma))
+    def _sample_latency(self, median_ms: float, sigma: float, mu: float) -> float:
+        if sigma == 0:
+            return median_ms
+        return float(self._rng.lognormal(mu, sigma))
 
     def before_send(self) -> None:
         self._request_index += 1
         should_resample = self._request_index == 1 or ((self._request_index - 1) % self._resample_every == 0)
 
         if should_resample:
-            sampled_rtt = self._sample_rtt()
-            half = max(0, int(round(sampled_rtt / 2.0)))
-            self._last_upstream_ms = half
-            self._last_downstream_ms = half
+            sampled_uplink = self._sample_latency(
+                self._uplink_median_ms,
+                self._uplink_sigma,
+                self._uplink_mu,
+            )
+            sampled_downlink = self._sample_latency(
+                self._downlink_median_ms,
+                self._downlink_sigma,
+                self._downlink_mu,
+            )
+            self._last_upstream_ms = max(0, int(round(sampled_uplink)))
+            self._last_downstream_ms = max(0, int(round(sampled_downlink)))
             self._controller.set_latency(
                 str(self._context["proxy_name"]),
                 self._last_upstream_ms,
                 self._last_downstream_ms,
             )
         else:
-            sampled_rtt = float(self._last_upstream_ms + self._last_downstream_ms)
+            sampled_uplink = float(self._last_upstream_ms)
+            sampled_downlink = float(self._last_downstream_ms)
 
         self._trace.append(
             {
                 "request_index": self._request_index,
-                "sampled_rtt_ms": sampled_rtt,
+                "sampled_uplink_ms": sampled_uplink,
+                "sampled_downlink_ms": sampled_downlink,
+                "sampled_rtt_ms": sampled_uplink + sampled_downlink,
                 "upstream_latency_ms": self._last_upstream_ms,
                 "downstream_latency_ms": self._last_downstream_ms,
                 "resampled": should_resample,
@@ -366,7 +396,7 @@ class NetworkEmulationManager:
             robot_cfg = robots_cfg.get(robot_id)
             if robot_cfg is None:
                 raise NetworkEmulationConfigError(
-                    f"Missing robots.{robot_id} in network config for worker_count={self._worker_count}"
+                    f"Missing robots.{robot_id} in experiment config for worker_count={self._worker_count}"
                 )
 
             seed = robot_cfg.get("seed")
@@ -379,8 +409,10 @@ class NetworkEmulationManager:
                 "proxy_host": str(toxi_cfg["listen_host"]),
                 "proxy_port": int(toxi_cfg["listen_port_base"]) + idx,
                 "api_url": str(toxi_cfg["api_url"]),
-                "rtt_median_ms": float(robot_cfg["rtt_median_ms"]),
-                "rtt_sigma": float(robot_cfg["rtt_sigma"]),
+                "uplink_median_ms": float(robot_cfg["uplink_median_ms"]),
+                "uplink_sigma": float(robot_cfg["uplink_sigma"]),
+                "downlink_median_ms": float(robot_cfg["downlink_median_ms"]),
+                "downlink_sigma": float(robot_cfg["downlink_sigma"]),
                 "seed": int(seed),
                 "resample_every_requests": int(sampling_cfg["resample_every_requests"]),
                 "trace_path": str(self._output_dir / f"{robot_id}_latency_trace.jsonl"),
@@ -393,8 +425,9 @@ class NetworkEmulationManager:
             listen = f"{context['proxy_host']}:{context['proxy_port']}"
             self._controller.create_proxy(proxy_name, listen=listen, upstream=upstream)
 
-            half = max(0, int(round(float(context["rtt_median_ms"]) / 2.0)))
-            self._controller.set_latency(proxy_name, half, half)
+            initial_uplink = max(0, int(round(float(context["uplink_median_ms"]))))
+            initial_downlink = max(0, int(round(float(context["downlink_median_ms"]))))
+            self._controller.set_latency(proxy_name, initial_uplink, initial_downlink)
             self._active_proxy_names.append(proxy_name)
 
         self._write_resolved_config()

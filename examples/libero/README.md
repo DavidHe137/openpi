@@ -70,7 +70,7 @@ python examples/libero/main_multi_robot_runtime.py \
     --output-dir data/libero/multi_robot_videos
 
 # Optional: deterministic heterogeneous network emulation with toxiproxy.
-# Provide a unified experiment config with runtime + per-robot network params.
+# Provide a unified experiment config with runtime + per-robot uplink/downlink log-normal params.
 python examples/libero/main_multi_robot_runtime.py \
     --host <host_name> \
     --overwrite \

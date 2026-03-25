@@ -8,17 +8,15 @@
 #SBATCH --cpus-per-task=26
 #SBATCH --gpus-per-node="l40s:2"
 #SBATCH --mem-per-gpu=64
-#SBATCH --array=0-2
+#SBATCH --array=0-0
 #SBATCH --exclude="dynamics"
 
 set -e
 
-SCHEDULERS=(greedy round_robin lookahead)
+SCHEDULERS=(lookahead)
 SCHEDULER=${SCHEDULERS[$SLURM_ARRAY_TASK_ID]}
 NUM_ROBOTS_LIST=(20 15 10 5)
-NUM_TRIALS_PER_TASK=10
-PORT=$((8080 + ${SLURM_ARRAY_TASK_ID:-0}))
-BASE_EXPERIMENT_CONFIG="examples/libero/experiment_config_20_robot_het.jsonc"
+PORT=$((8000 + ${SLURM_ARRAY_TASK_ID:-0}))
 
 echo "======================================"
 echo "Job ID: $SLURM_JOB_ID  Array task: $SLURM_ARRAY_TASK_ID"
@@ -45,31 +43,6 @@ cleanup() {
     echo "Cleanup complete"
 }
 trap cleanup EXIT INT TERM
-
-make_experiment_config() {
-    local output_path="$1"
-    local broker_type="$2"
-    local num_robots="$3"
-    local trials_per_robot="$4"
-    python - "$BASE_EXPERIMENT_CONFIG" "$output_path" "$broker_type" "$num_robots" "$trials_per_robot" <<'PY'
-import json
-import pathlib
-import sys
-
-template_path = pathlib.Path(sys.argv[1])
-output_path = pathlib.Path(sys.argv[2])
-broker_type = str(sys.argv[3]).lower()
-num_robots = int(sys.argv[4])
-trials_per_robot = int(sys.argv[5])
-
-cfg = json.loads(template_path.read_text(encoding="utf-8"))
-cfg["experiment"]["action_chunk_broker_type"] = broker_type
-cfg["experiment"]["num_robots"] = num_robots
-cfg["experiment"]["trials_per_robot"] = trials_per_robot
-output_path.parent.mkdir(parents=True, exist_ok=True)
-output_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-PY
-}
 
 # --- Step 1: Launch server ---
 srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=4 --overlap --exact -w $NODE bash -c "
@@ -100,12 +73,16 @@ MONITOR_PID=$!
 NUM_RUNS=1
 for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
     for RUN_IDX in $(seq 0 $((NUM_RUNS - 1))); do
-        OUTPUT_DIR="data/libero/sweep_schedulers/scheduler_${SCHEDULER}_num_robots_${NUM_ROBOTS}_run_${RUN_IDX}"
-        EXPERIMENT_CONFIG="$OUTPUT_DIR/experiment_config.json"
-        make_experiment_config "$EXPERIMENT_CONFIG" "rtc" "$NUM_ROBOTS" "$NUM_TRIALS_PER_TASK"
+        TEMPLATE_EXPERIMENT_CONFIG="/coc/flash7/rbansal66/vvla/openpi/examples/libero/${NUM_ROBOTS}_het_robots_realistic.jsonc"
+        if [ ! -f "$TEMPLATE_EXPERIMENT_CONFIG" ]; then
+            echo "ERROR: missing template experiment config: $TEMPLATE_EXPERIMENT_CONFIG"
+            exit 1
+        fi
+        OUTPUT_DIR="data/libero/sweep_schedulers_het/scheduler_${SCHEDULER}_num_robots_${NUM_ROBOTS}_run_${RUN_IDX}"
         echo "--------------------------------------"
         echo "Running: scheduler=$SCHEDULER  num_robots=$NUM_ROBOTS  run=$RUN_IDX"
         echo "Output: $OUTPUT_DIR"
+        echo "Experiment config: $TEMPLATE_EXPERIMENT_CONFIG"
         echo "--------------------------------------"
 
         srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=22 --overlap --exact -w $NODE bash -c "
@@ -122,7 +99,7 @@ for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
                 --progress-type logging \
                 --log-dir $OUTPUT_DIR \
                 --overwrite \
-                --experiment-config $EXPERIMENT_CONFIG \
+                --experiment-config $TEMPLATE_EXPERIMENT_CONFIG \
                 --toxiproxy-server-bin /coc/flash7/rbansal66/vvla/toxiproxy-server-linux-amd64
         "
     done
@@ -138,12 +115,16 @@ if [ "$SCHEDULER" = "greedy" ]; then
     echo "======================================"
     for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
         for RUN_IDX in $(seq 0 $((NUM_RUNS - 1))); do
-            OUTPUT_DIR="data/libero/sweep_schedulers/scheduler_${SCHEDULER}_num_robots_${NUM_ROBOTS}_run_${RUN_IDX}_sync"
-            EXPERIMENT_CONFIG="$OUTPUT_DIR/experiment_config.json"
-            make_experiment_config "$EXPERIMENT_CONFIG" "sync" "$NUM_ROBOTS" "$NUM_TRIALS_PER_TASK"
+            TEMPLATE_EXPERIMENT_CONFIG="/coc/flash7/rbansal66/vvla/openpi/examples/libero/${NUM_ROBOTS}_het_robots_realistic.jsonc"
+            if [ ! -f "$TEMPLATE_EXPERIMENT_CONFIG" ]; then
+                echo "ERROR: missing template experiment config: $TEMPLATE_EXPERIMENT_CONFIG"
+                exit 1
+            fi
+            OUTPUT_DIR="data/libero/sweep_schedulers_het/scheduler_${SCHEDULER}_num_robots_${NUM_ROBOTS}_run_${RUN_IDX}_sync"
             echo "--------------------------------------"
             echo "Running: scheduler=$SCHEDULER  num_robots=$NUM_ROBOTS  run=$RUN_IDX  (sync)"
             echo "Output: $OUTPUT_DIR"
+            echo "Experiment config: $TEMPLATE_EXPERIMENT_CONFIG"
             echo "--------------------------------------"
 
             srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=22 --overlap --exact -w $NODE bash -c "
@@ -160,7 +141,7 @@ if [ "$SCHEDULER" = "greedy" ]; then
                     --progress-type logging \
                     --log-dir $OUTPUT_DIR \
                     --overwrite \
-                    --experiment-config $EXPERIMENT_CONFIG \
+                    --experiment-config $TEMPLATE_EXPERIMENT_CONFIG \
                     --toxiproxy-server-bin /coc/flash7/rbansal66/vvla/toxiproxy-server-linux-amd64
             "
         done

@@ -4,6 +4,8 @@ import pathlib
 import multiprocessing
 import shutil
 import time
+import os
+import errno
 from typing import List, Literal, Optional, Dict, Type
 import datetime
 
@@ -140,12 +142,25 @@ def _wait_for_server_metadata(
             time.sleep(poll_interval)
 
 
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        return exc.errno == errno.EPERM
+    return True
+
+
 def init_worker(
     args: Args,
     counter,
     progress_queue,
     start_barrier,
+    active_worker_count: int,
     network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None,
+    worker_slot_state=None,
+    worker_slot_lock=None,
 ) -> None:
     global \
         robot_idx, \
@@ -157,8 +172,40 @@ def init_worker(
         _has_synced_start, \
         network_hook
     with counter.get_lock():
-        robot_idx = counter.value
+        assigned_worker_idx = int(counter.value)
         counter.value += 1
+
+    slot_count = int(active_worker_count)
+    if network_worker_contexts is not None:
+        slot_count = min(slot_count, len(network_worker_contexts))
+    slot_count = max(1, slot_count)
+
+    if worker_slot_state is not None and worker_slot_lock is not None:
+        with worker_slot_lock:
+            stale_slots = [
+                slot_key
+                for slot_key, pid in worker_slot_state.items()
+                if not _is_pid_alive(int(pid))
+            ]
+            for slot_key in stale_slots:
+                worker_slot_state.pop(slot_key, None)
+
+            selected_slot = None
+            for slot in range(slot_count):
+                slot_key = str(slot)
+                if slot_key not in worker_slot_state:
+                    worker_slot_state[slot_key] = os.getpid()
+                    selected_slot = slot
+                    break
+
+            if selected_slot is None:
+                raise RuntimeError(
+                    f"No free worker slot available (slot_count={slot_count}, assigned_worker_idx={assigned_worker_idx})"
+                )
+            robot_idx = int(selected_slot)
+    else:
+        # Fallback used in debug mode where workers are not respawned.
+        robot_idx = assigned_worker_idx % slot_count
 
     # Store queue globally for access in create_runtime
     _progress_queue = progress_queue
@@ -314,15 +361,22 @@ def run_robots(
         return
 
     counter = multiprocessing.Value("i", 0)  # for assigning robot indices
+    active_workers = 1 if args.debug else min(args.num_robots, len(jobs))
 
     if args.debug:
         # Debug mode: no progress manager, single process for pdb compatibility
-        init_worker(args, counter, None, None, network_worker_contexts)
+        init_worker(
+            args,
+            counter,
+            None,
+            None,
+            active_workers,
+            network_worker_contexts,
+        )
         for job in jobs:
             _robot_worker((args, job, server_metadata))
     else:
         total_episodes = sum(len(job.initial_states) for job in jobs)
-        active_workers = min(args.num_robots, len(jobs))
         start_barrier = multiprocessing.Barrier(active_workers)
         logging.info(
             "Using one-time startup barrier across %d worker(s)",
@@ -343,6 +397,7 @@ def run_robots(
                     counter,
                     progress_manager.queue,
                     start_barrier,
+                    active_workers,
                     network_worker_contexts,
                 ),
             ) as pool:
