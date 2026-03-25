@@ -95,25 +95,26 @@ class Args:
     # Utils
     #################################################################################################################
     seed: int = 7  # Random Seed (for reproducibility)
-    output_dir: str = "data/libero/multi_robot_videos"
+    output_dir: pathlib.Path = pathlib.Path("data/libero/multi_robot_videos")
     overwrite: bool = False
     progress_type: Literal["verbose", "concise", "logging", None] = "verbose"
-    log_dir: Optional[str] = None
+    log_dir: Optional[pathlib.Path] = None
     debug: bool = False  # Run in single process with immediate progress output
 
+    # FIXME: naming/convention on this
+    def latency_for_robot(self, robot_idx: int) -> float:
+        if not self.latency_ms:
+            return 0.0
+        return float(self.latency_ms[robot_idx])
 
-def _latency_for_robot(args: Args, robot_idx: int) -> float:
-    """Return the latency (in ms) to use for a given robot index."""
-    if not args.latency_ms:
-        return 0.0
-    return float(args.latency_ms[robot_idx])
+    def execution_horizon_for_robot(self, robot_idx: int) -> int:
+        if not self.execution_horizon:
+            return 10
+        return int(self.execution_horizon[robot_idx])
 
-
-def _execution_horizon_for_robot(args: Args, robot_idx: int) -> int:
-    """Return the execution horizon for a given robot index."""
-    if not args.execution_horizon:
-        return 10
-    return int(args.execution_horizon[robot_idx])
+    @property
+    def http_base(self) -> str:
+        return f"http://{self.host}:{self.port}"
 
 
 def init_worker(
@@ -153,7 +154,7 @@ def init_worker(
     config = BrokerConfig(
         ws_client=ws_client,
         control_hz=args.control_hz,
-        execution_horizon=_execution_horizon_for_robot(args, robot_idx),
+        execution_horizon=args.execution_horizon_for_robot(robot_idx),
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
@@ -235,7 +236,6 @@ def _robot_worker(task_args) -> None:
     while episode is not None:
         raw_env, _ = utils._get_libero_env(
             _task_suite.get_task(episode.task_id),
-            LIBERO_ENV_RESOLUTION,
             seed=args.seed + robot_idx,
         )
         env = LiberoSimEnvironment(
@@ -245,7 +245,7 @@ def _robot_worker(task_args) -> None:
             resize_size=args.resize_size,
             num_steps_wait=args.num_steps_wait,
             max_episode_steps=args.max_steps,
-            latency_ms=_latency_for_robot(args, robot_idx),
+            latency_ms=args.latency_for_robot(robot_idx),
             control_hz=args.control_hz,
         )
 
@@ -255,7 +255,7 @@ def _robot_worker(task_args) -> None:
         subscribers: List[_subscriber.Subscriber] = [
             _StartupSyncSubscriber(),
             Saver(
-                out_dir=pathlib.Path(args.output_dir),
+                out_dir=args.output_dir,
                 environment=env,
                 action_chunk_broker=broker,
                 task_suite_name=episode.task_suite_name,
@@ -406,67 +406,76 @@ def create_episodes(args: Args) -> List[Episode]:
     logging.info(
         "Created %d episodes across %d tasks", len(episodes), num_tasks_in_suite
     )
-
-    random.seed(args.seed)
     random.shuffle(episodes)
 
     return episodes
 
 
-def _fetch_server_metadata(
-    host: str, port: int, timeout_s: float = 120.0
-) -> ServerMetadata:
+def fetch_server_metadata(args: Args, timeout_s: float = 120.0) -> ServerMetadata:
     """Fetch server metadata, retrying until timeout_s seconds have elapsed."""
     deadline = time.monotonic() + timeout_s
     while True:
         try:
-            resp = requests.get(f"http://{host}:{port}/metadata", timeout=5.0)
+            resp = requests.get(f"{args.http_base}/metadata", timeout=5.0)
             resp.raise_for_status()
             return ServerMetadata(**resp.json())
         except Exception as e:
             if time.monotonic() >= deadline:
                 raise TimeoutError(
-                    f"Server at {host}:{port} did not respond within {timeout_s:.0f}s"
+                    f"Server at {args.http_base} did not respond within {timeout_s:.0f}s"
                 ) from e
             logging.info("Waiting for server to be ready (%s); retrying in 5s...", e)
             time.sleep(5.0)
 
 
-def main(args: Args) -> None:
-    # Set up a temporary console-only logger until the output dir is ready.
-    logging_config.setup_logging(level=logging.DEBUG if args.debug else logging.INFO)
+def reset_server(args: Args) -> None:
+    try:
+        requests.post(f"{args.http_base}/reset", timeout=5.0)
+        logging.info("Reset server metrics")
+    except Exception as e:
+        logging.warning(f"Could not reset server metrics: {e}")
 
-    if not args.overwrite and pathlib.Path(args.output_dir).exists():
+
+def save_server_metrics_history(args: Args) -> None:
+    try:
+        history = requests.get(f"{args.http_base}/save-metrics", timeout=10.0).json()
+        hist_path = args.output_dir / "server_metrics_history.json"
+        hist_path.write_text(json.dumps(history, indent=2))
+        logging.info(f"Saved server metrics history to {hist_path}")
+    except Exception as e:
+        logging.warning(f"Could not fetch server metrics history: {e}")
+
+
+def validate_args(args: Args) -> None:
+    if not args.overwrite and args.output_dir.exists():
         raise ValueError(f"Output path {args.output_dir} already exists")
-    if args.overwrite:
-        if pathlib.Path(args.output_dir).exists():
-            shutil.rmtree(args.output_dir, ignore_errors=True)
-        pathlib.Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-
-    # Now that the output dir exists (and won't be deleted), open the log file.
-    if args.log_dir is not None:
-        log_file_name = f"libero_multi_robot_runtime_{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
-        log_file_path = pathlib.Path(args.log_dir) / log_file_name
-        pathlib.Path(args.log_dir).mkdir(parents=True, exist_ok=True)
-        logging_config.setup_logging(
-            log_path=log_file_path, level=logging.DEBUG if args.debug else logging.INFO
-        )
-
-    # Validate latency specification
     if args.latency_ms and len(args.latency_ms) != args.num_robots:
         raise ValueError(
             f"latency_ms must either be empty or have exactly {args.num_robots} values "
             f"(one per robot), but got {len(args.latency_ms)} values"
         )
 
-    np.random.seed(args.seed)
 
+def main(args: Args) -> None:
+    validate_args(args)
+
+    if args.overwrite:
+        shutil.rmtree(args.output_dir, ignore_errors=True)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.log_dir is not None:
+        log_file_name = f"libero_multi_robot_runtime_{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
+        log_file_path = args.log_dir / log_file_name
+        args.log_dir.mkdir(parents=True, exist_ok=True)
+        logging_config.setup_logging(
+            log_path=log_file_path, level=logging.DEBUG if args.debug else logging.INFO
+        )
+
+    utils.seed_everything(args.seed)
     episodes = create_episodes(args)
 
-    # Fetch server metadata over HTTP, retrying for up to 2 minutes.
-    server_metadata = _fetch_server_metadata(args.host, args.port)
+    server_metadata = fetch_server_metadata(args)
 
-    # Create runtime metadata
     runtime_metadata = RuntimeMetadata(
         task_suite_name=args.task_suite_name,
         num_steps_wait=args.num_steps_wait,
@@ -481,38 +490,25 @@ def main(args: Args) -> None:
         episodes=[str(ep) for ep in episodes],
         execution_horizon=args.execution_horizon,
     )
-    output_path = pathlib.Path(args.output_dir)
 
-    runtime_metadata.to_json(output_path / "runtime_metadata.json")
-    logging.info(f"Saved runtime metadata to {output_path / 'runtime_metadata.json'}")
+    runtime_metadata.to_json(args.output_dir / "runtime_metadata.json")
+    logging.info(
+        f"Saved runtime metadata to {args.output_dir / 'runtime_metadata.json'}"
+    )
 
-    server_metadata.to_json(output_path / "server_metadata.json")
-    logging.info(f"Saved server metadata to {output_path / 'server_metadata.json'}")
+    server_metadata.to_json(args.output_dir / "server_metadata.json")
+    logging.info(f"Saved server metadata to {args.output_dir / 'server_metadata.json'}")
 
-    # Reset server-side metrics so this experiment gets a clean slate
-    server_base = f"http://{args.host}:{args.port}"
-    try:
-        requests.post(f"{server_base}/reset", timeout=5.0)
-        logging.info("Reset server metrics")
-    except Exception as e:
-        logging.warning(f"Could not reset server metrics: {e}")
-
-    # Run robots
+    reset_server(args)
     run_robots(args, episodes, server_metadata)
 
-    # Dump server-side metrics history for offline analysis
-    try:
-        history = requests.get(f"{server_base}/save-metrics", timeout=10.0).json()
-        hist_path = output_path / "server_metrics_history.json"
-        hist_path.write_text(json.dumps(history, indent=2))
-        logging.info(f"Saved server metrics history to {hist_path}")
-    except Exception as e:
-        logging.warning(f"Could not fetch server metrics history: {e}")
+    save_server_metrics_history(args)
 
-    calculate_metrics(pathlib.Path(args.output_dir))
-    generate_all_plots(pathlib.Path(args.output_dir))
+    calculate_metrics(args.output_dir)
+    generate_all_plots(args.output_dir)
 
 
 if __name__ == "__main__":
+    # FIXME: look into this
     multiprocessing.set_start_method("spawn")  # allows multiple processes with envs
     main(tyro.cli(Args))
