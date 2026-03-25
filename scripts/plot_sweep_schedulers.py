@@ -117,11 +117,20 @@ def _style_ax(ax, ylabel: str):
 def plot_metric(data: dict, metric: str, ylabel: str, ax: plt.Axes):
     for scheduler, robot_data in sorted(data.items()):
         xs = sorted(robot_data.keys())
-        # average over runs
-        ys = [sum(r[metric] for r in robot_data[x]) / len(robot_data[x]) for x in xs]
+        runs_per_x = [robot_data[x] for x in xs]
+        ys = [sum(r[metric] for r in runs) / len(runs) for runs in runs_per_x]
         style = {"linewidth": 1.8, "markersize": 6, "label": SCHEDULER_LABELS.get(scheduler, scheduler)}
         style.update(SCHEDULER_STYLES.get(scheduler, {}))
+        color = style.get("color")
         ax.plot(xs, ys, **style)
+
+        if any(len(runs) > 1 for runs in runs_per_x):
+            import statistics
+
+            stds = [statistics.stdev(r[metric] for r in runs) if len(runs) > 1 else 0.0 for runs in runs_per_x]
+            lo = [y - s for y, s in zip(ys, stds, strict=True)]
+            hi = [y + s for y, s in zip(ys, stds, strict=True)]
+            ax.fill_between(xs, lo, hi, alpha=0.15, color=color, linewidth=0)
 
     _style_ax(ax, ylabel)
 
