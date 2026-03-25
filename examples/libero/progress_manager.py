@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+import logging
+
 from rich.console import Console
 from rich.live import Live
 from rich.progress import (
@@ -575,6 +577,9 @@ class ConciseProgressManager(ProgressManager):
             robot_state.completed = True
 
 
+logger = logging.getLogger(__name__)
+
+
 class LoggingProgressManager(ProgressManager):
     """
     Simple logging progress manager that prints messages without progress bars.
@@ -583,9 +588,7 @@ class LoggingProgressManager(ProgressManager):
     """
 
     def __enter__(self) -> LoggingProgressManager:
-        """Initialize without Rich Progress - just use console for logging."""
-        self.console = Console()
-
+        """Initialize without Rich Progress - just use logger for logging."""
         # Start monitoring thread (start_time is set on first run_start message)
         self._monitor_thread = threading.Thread(
             target=self._monitor_queue,
@@ -623,7 +626,7 @@ class LoggingProgressManager(ProgressManager):
                 except queue_module.Empty:
                     pass
             except Exception as e:
-                self.console.print(f"[red]Error in monitor thread: {e}[/red]")
+                logger.exception("Error in monitor thread: %s", e)
 
     def _handle_message(self, message: dict):
         """Process a single message from the queue and log it."""
@@ -636,29 +639,34 @@ class LoggingProgressManager(ProgressManager):
             elif msg_type == "worker_init":
                 self._handle_worker_init(message)
                 episode = message["episode"]
-                self.console.print(
-                    f"[cyan][Robot {message['robot_idx']}][/cyan] Starting task {episode.task_id} "
-                    f"({episode.task_suite_name})"
+                logger.info(
+                    "[Robot %d] Starting task %d (%s)",
+                    message["robot_idx"],
+                    episode.task_id,
+                    episode.task_suite_name,
                 )
             elif msg_type == "episode_start":
                 self._handle_episode_start(message)
                 robot_idx = message["robot_idx"]
                 if robot_idx in self.robot_states:
                     episode = message["episode"]
-                    self.console.print(
-                        f"[cyan][Robot {robot_idx}][/cyan] Episode {episode.idx}/{self.job_stats.total_episodes} started"
+                    logger.info(
+                        "[Robot %d] Episode %d/%d started",
+                        robot_idx,
+                        episode.idx,
+                        self.job_stats.total_episodes,
                     )
             elif msg_type == "episode_end":
                 robot_idx = message["robot_idx"]
                 if robot_idx in self.robot_states:
-                    status = (
-                        "[green]SUCCESS[/green]"
-                        if message["success"]
-                        else "[red]FAILURE[/red]"
-                    )
+                    status = "SUCCESS" if message["success"] else "FAILURE"
                     episode = message["episode"]
-                    self.console.print(
-                        f"[cyan][Robot {robot_idx}][/cyan] Episode {episode.idx}/{self.job_stats.total_episodes} ended: {status}"
+                    logger.info(
+                        "[Robot %d] Episode %d/%d ended: %s",
+                        robot_idx,
+                        episode.idx,
+                        self.job_stats.total_episodes,
+                        status,
                     )
                 self._handle_episode_end(message)
             elif msg_type == "step_batch":
@@ -666,10 +674,12 @@ class LoggingProgressManager(ProgressManager):
                 self._handle_step_batch(message)
             elif msg_type == "worker_complete":
                 robot_idx = message["robot_idx"]
-                self.console.print(
-                    f"[cyan][Robot {robot_idx}][/cyan] Completed: "
-                    f"{message['total_successes']}/{message['total_episodes']} successes "
-                    f"({message['total_successes'] / message['total_episodes'] * 100:.1f}%)"
+                logger.info(
+                    "[Robot %d] Completed: %d/%d successes (%.1f%%)",
+                    robot_idx,
+                    message["total_successes"],
+                    message["total_episodes"],
+                    message["total_successes"] / message["total_episodes"] * 100,
                 )
                 self._handle_worker_complete(message)
 
@@ -703,6 +713,30 @@ class LoggingProgressManager(ProgressManager):
             robot_state = self.robot_states[robot_idx]
             robot_state.active = False
             robot_state.completed = True
+
+    def _print_final_summary(self):
+        """Print final summary after completion."""
+        with self._lock:
+            total_time = (
+                time.time() - self.job_stats.start_time
+                if self.job_stats.start_time > 0.0
+                else 0.0
+            )
+            success_rate = (
+                self.job_stats.total_successes / self.job_stats.completed_episodes * 100
+                if self.job_stats.completed_episodes > 0
+                else 0.0
+            )
+
+            logger.info("===== Evaluation Complete =====")
+            logger.info(
+                "Total Episodes: %d/%d",
+                self.job_stats.completed_episodes,
+                self.job_stats.total_episodes,
+            )
+            logger.info("Total Successes: %d", self.job_stats.total_successes)
+            logger.info("Overall Success Rate: %.2f%%", success_rate)
+            logger.info("Total Time: %.2fs", total_time)
 
 
 class DebugQueue:
