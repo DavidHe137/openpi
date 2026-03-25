@@ -103,12 +103,12 @@ def load_experiment_config(path: Union[str, pathlib.Path]) -> ExperimentConfig:
         downlink_median = float(robot_cfg["downlink_median_ms"])
         downlink_sigma = float(robot_cfg["downlink_sigma"])
         execution_horizon = int(robot_cfg["execution_horizon"])
-        if uplink_median <= 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.uplink_median_ms must be > 0")
+        if uplink_median < 0:
+            raise NetworkEmulationConfigError(f"{robot_id}.uplink_median_ms must be >= 0")
         if uplink_sigma < 0:
             raise NetworkEmulationConfigError(f"{robot_id}.uplink_sigma must be >= 0")
-        if downlink_median <= 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.downlink_median_ms must be > 0")
+        if downlink_median < 0:
+            raise NetworkEmulationConfigError(f"{robot_id}.downlink_median_ms must be >= 0")
         if downlink_sigma < 0:
             raise NetworkEmulationConfigError(f"{robot_id}.downlink_sigma must be >= 0")
         if execution_horizon <= 0:
