@@ -27,24 +27,6 @@ echo "======================================"
 HOSTS=($(scontrol show hostnames $SLURM_JOB_NODELIST))
 NODE=${HOSTS[0]}
 
-cleanup() {
-    echo "Cleaning up..."
-    if [ ! -z "$MONITOR_PID" ] && kill -0 $MONITOR_PID 2>/dev/null; then
-        kill $MONITOR_PID 2>/dev/null || true
-    fi
-    if [ ! -z "$SERVER_JOB_PID" ] && kill -0 $SERVER_JOB_PID 2>/dev/null; then
-        echo "Stopping server process (PID: $SERVER_JOB_PID)"
-        kill $SERVER_JOB_PID 2>/dev/null || true
-        sleep 2
-        if kill -0 $SERVER_JOB_PID 2>/dev/null; then
-            echo "Force killing server process"
-            kill -9 $SERVER_JOB_PID 2>/dev/null || true
-        fi
-    fi
-    echo "Cleanup complete"
-}
-trap cleanup EXIT INT TERM
-
 # --- Step 1: Launch server ---
 srun --ntasks=1 --gpus-per-node=1 --cpus-per-task=4 --exact -w $NODE bash -c "
     echo 'Starting server on $NODE with scheduler=$SCHEDULER port=$PORT'
@@ -61,15 +43,7 @@ SERVER_JOB_PID=$!
 echo "Server launched (PID $SERVER_JOB_PID)."
 
 sleep 10
-# Monitor server in background: terminate the job if it dies unexpectedly
-( while sleep 5; do
-    if ! kill -0 $SERVER_JOB_PID 2>/dev/null; then
-        echo "ERROR: Server process (PID $SERVER_JOB_PID) died unexpectedly - terminating job"
-        kill -TERM $$
-        break
-    fi
-  done ) &
-MONITOR_PID=$!
+setup_server_monitor $SERVER_JOB_PID
 
 # --- Step 2: Sweep num_robots ---
 NUM_RUNS=1
