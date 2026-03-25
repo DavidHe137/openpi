@@ -45,7 +45,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # --- Step 1: Launch server ---
-srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=4 --overlap --exact -w $NODE bash -c "
+srun --ntasks=1 --gpus-per-node=1 --cpus-per-task=4 --exact -w $NODE bash -c "
     echo 'Starting server on $NODE with scheduler=$SCHEDULER port=$PORT'
     source ~/.bashrc
     source .venv/bin/activate
@@ -59,6 +59,7 @@ srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=4 --overlap --exact -w 
 SERVER_JOB_PID=$!
 echo "Server launched (PID $SERVER_JOB_PID)."
 
+sleep 10
 # Monitor server in background: terminate the job if it dies unexpectedly
 ( while sleep 5; do
     if ! kill -0 $SERVER_JOB_PID 2>/dev/null; then
@@ -79,7 +80,7 @@ for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
         echo "Output: $OUTPUT_DIR"
         echo "--------------------------------------"
 
-        srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=22 --overlap --exact -w $NODE bash -c "
+        srun --ntasks=1 --gpus-per-node=1 --cpus-per-task=22 --exact -w $NODE bash -c "
             set -e
             echo 'Starting client on $NODE: scheduler=$SCHEDULER num_robots=$NUM_ROBOTS run=$RUN_IDX'
             source scripts/libero_client.sh
@@ -102,42 +103,6 @@ done
 
 echo "======================================"
 echo "All runs completed for scheduler=$SCHEDULER"
-
-# --- Step 3: Run synchronous client for greedy only ---
-if [ "$SCHEDULER" = "greedy" ]; then
-    echo "======================================"
-    echo "Running synchronous client for scheduler=$SCHEDULER"
-    echo "======================================"
-    for NUM_ROBOTS in "${NUM_ROBOTS_LIST[@]}"; do
-        for RUN_IDX in $(seq 0 $((NUM_RUNS - 1))); do
-            OUTPUT_DIR="data/libero/sweep_schedulers/scheduler_${SCHEDULER}_num_robots_${NUM_ROBOTS}_run_${RUN_IDX}_sync"
-            echo "--------------------------------------"
-            echo "Running: scheduler=$SCHEDULER  num_robots=$NUM_ROBOTS  run=$RUN_IDX  (sync)"
-            echo "Output: $OUTPUT_DIR"
-            echo "--------------------------------------"
-
-            srun --ntasks=1 --gpus-per-node="l40s:1" --cpus-per-task=22 --overlap --exact -w $NODE bash -c "
-                set -e
-                echo 'Starting sync client on $NODE: scheduler=$SCHEDULER num_robots=$NUM_ROBOTS run=$RUN_IDX'
-                source scripts/libero_client.sh
-                ./examples/libero/.venv/bin/python examples/libero/main_multi_robot_runtime.py \
-                    --host $NODE \
-                    --port $PORT \
-                    --num-robots $NUM_ROBOTS \
-                    --task-suite-name libero_10 \
-                    --num-trials-per-task $NUM_TRIALS_PER_TASK \
-                    --control-hz 20 \
-                    --max-steps 600 \
-                    --output-dir $OUTPUT_DIR \
-                    --progress-type logging \
-                    --log-dir $OUTPUT_DIR \
-                    --overwrite \
-                    --action-chunk-broker-type synchronous
-            "
-        done
-    done
-    echo "Synchronous client runs complete for scheduler=$SCHEDULER"
-fi
 
 cleanup
 trap - EXIT
