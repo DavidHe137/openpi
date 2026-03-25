@@ -255,7 +255,6 @@ class RuntimeMetadata(JSONDataclass):
 
     # Environment config
     task_suite_name: str
-    num_steps_wait: int
     num_trials_per_task: int
     max_steps: int
     seed: int
@@ -269,5 +268,6 @@ class RuntimeMetadata(JSONDataclass):
     broker_type: str
 
     # Other
+    episodes: List[str] = field(default_factory=list)
     latency_ms: List[float] = field(default_factory=list)
     execution_horizon: List[int] = field(default_factory=list)

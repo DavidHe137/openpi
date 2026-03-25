@@ -20,3 +20,7 @@ class Subscriber(abc.ABC):
     @abc.abstractmethod
     def on_episode_end(self) -> None:
         """Called when an episode ends."""
+
+    def close(self) -> None:
+        """Called when the runtime is closing."""
+        pass

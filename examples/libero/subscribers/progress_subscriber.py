@@ -1,15 +1,12 @@
 from __future__ import annotations
-
 import multiprocessing
 import time
 import numpy as np
-from typing import TYPE_CHECKING, List
-
+from typing import List
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
-
-if TYPE_CHECKING:
-    from examples.libero.env import LiberoSimEnvironment
+from examples.libero.env import LiberoSimEnvironment
+from examples.libero.episodes import Episode
 
 
 class ProgressSubscriber(_subscriber.Subscriber):
@@ -17,17 +14,18 @@ class ProgressSubscriber(_subscriber.Subscriber):
     Subscriber that sends progress updates through a multiprocessing queue.
 
     This subscriber:
-    - Tracks episode and step progress
+    - Tracks step progress
     - Sends updates every N steps (configurable)
     - Reports success/failure from environment
-    - Sends messages on episode boundaries
+
+    Designed to be created once per episode
     """
 
     def __init__(
         self,
         queue: multiprocessing.Queue,
         robot_idx: int,
-        job_info: dict,
+        episode: Episode,
         environment: LiberoSimEnvironment,
         update_frequency: int = 10,
     ):
@@ -38,19 +36,18 @@ class ProgressSubscriber(_subscriber.Subscriber):
             queue: Multiprocessing queue for sending progress messages
             robot_idx: Worker's assigned robot index
             job_info: Dict with task_suite_name, task_id, num_episodes
-            environment: LiberoSimEnvironment for accessing success flag
+            environment: LiberoSimEnvironment for accessing success flag (can be
+                updated later via ``self.environment = env`` before each episode)
             update_frequency: Send update every N steps
         """
         self.queue = queue
         self.robot_idx = robot_idx
-        self.job_info = job_info
+        self.episode = episode
         self.environment = environment
         self.update_frequency = update_frequency
 
         # State tracking
-        self.current_episode_idx = 0
         self.current_step_count = 0
-        self.total_episodes = job_info["num_episodes"]
         self.total_successes = 0
         self.step_times: List[List[float]] = []
 
@@ -59,7 +56,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
             {
                 "type": "worker_init",
                 "robot_idx": robot_idx,
-                "job_info": job_info,
+                "episode": episode,
             }
         )
 
@@ -82,7 +79,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
             {
                 "type": "episode_start",
                 "robot_idx": self.robot_idx,
-                "episode_idx": self.current_episode_idx,
+                "episode": self.episode,
             }
         )
 
@@ -106,7 +103,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
                 {
                     "type": "step_batch",
                     "robot_idx": self.robot_idx,
-                    "episode_idx": self.current_episode_idx,
+                    "episode": self.episode,
                     "step_count": self.current_step_count,
                     "steps/s": self._calculate_steps_per_sec(),
                 }
@@ -115,30 +112,11 @@ class ProgressSubscriber(_subscriber.Subscriber):
     @override
     def on_episode_end(self) -> None:
         """Called when an episode ends. Report success/failure."""
-        # Get success from environment
-        success = self.environment.current_success
-
-        if success:
-            self.total_successes += 1
-
         self._send_message(
             {
                 "type": "episode_end",
                 "robot_idx": self.robot_idx,
-                "episode_idx": self.current_episode_idx,
-                "success": success,
+                "episode": self.episode,
+                "success": self.environment.current_success,
             }
         )
-
-        self.current_episode_idx += 1
-
-        # If this was the last episode, send worker complete message
-        if self.current_episode_idx >= self.total_episodes:
-            self._send_message(
-                {
-                    "type": "worker_complete",
-                    "robot_idx": self.robot_idx,
-                    "total_episodes": self.total_episodes,
-                    "total_successes": self.total_successes,
-                }
-            )

@@ -1,11 +1,20 @@
 import pathlib
 import math
+import random
 import numpy as np
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
+LIBERO_ENV_RESOLUTION = 256
 
-def _get_libero_env(task, resolution, seed):
+
+def seed_everything(seed: int) -> None:
+    """Seed everything for reproducibility."""
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def _get_libero_env(task, seed):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = (
@@ -15,8 +24,8 @@ def _get_libero_env(task, resolution, seed):
     )
     env_args = {
         "bddl_file_name": task_bddl_file,
-        "camera_heights": resolution,
-        "camera_widths": resolution,
+        "camera_heights": LIBERO_ENV_RESOLUTION,
+        "camera_widths": LIBERO_ENV_RESOLUTION,
     }
     env = OffScreenRenderEnv(**env_args)
     env.seed(

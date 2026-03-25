@@ -10,6 +10,7 @@ from typing import List
 from typing_extensions import override
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
+NUM_STEPS_WAIT = 10
 
 
 @dataclass
@@ -37,18 +38,14 @@ class LiberoSimEnvironment(_environment.Environment):
         initial_states: np.ndarray,
         *,
         resize_size: int = 224,
-        num_steps_wait: int = 10,
         max_episode_steps: int = 300,
-        latency_ms: float = 0.0,
         control_hz: float = 100.0,
     ) -> None:
         self._env = env
         self._task_description = task_description
         self._initial_states = initial_states
         self._resize_size = resize_size
-        self._num_steps_wait = num_steps_wait
         self._max_episode_steps = max_episode_steps
-        self._latency_ms = latency_ms
         self._control_hz = control_hz
 
         self._episode_idx = 0
@@ -69,7 +66,7 @@ class LiberoSimEnvironment(_environment.Environment):
         obs = self._env.set_init_state(self._initial_states[self._episode_idx])
 
         # Let objects fall / settle
-        for _ in range(self._num_steps_wait):
+        for _ in range(NUM_STEPS_WAIT):
             obs, _, _, _ = self._env.step(LIBERO_DUMMY_ACTION)
 
         self._last_obs = obs
@@ -114,13 +111,7 @@ class LiberoSimEnvironment(_environment.Environment):
         )
 
     def apply_action(self, action: Action) -> None:
-        """Take one or more low-level action steps in the LIBERO simulator.
-
-        To simulate latency affecting the environment, we optionally repeat
-        the same action for multiple simulator steps based on latency_ms and
-        control_hz, so higher latency results in fewer distinct decisions per
-        unit of simulated time.
-        """
+        """Take one or more low-level action steps in the LIBERO simulator."""
         act = action.action
 
         # Always execute at least one step with the new action
