@@ -24,21 +24,17 @@ class ActionChunkBroker(ABC):
     """
 
     def __init__(
-        self,
-        ws_client: BidirectionalWebsocket,
-        control_hz: int,
-        realtime: bool = True,
-        min_execution_horizon: int = 0,
+        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
     ) -> None:
         self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
         self._action_chunks: List[ActionChunk] = []
-        self._observation_step: int = 0  # next observation step to see
-        self._action_step: int = 0  # next action step to execute
+        self._next_observation_step: int = 0  # next observation step to see
+        self._next_action_step: int = 0  # next action step to execute
 
         self._step_duration = 1 / control_hz
         self._realtime = realtime
-        self._min_execution_horizon = min_execution_horizon
+        self.execution_horizon = execution_horizon
 
         self._prev_action: Action = self._create_null_action(-1)
 
@@ -55,12 +51,12 @@ class ActionChunkBroker(ABC):
             # count actions left in queue before we pop the next action
             self._actions_left_history.append(len(self._action_queue))
 
-            self._observation_step = obs.step
+            self._next_observation_step = obs.step + 1
             if self._action_queue:
                 action = self._action_queue.popleft()
-                self._action_step += 1
+                self._next_action_step += 1
             else:
-                action = self._create_null_action(self._observation_step)
+                action = self._create_null_action(obs.step)
 
             self._prev_action = action
 
@@ -88,14 +84,17 @@ class ActionChunkBroker(ABC):
             with self._lock:
                 action_chunk = ActionChunk.from_infer_response(
                     infer_response=infer_response,
-                    execution_start_step=self._observation_step,
+                    execution_start_step=self._next_observation_step,
                 )
+
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)
+                first_executed_index = max(0, self._next_action_step - action_chunk.action_start_step)
                 self._ws_client.send_ack(
                     action_chunk.request_id,
                     action_chunk.response_timestamp,
                     action_chunk.execution_start_step,
+                    first_executed_index,
                 )
 
     def _update_action_queue(self, action_chunk: ActionChunk) -> None:
@@ -111,24 +110,25 @@ class ActionChunkBroker(ABC):
                 index_in_chunk=i,
             )
             for i in range(action_chunk.execution_horizon)
-            if action_chunk.action_start_step + i >= self._action_step
+            if action_chunk.action_start_step + i >= self._next_action_step
         )
 
     def _infer(self, obs: Observation) -> None:
         self._ws_client.send(
             obs,
             self.deadline,
-            self._action_step,
-            min_execution_horizon=self._min_execution_horizon,
+            self._next_action_step,
+            execution_horizon=self.execution_horizon,
         )
 
     def reset(self) -> None:
         with self._lock:
-            self._observation_step = 0
-            self._action_step = 0
+            self._next_observation_step = 0
+            self._next_action_step = 0
             self._action_queue.clear()
             self._action_chunks = []
             self._actions_left_history = []
+            self._received_first_chunk = False
             self._ws_client.reset()
 
     @property

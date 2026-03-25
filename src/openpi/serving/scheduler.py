@@ -13,6 +13,7 @@ from openpi.scheduling.baselines import GreedyScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
 from openpi.scheduling.lookahead import LookaheadScheduler
+from openpi.scheduling.receding_horizon_ilp import RecedingHorizonILPScheduler
 from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import BatchProfile
 from openpi.serving.schemas import CompletionNotification
@@ -43,6 +44,7 @@ _SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
     "lookahead": LookaheadScheduler,
     "round_robin": RoundRobinScheduler,
     "random": RandomBatchScheduler,
+    "receding_horizon_ilp": RecedingHorizonILPScheduler,
 }
 
 
@@ -103,7 +105,7 @@ def _run_scheduler(
 
     batch_profile = _recv_batch_profile(result_sock)
 
-    extra_kwargs: dict = dict(scheduler_kwargs or {}) if cls is LookaheadScheduler else {}
+    extra_kwargs: dict = dict(scheduler_kwargs or {})
     scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile, **extra_kwargs)
 
     poller = zmq.Poller()
@@ -151,6 +153,6 @@ def _run_scheduler(
         if not batch_queue.full():
             scheduler.schedule()
             if scheduler_metrics_queue is not None:
-                samples = scheduler.flush_timing_samples()
+                samples = scheduler.flush_decisions()
                 if samples:
                     scheduler_metrics_queue.put_nowait(samples)

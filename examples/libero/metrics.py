@@ -27,14 +27,18 @@ def load_episodes(output_path: pathlib.Path) -> pd.DataFrame:
     return pd.DataFrame([asdict(result) for result in results])
 
 
-def load_actions_left(output_path: pathlib.Path) -> Dict[str, List[np.ndarray]]:
-    """Load actions_left.npy files grouped by robot_idx.
+def load_actions_left(
+    output_path: pathlib.Path,
+) -> Dict[str, List[Tuple[float, np.ndarray]]]:
+    """Load actions_left.npy files grouped by robot_idx, with start timestamps.
 
     Returns:
-        {robot_idx_str: [episode_array, ...]} sorted by episode order.
+        {robot_idx_str: [(start_timestamp, episode_array), ...]} sorted by episode order.
+        start_timestamp is the perf_counter value of the first step (from timestamps.csv),
+        or 0.0 if timestamps.csv is missing.
     """
     files = sorted(output_path.glob("**/actions_left.npy"))
-    by_robot: dict[str, list[tuple[int, np.ndarray]]] = {}
+    by_robot: dict[str, list[tuple[int, float, np.ndarray]]] = {}
     for f in files:
         # path: <out_dir>/<robot_idx>/<ep_idx>_<suite>_<task>_<result>/actions_left.npy
         parts = f.parts
@@ -42,10 +46,15 @@ def load_actions_left(output_path: pathlib.Path) -> Dict[str, List[np.ndarray]]:
         ep_prefix = parts[-2]  # e.g. "0_libero_10_0_success"
         ep_idx = int(ep_prefix.split("_")[0])
         arr = np.load(f)
-        by_robot.setdefault(robot_idx, []).append((ep_idx, arr))
+        ts_file = f.parent / "timestamps.csv"
+        if ts_file.exists():
+            start_time = float(pd.read_csv(ts_file, nrows=1)["timestamp"].iloc[0])
+        else:
+            start_time = 0.0
+        by_robot.setdefault(robot_idx, []).append((ep_idx, start_time, arr))
 
     return {
-        robot: [arr for _, arr in sorted(eps)]
+        robot: [(st, arr) for _, st, arr in sorted(eps)]
         for robot, eps in sorted(by_robot.items(), key=lambda kv: int(kv[0]))
     }
 
@@ -100,21 +109,19 @@ def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
 
         result = Result.from_json(metadata_file)
         costs = np.load(cost_history_file)
-        planner_starvation_steps = int(np.isnan(costs).sum())
+        starvation_steps = int(np.isnan(costs).sum())
         total_steps = int(costs.shape[0])
         assert total_steps > 0, "cost_history should contain at least one step"
-        planner_starvation_rate = planner_starvation_steps / total_steps
-
+        assert control_hz is not None and control_hz > 0
         row = {
             "robot_idx": result.robot_idx,
             "episode_idx": result.episode_idx,
             "task_suite_name": result.task_suite_name,
             "task_id": result.task_id,
-            "planner_starvation_steps": planner_starvation_steps,
-            "planner_starvation_rate": planner_starvation_rate,
+            "starvation_steps": starvation_steps,
+            "observed_steps": total_steps,
+            "planner_starvation_seconds": starvation_steps / control_hz,
         }
-        assert control_hz is not None and control_hz > 0
-        row["planner_starvation_seconds"] = planner_starvation_steps / control_hz
 
         rows.append(row)
 
@@ -332,6 +339,7 @@ def plot_task_breakdown(
     plot_fn: Callable[[plt.Axes, np.ndarray, str], None],
     title: str,
     filename: pathlib.Path,
+    title_pad: Optional[float] = None,
 ) -> None:
     """Create grid: 'All Tasks' in first cell, then one cell per task.
 
@@ -341,6 +349,7 @@ def plot_task_breakdown(
         plot_fn: Function(ax, data, subtitle) that plots on a single axes
         title: Overall figure title
         filename: Where to save
+        title_pad: Optional extra padding (points) between suptitle and subplots
     """
     if df.empty:
         print(f"No data for {column}")
@@ -373,7 +382,9 @@ def plot_task_breakdown(
     elif n_rows == 1 or n_cols == 1:
         axes = axes.reshape(n_rows, n_cols)
 
-    fig.suptitle(title, fontsize=16, fontweight="bold")
+    fig.suptitle(title, fontsize=16, fontweight="bold", y=1.0 if title_pad else 0.98)
+    if title_pad is not None:
+        fig.subplots_adjust(top=0.88)
 
     # Plot overall
     plot_fn(axes.flat[0], df[column].values, "All Tasks Combined")
@@ -400,30 +411,18 @@ def plot_task_breakdown(
 
 
 def generate_latency_plot(output_path: pathlib.Path) -> None:
-    """Latency distribution: overall + per-task."""
+    """Latency distribution: overall + per-task (in milliseconds)."""
     df = load_action_chunks(output_path)
+    if not df.empty:
+        df = df.copy()
+        df["latency_ms"] = df["latency"] * 1000
     plot_task_breakdown(
         df,
-        column="latency",
-        plot_fn=lambda ax, data, title: plot_histogram(
-            ax, data, title, "Latency (seconds)"
-        ),
+        column="latency_ms",
+        plot_fn=lambda ax, data, title: plot_histogram(ax, data, title, "Latency (ms)"),
         title="Action Chunk Latency Distribution",
         filename=output_path / "plots" / "action_chunk_latency.png",
-    )
-
-
-def generate_execution_horizon_plot(output_path: pathlib.Path) -> None:
-    """Execution horizon distribution: overall + per-task."""
-    df = load_action_chunks(output_path)
-    plot_task_breakdown(
-        df,
-        column="execution_horizon",
-        plot_fn=lambda ax, data, title: plot_histogram(
-            ax, data, title, "Steps", color="coral", show_stats=False
-        ),
-        title="Execution Horizon Distribution",
-        filename=output_path / "plots" / "execution_horizon.png",
+        title_pad=20,
     )
 
 
@@ -457,6 +456,7 @@ def generate_success_rate_plot(output_path: pathlib.Path) -> None:
         return "red"
 
     fig, ax = plt.subplots(figsize=(12, 6))
+    fig.subplots_adjust(top=0.88)
     plot_bar_chart(
         ax,
         labels=summary["task_label"].tolist(),
@@ -479,21 +479,20 @@ def generate_success_rate_plot(output_path: pathlib.Path) -> None:
 
 
 def generate_steps_plot(output_path: pathlib.Path) -> None:
-    """Steps analysis: overall histograms + per-task violin plot."""
+    """Steps analysis: successful episodes histogram + per-task violin plot."""
     df = load_episodes(output_path)
     if df.empty:
         print("No episode data for steps plot")
         return
 
-    fig = plt.figure(figsize=(16, 10))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.2], hspace=0.3)
+    fig = plt.figure(figsize=(16, 10), layout="constrained")
+    gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.2], hspace=0.3)
     fig.suptitle("Steps Taken Analysis", fontsize=16, fontweight="bold")
 
-    # Overall distributions
+    # Overall distribution for successful episodes only
     success_steps = df[df["success"]]["steps_taken"].values
-    failure_steps = df[~df["success"]]["steps_taken"].values
 
-    ax_success = fig.add_subplot(gs[0, 0])
+    ax_success = fig.add_subplot(gs[0])
     if len(success_steps) > 0:
         plot_histogram(
             ax_success,
@@ -514,28 +513,7 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
         )
         ax_success.set_title("Successful Episodes")
 
-    ax_failure = fig.add_subplot(gs[0, 1])
-    if len(failure_steps) > 0:
-        plot_histogram(
-            ax_failure,
-            failure_steps,
-            "Failed Episodes",
-            "Steps",
-            color="red",
-            show_stats=False,
-        )
-    else:
-        ax_failure.text(
-            0.5,
-            0.5,
-            "No failed episodes",
-            ha="center",
-            va="center",
-            transform=ax_failure.transAxes,
-        )
-        ax_failure.set_title("Failed Episodes")
-
-    # Per-task violin plot
+    # Per-task violin plot (success only)
     df["task_label"] = (
         "Task " + df["task_id"].astype(str) + "\n" + df["task_language"].str[:30]
     )
@@ -545,15 +523,16 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
     ):
         groups[task_label] = {
             "success": group[group["success"]]["steps_taken"].values,
-            "failure": group[~group["success"]]["steps_taken"].values,
         }
 
-    ax_violin = fig.add_subplot(gs[1, :])
+    ax_violin = fig.add_subplot(gs[1])
     plot_grouped_violin(
-        ax_violin, groups, ylabel="Steps", title="Steps by Task (Success vs Failure)"
+        ax_violin,
+        groups,
+        ylabel="Steps",
+        title="Steps by Task (Successful Episodes)",
+        group_colors={"success": "lightgreen"},
     )
-
-    plt.tight_layout()
     plots_dir = output_path / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / "steps_taken.png", dpi=150)
@@ -562,10 +541,14 @@ def generate_steps_plot(output_path: pathlib.Path) -> None:
     print(f"Saved {plots_dir / 'steps_taken.png'}")
 
 
-def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
+def generate_actions_left_heatmap(
+    output_path: pathlib.Path, control_hz: int = 20
+) -> None:
     """Heatmap of actions_left[step, robot] using ground-truth queue lengths.
 
-    Each robot's episodes are concatenated along the step axis.
+    Episodes are positioned on the time axis using their start timestamps, so
+    inter-episode gaps appear as NaN columns (mirroring the schemas.py approach
+    of using request_timestamp to place each step at its real wall-clock position).
     Episode boundaries are marked with vertical lines.
     """
     by_robot = load_actions_left(output_path)
@@ -573,24 +556,30 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
         print("No actions_left.npy data found")
         return
 
-    robots = list(by_robot.keys())
+    robots = sorted(list(by_robot.keys()), reverse=True)
     n_robots = len(robots)
 
-    # Concatenate episodes per robot; pad shorter robots with NaN
-    robot_series: list[np.ndarray] = [np.concatenate(by_robot[r]) for r in robots]
-    max_len = max(len(s) for s in robot_series)
-    matrix = np.full((n_robots, max_len), np.nan)
-    episode_boundaries: list[list[int]] = []
+    # Global t0: earliest episode start across all robots
+    t0 = min(start_time for eps in by_robot.values() for start_time, _ in eps)
 
-    for i, robot in enumerate(robots):
-        episodes = by_robot[robot]
+    # Compute per-robot column offsets from timestamps, then build matrix
+    episode_boundaries: list[list[int]] = []
+    robot_offsets: list[list[tuple[int, np.ndarray]]] = []
+    for robot in robots:
+        offsets = []
+        for start_time, arr in by_robot[robot]:
+            col = round((start_time - t0) * control_hz)
+            offsets.append((col, arr))
+        robot_offsets.append(offsets)
+
+    max_len = max(col + len(arr) for offsets in robot_offsets for col, arr in offsets)
+    matrix = np.full((n_robots, max_len), np.nan)
+
+    for i, offsets in enumerate(robot_offsets):
         boundaries = []
-        offset = 0
-        for ep in episodes:
-            end = offset + len(ep)
-            matrix[i, offset:end] = ep
-            boundaries.append(offset)
-            offset = end
+        for col, arr in offsets:
+            matrix[i, col : col + len(arr)] = arr
+            boundaries.append(col)
         episode_boundaries.append(boundaries)
 
     fig_width = min(
@@ -609,7 +598,7 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
 
     # Episode boundary markers (thin white lines)
     for i, bounds in enumerate(episode_boundaries):
-        for b in bounds[1:]:  # skip step 0
+        for b in bounds[1:]:  # skip first episode
             ax.plot(
                 [b - 0.5, b - 0.5],
                 [i - 0.4, i + 0.4],
@@ -623,14 +612,18 @@ def generate_actions_left_heatmap(output_path: pathlib.Path) -> None:
 
     ax.set_yticks(range(n_robots))
     ax.set_yticklabels([f"robot_{r}" for r in robots], fontsize=8)
+    tick_interval = control_hz  # one tick per second
+    x_ticks = np.arange(0, max_len, tick_interval)
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels([f"{t // tick_interval}s" for t in x_ticks], fontsize=6)
     ax.set_xlabel(
-        "Step (episodes concatenated, white lines = episode boundaries)",
+        "Wall-clock time in seconds (white lines = episode boundaries)",
         fontweight="bold",
     )
     ax.set_ylabel("Robot", fontweight="bold")
     ax.set_title("Actions Left Per Robot Over Time", fontsize=14, fontweight="bold")
 
-    plt.tight_layout()
+    fig.tight_layout()
     plots_dir = output_path / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(plots_dir / "actions_left_heatmap.png", dpi=150, bbox_inches="tight")
@@ -693,45 +686,13 @@ def generate_per_robot_success_rate_plot(output_path: pathlib.Path) -> None:
     print(f"Saved {plots_dir / 'per_robot_success_rate.png'}")
 
 
-def generate_per_robot_completion_speed_plot(output_path: pathlib.Path) -> None:
-    """Box plot of steps taken per robot (lower = faster completion)."""
-    df = load_episodes(output_path)
-    if df.empty:
-        print("No episode data for per-robot completion speed plot")
-        return
-
-    robots = sorted(df["robot_idx"].unique())
-    data_by_robot = [df[df["robot_idx"] == r]["steps_taken"].values for r in robots]
-
-    fig, ax = plt.subplots(figsize=(10, 5))
-    bp = ax.boxplot(data_by_robot, labels=[str(r) for r in robots], patch_artist=True)
-
-    for patch in bp["boxes"]:
-        patch.set_facecolor("lightblue")
-        patch.set_alpha(0.7)
-
-    ax.set_xlabel("Robot Index", fontsize=12)
-    ax.set_ylabel("Steps Taken", fontsize=12)
-    ax.set_title("Per-Robot Task Completion Speed", fontsize=14, fontweight="bold")
-    ax.grid(axis="y", alpha=0.3)
-
-    plt.tight_layout()
-    plots_dir = output_path / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(plots_dir / "per_robot_completion_speed.png", dpi=150)
-    plt.close(fig)
-    print(f"Saved {plots_dir / 'per_robot_completion_speed.png'}")
-
-
 def generate_all_plots(output_path: pathlib.Path) -> None:
     """Generate all plots."""
     print("Generating plots...")
     generate_latency_plot(output_path)
-    generate_execution_horizon_plot(output_path)
     generate_success_rate_plot(output_path)
     generate_steps_plot(output_path)
     generate_per_robot_success_rate_plot(output_path)
-    generate_per_robot_completion_speed_plot(output_path)
     generate_actions_left_heatmap(output_path)
     print("Done!")
 
@@ -759,14 +720,17 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     df.to_csv(output_path / "results.csv", index=False)
 
     aggregation_spec: dict[str, str] = {"success": "mean"}
-    assert "planner_starvation_steps" in df.columns
-    assert "planner_starvation_rate" in df.columns
+    assert "starvation_steps" in df.columns
+    assert "observed_steps" in df.columns
     assert "planner_starvation_seconds" in df.columns
-    aggregation_spec["planner_starvation_steps"] = "mean"
-    aggregation_spec["planner_starvation_rate"] = "mean"
-    aggregation_spec["planner_starvation_seconds"] = "mean"
+    aggregation_spec["starvation_steps"] = "sum"
+    aggregation_spec["observed_steps"] = "sum"
+    aggregation_spec["planner_starvation_seconds"] = "sum"
 
     summary = df.groupby(["task_suite_name", "task_id"]).agg(aggregation_spec)
+    summary["planner_starvation_rate"] = (
+        summary["starvation_steps"] / summary["observed_steps"]
+    )
     summary.reset_index().to_csv(output_path / "summary.csv", index=False)
 
     # Display with rich
@@ -775,37 +739,61 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     table.add_column("Task Suite", style="cyan")
     table.add_column("Task ID", style="magenta")
     table.add_column("Success Rate", style="green")
-    assert "planner_starvation_steps" in summary.columns
-    table.add_column("Planner Starv.", style="yellow")
-    assert "planner_starvation_rate" in summary.columns
-    table.add_column("Planner Starv. Rate", style="yellow")
+    table.add_column("Total Starvation Steps", style="yellow")
+    table.add_column("Starvation Rate", style="yellow")
 
     for _, row in summary.reset_index().iterrows():
-        row_values = [
+        table.add_row(
             str(row["task_suite_name"]),
             str(row["task_id"]),
             f"{row['success']:.2%}",
-        ]
-        assert "planner_starvation_steps" in summary.columns
-        row_values.append(f"{row['planner_starvation_steps']:.2f}")
-        assert "planner_starvation_rate" in summary.columns
-        row_values.append(f"{row['planner_starvation_rate']:.2%}")
-        table.add_row(*row_values)
+            str(int(row["starvation_steps"])),
+            f"{row['planner_starvation_rate']:.2%}",
+        )
 
     console.print(table)
+
+    # Per-robot success summary
+    robot_agg_spec: dict[str, str] = {
+        "success": "mean",
+        "episode_idx": "count",
+        "starvation_steps": "sum",
+        "observed_steps": "sum",
+    }
+    robot_summary = df.groupby("robot_idx").agg(robot_agg_spec).reset_index()
+    robot_summary.rename(columns={"episode_idx": "count"}, inplace=True)
+    robot_summary["planner_starvation_rate"] = (
+        robot_summary["starvation_steps"] / robot_summary["observed_steps"]
+    )
+
+    robot_table = Table(title="Per-Robot Success Summary")
+    robot_table.add_column("Robot", style="cyan")
+    robot_table.add_column("Success Rate", style="green")
+    robot_table.add_column("Episodes", style="magenta")
+    robot_table.add_column("Total Starvation Steps", style="yellow")
+    robot_table.add_column("Starvation Rate", style="yellow")
+    for _, row in robot_summary.sort_values("robot_idx").iterrows():
+        robot_table.add_row(
+            str(int(row["robot_idx"])),
+            f"{row['success']:.2%}",
+            str(int(row["count"])),
+            str(int(row["starvation_steps"])),
+            f"{row['planner_starvation_rate']:.2%}",
+        )
+    console.print(robot_table)
+
+    total_starvation_steps = int(df["starvation_steps"].sum())
+    total_observed_steps = int(df["observed_steps"].sum())
+    overall_starvation_rate = total_starvation_steps / total_observed_steps
     console.print(
         f"\n[bold green]Total success rate: {summary['success'].mean():.2%}[/bold green]"
     )
-    assert "planner_starvation_steps" in df.columns
-    total_starvation_steps = int(df["planner_starvation_steps"].sum())
     console.print(
-        f"[bold yellow]Planner starvation total: {total_starvation_steps} control steps[/bold yellow]"
+        f"[bold yellow]Total starvation steps: {total_starvation_steps} control steps[/bold yellow]"
     )
-    assert "planner_starvation_rate" in df.columns
     console.print(
-        f"[bold yellow]Planner starvation rate: {df['planner_starvation_rate'].mean():.2%}[/bold yellow]"
+        f"[bold yellow]Planner starvation rate: {overall_starvation_rate:.2%}[/bold yellow]"
     )
-    assert "planner_starvation_seconds" in df.columns
     console.print(
         f"[bold yellow]Planner starvation time: {df['planner_starvation_seconds'].sum():.2f}s[/bold yellow]"
     )

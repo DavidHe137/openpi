@@ -20,15 +20,8 @@ def main(data_dir: str) -> None:
     if not output_path.exists():
         raise ValueError(f"Data directory {data_dir} does not exist")
 
-    print(f"Regenerating plots for {data_dir}...")
-
-    # Regenerate metrics CSV files
     calculate_metrics(output_path)
-
-    # Generate all plots
     generate_all_plots(output_path)
-
-    print(f"\nDone! Plots saved to {output_path / 'plots'}")
 
 
 if __name__ == "__main__":

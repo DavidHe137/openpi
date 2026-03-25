@@ -41,7 +41,7 @@ class InferRequest:
     action_start_step: int
     request_timestamp: float
     deadline: float
-    min_execution_horizon: int
+    execution_horizon: int
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
@@ -76,7 +76,34 @@ class ResponseAck:
     request_id: int  # matches InferResponse.request_id
     receive_time: float  # time.time() on client at receipt
     execution_start_step: int  # client step when new chunk became available
+    first_executed_index: int = 0  # index within chunk where actual execution started
     type: Literal["ack"] = "ack"
+
+
+@dataclass(frozen=True)
+class EpisodeStart:
+    task_suite_name: str
+    task_id: int
+    episode_idx: int
+    max_episode_steps: int
+    task_language: str
+    type: Literal["episode_start"] = "episode_start"
+
+
+@dataclass(frozen=True)
+class EpisodeStep:
+    type: Literal["episode_step"] = "episode_step"
+
+
+@dataclass(frozen=True)
+class EpisodeEnd:
+    task_suite_name: str
+    task_id: int
+    episode_idx: int
+    success: bool
+    duration_s: float
+    steps_taken: int
+    type: Literal["episode_end"] = "episode_end"
 
 
 @dataclass(frozen=True)

@@ -24,6 +24,7 @@ from examples.libero import logging_config
 from examples.libero.env import LiberoSimEnvironment
 from examples.libero.progress_manager import get_progress_manager
 from examples.libero.subscribers.saver import Saver
+from examples.libero.subscribers.task_metrics_publisher import TaskMetricsPublisher
 from examples.libero.metrics import calculate_metrics, generate_all_plots
 from examples.libero.subscribers.progress_subscriber import ProgressSubscriber
 
@@ -55,6 +56,7 @@ class Args:
     port: int = 8080
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
+    execution_horizon: List[int] = field(default_factory=list)
     latency_ms: List[float] = field(
         default_factory=list
     )  # Optional per-robot artificial latency (ms); length <= num_robots
@@ -91,6 +93,13 @@ def _latency_for_robot(args: Args, robot_idx: int) -> float:
     return float(args.latency_ms[robot_idx])
 
 
+def _execution_horizon_for_robot(args: Args, robot_idx: int) -> int:
+    """Return the execution horizon for a given robot index."""
+    if not args.execution_horizon:
+        return 10
+    return int(args.execution_horizon[robot_idx])
+
+
 def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
     global \
         robot_idx, \
@@ -119,7 +128,7 @@ def init_worker(args: Args, counter, progress_queue, start_barrier) -> None:
     config = BrokerConfig(
         ws_client=ws_client,
         control_hz=args.control_hz,
-        min_execution_horizon=3,  # NOTE: hardcode for now
+        execution_horizon=_execution_horizon_for_robot(args, robot_idx),
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)
@@ -186,6 +195,13 @@ def create_runtime(args: Args, job: Job) -> _runtime.Runtime:
             task_id=job.task_id,
             task=job.task,
             robot_idx=robot_idx,
+        ),
+        TaskMetricsPublisher(
+            ws_client=ws_client,
+            environment=env,
+            task_suite_name=job.task_suite_name,
+            task_id=job.task_id,
+            task=job.task,
         ),
     ]
     if args.progress_type is not None and _progress_queue is not None:
@@ -354,15 +370,12 @@ def main(args: Args) -> None:
 
     jobs = create_jobs(args)
 
-    # Connect to get server metadata
-    temp_client = BidirectionalWebsocket(
-        robot_id="robot",
-        host=args.host,
-        port=args.port,
-        control_hz=args.control_hz,
+    # Fetch server metadata over HTTP to avoid creating a temporary websocket robot.
+    metadata_resp = requests.get(
+        f"http://{args.host}:{args.port}/metadata", timeout=5.0
     )
-    server_metadata = temp_client.server_metadata
-    temp_client.close()
+    metadata_resp.raise_for_status()
+    server_metadata = ServerMetadata(**metadata_resp.json())
 
     # Create runtime metadata
     runtime_metadata = RuntimeMetadata(
@@ -376,6 +389,7 @@ def main(args: Args) -> None:
         seed=args.seed,
         resize_size=args.resize_size,
         latency_ms=args.latency_ms,
+        execution_horizon=args.execution_horizon,
     )
 
     output_path = pathlib.Path(args.output_dir)
@@ -390,7 +404,7 @@ def main(args: Args) -> None:
     # Reset server-side metrics so this experiment gets a clean slate
     server_base = f"http://{args.host}:{args.port}"
     try:
-        requests.post(f"{server_base}/reset-metrics", timeout=5.0)
+        requests.post(f"{server_base}/reset", timeout=5.0)
         logging.info("Reset server metrics")
     except Exception as e:
         logging.warning(f"Could not reset server metrics: {e}")
@@ -400,7 +414,7 @@ def main(args: Args) -> None:
 
     # Dump server-side metrics history for offline analysis
     try:
-        history = requests.get(f"{server_base}/metrics/history", timeout=10.0).json()
+        history = requests.get(f"{server_base}/save-metrics", timeout=10.0).json()
         hist_path = output_path / "server_metrics_history.json"
         hist_path.write_text(json.dumps(history, indent=2))
         logging.info(f"Saved server metrics history to {hist_path}")

@@ -14,13 +14,7 @@ class TemporalEnsemblingBroker(ActionChunkBroker):
     Larger m = faster incorporation (weights recent predictions more heavily)
     """
 
-    def __init__(
-        self,
-        ws_client: BidirectionalWebsocket,
-        control_hz: int,
-        realtime: bool = True,
-        m_param: float = 1.0,
-    ):
+    def __init__(self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, m_param: float = 1.0):
         """
         Args:
             ws_client: websocket client for inference

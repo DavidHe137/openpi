@@ -9,6 +9,7 @@ import numpy as np
 from jaxtyping import Float
 from openpi_client import messages
 import pandas as pd
+import requests
 
 T = TypeVar("T", bound="CSVDataclass")
 J = TypeVar("J", bound="JSONDataclass")
@@ -139,7 +140,7 @@ class ParquetDataclass:
 
 
 @dataclass(frozen=True)
-class ActionChunk(ParquetDataclass, CSVDataclass):
+class ActionChunk(ParquetDataclass):
     """
     We store all actions, including past execution horizon, as they might come in handy for debugging later
     """
@@ -240,6 +241,13 @@ class ServerMetadata(JSONDataclass):
     tunnel_url: Optional[str] = None
     location: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        try:
+            info = requests.get("https://ipinfo.io/json", timeout=3).json()
+            self.location = f"{info.get('city', '?')}, {info.get('region', '?')}, {info.get('country', '?')}"
+        except Exception:
+            self.location = "unknown"
+
 
 @dataclass(frozen=True)
 class RuntimeMetadata(JSONDataclass):
@@ -262,3 +270,4 @@ class RuntimeMetadata(JSONDataclass):
 
     # Other
     latency_ms: List[float] = field(default_factory=list)
+    execution_horizon: List[int] = field(default_factory=list)

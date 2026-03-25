@@ -119,7 +119,7 @@ class BidirectionalWebsocket:
         deadline: float,
         action_start_step: int,
         infer_type: messages.InferType = messages.InferType.SYNC,
-        min_execution_horizon: int = 0,
+        execution_horizon: int = 0,
         noise: Optional[np.ndarray] = None,
     ) -> None:
         request = messages.InferRequest(
@@ -131,7 +131,7 @@ class BidirectionalWebsocket:
             deadline=deadline,
             infer_type=infer_type,
             noise=noise,
-            min_execution_horizon=min_execution_horizon,
+            execution_horizon=execution_horizon,
         )
         data = msgpack_numpy.packb(asdict(request))
         self._ws.send(data)  # type: ignore
@@ -148,14 +148,61 @@ class BidirectionalWebsocket:
 
         return messages.InferResponse(**response)
 
-    def send_ack(self, request_id: int, receive_time: float, execution_start_step: int) -> None:
+    def send_ack(
+        self,
+        request_id: int,
+        receive_time: float,
+        execution_start_step: int,
+        first_executed_index: int = 0,
+    ) -> None:
         ack = messages.ResponseAck(
             request_id=request_id,
             receive_time=receive_time,
             execution_start_step=execution_start_step,
+            first_executed_index=first_executed_index,
         )
         self._ws.send(msgpack_numpy.packb(asdict(ack)))
 
     def reset(self) -> None:
         data = msgpack_numpy.packb(asdict(messages.ResetRequest(robot_id=self._robot_id)))
         self._ws.send(data)
+
+    def send_episode_start(
+        self,
+        task_suite_name: str,
+        task_id: int,
+        episode_idx: int,
+        max_episode_steps: int,
+        task_language: str,
+    ) -> None:
+        payload = messages.EpisodeStart(
+            task_suite_name=task_suite_name,
+            task_id=task_id,
+            episode_idx=episode_idx,
+            max_episode_steps=max_episode_steps,
+            task_language=task_language,
+        )
+        self._ws.send(msgpack_numpy.packb(asdict(payload)))
+
+    def send_episode_step(self) -> None:
+        payload = messages.EpisodeStep()
+        self._ws.send(msgpack_numpy.packb(asdict(payload)))
+
+    def send_episode_end(
+        self,
+        task_suite_name: str,
+        task_id: int,
+        episode_idx: int,
+        success: bool,
+        duration_s: float,
+        steps_taken: int,
+    ) -> None:
+        payload = messages.EpisodeEnd(
+            task_suite_name=task_suite_name,
+            task_id=task_id,
+            episode_idx=episode_idx,
+            success=success,
+            duration_s=duration_s,
+            steps_taken=steps_taken,
+        )
+        self._ws.send(msgpack_numpy.packb(asdict(payload)))

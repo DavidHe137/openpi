@@ -14,6 +14,7 @@ dependencies = [
     "flax==0.10.2",
     "fsspec[gcs]>=2024.6.0",
     "gym-aloha>=0.1.1",
+    "gurobipy",
     "imageio>=2.36.1",
     "jax[cuda12]==0.5.3",
     "jaxtyping==0.2.36",
@@ -50,6 +51,7 @@ dependencies = [
     "dash>=2.14.0",
     "plotly-resampler>=0.10.0",
     "trace-updater>=0.0.8",
+    "av>=16.0.1",
 ]
 
 

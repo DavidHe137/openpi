@@ -5,7 +5,9 @@ import imageio
 import matplotlib.pyplot as plt
 import numpy as np
 
-from typing import List, Dict
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Optional, Tuple
+import dataclasses
 from dataclasses import dataclass
 from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
@@ -34,8 +36,22 @@ class Result(JSONDataclass):
     episode_idx: int
 
 
+@dataclass
+class _EpisodeSaveData:
+    """Snapshot of all data needed to persist one episode, safe to hand off to a thread."""
+
+    timestamps: List[Timestamp]
+    observations_buffer: Dict[int, Observation]
+    action_chunks: List[ActionChunk]
+    actions_left_snapshot: List[int]
+    cost_history: List[float]
+    current_success: bool
+    episode_idx: int
+    initial_state: Optional[np.ndarray]
+
+
 class Saver(_subscriber.Subscriber):
-    """Saves episode data."""
+    """Saves episode data by offloading I/O to a background thread pool."""
 
     def __init__(
         self,
@@ -58,6 +74,7 @@ class Saver(_subscriber.Subscriber):
         self._timestamps: List[Timestamp] = []
         self._control_hz = environment.control_hz
         self._observations_buffer: Dict[int, Observation] = {}
+        self._executor = ThreadPoolExecutor(max_workers=5)
 
     @override
     def on_episode_start(self) -> None:
@@ -98,17 +115,35 @@ class Saver(_subscriber.Subscriber):
 
     @override
     def on_episode_end(self) -> None:
-        out_folder = self._get_out_folder()
+        data = _EpisodeSaveData(
+            timestamps=self._timestamps,
+            observations_buffer=self._observations_buffer,
+            # Shallow-copy the broker list in case it gets reset between episodes.
+            action_chunks=list(self._action_chunk_broker.action_chunks),
+            actions_left_snapshot=self._actions_left_snapshot,
+            cost_history=self._cost_history,
+            current_success=self._environment.current_success,
+            episode_idx=self._environment.episode_idx,
+            initial_state=self._environment.current_initial_state,
+        )
 
-        self._save_metadata(out_folder)
-        self._save_timestamps(out_folder)
-        self._save_action_chunks(out_folder)
-        self._save_video(out_folder)
-        self._save_debug_data(out_folder)
-        self._save_actions_left(out_folder)
-        self._save_cost_history(out_folder)
+        self._executor.submit(self._save_all, data)
 
-    def _get_out_folder(self) -> pathlib.Path:
+    def close(self) -> None:
+        self._executor.shutdown(wait=True)
+
+    def _save_all(self, data: _EpisodeSaveData) -> None:
+        out_folder, dir_episode_idx = self._get_out_folder(data)
+        data = dataclasses.replace(data, episode_idx=dir_episode_idx)
+        self._save_metadata(out_folder, data)
+        self._save_timestamps(out_folder, data)
+        self._save_action_chunks(out_folder, data)
+        self._save_video(out_folder, data)
+        self._save_debug_data(out_folder, data)
+        self._save_actions_left(out_folder, data)
+        self._save_cost_history(out_folder, data)
+
+    def _get_out_folder(self, data: _EpisodeSaveData) -> Tuple[pathlib.Path, int]:
         robot_folder = self._out_dir / str(self._robot_idx)
         pathlib.Path(robot_folder).mkdir(parents=True, exist_ok=True)
 
@@ -117,53 +152,54 @@ class Saver(_subscriber.Subscriber):
             max([int(p.name.split("_")[0]) for p in existing if p.is_dir()], default=-1)
             + 1
         )
-        success_str = "success" if self._environment.current_success else "failure"
+        success_str = "success" if data.current_success else "failure"
         out_folder = (
             robot_folder
             / f"{next_idx}_{self._task_suite_name}_{self._task_id}_{success_str}"
         )
         pathlib.Path(out_folder).mkdir(parents=True, exist_ok=True)
-        return pathlib.Path(out_folder)
+        return pathlib.Path(out_folder), next_idx
 
-    def _save_metadata(self, out_folder: pathlib.Path) -> None:
+    def _save_metadata(self, out_folder: pathlib.Path, data: _EpisodeSaveData) -> None:
         logger.info(f"Saving metadata to {out_folder / 'metadata.json'}")
         result = Result(
-            success=self._environment.current_success,
+            success=data.current_success,
             robot_idx=self._robot_idx,
-            steps_taken=len(self._timestamps),
+            steps_taken=len(data.timestamps),
             task_suite_name=self._task_suite_name,
             task_id=self._task_id,
             task_language=self._task.language,
-            episode_idx=self._environment.episode_idx,
+            episode_idx=data.episode_idx,
         )
         result.to_json(out_folder / "metadata.json")
 
-    def _save_timestamps(self, out_folder: pathlib.Path) -> None:
+    def _save_timestamps(
+        self, out_folder: pathlib.Path, data: _EpisodeSaveData
+    ) -> None:
         logger.info(f"Saving timestamps to {out_folder / 'timestamps.csv'}")
-        Timestamp.to_csv(self._timestamps, out_folder / "timestamps.csv")
+        Timestamp.to_csv(data.timestamps, out_folder / "timestamps.csv")
 
-    def _save_action_chunks(self, out_folder: pathlib.Path) -> None:
+    def _save_action_chunks(
+        self, out_folder: pathlib.Path, data: _EpisodeSaveData
+    ) -> None:
         logger.info(f"Saving action chunks to {out_folder}")
-        action_chunks = self._action_chunk_broker.action_chunks
-        ActionChunk.to_csv(action_chunks, out_folder / "action_chunks.csv")
-        ActionChunk.to_parquet(action_chunks, out_folder / "action_chunks.parquet")
+        ActionChunk.to_parquet(data.action_chunks, out_folder / "action_chunks.parquet")
 
-    def _save_video(self, out_folder: pathlib.Path) -> None:
+    def _save_video(self, out_folder: pathlib.Path, data: _EpisodeSaveData) -> None:
         logger.info(f"Saving video to {out_folder / 'out.mp4'}")
-        # Reconstruct images from observations buffer
-        images = [obs.image for obs in self._observations_buffer.values()]
+        images = [obs.image for obs in data.observations_buffer.values()]
         imageio.mimwrite(
             out_folder / "out.mp4",
             [np.asarray(x) for x in images],
             fps=self._control_hz,  # NOTE: saving in control hz fps for now
         )
 
-    def _save_debug_data(self, out_folder: pathlib.Path) -> None:
+    def _save_debug_data(
+        self, out_folder: pathlib.Path, data: _EpisodeSaveData
+    ) -> None:
         """Save debug data as a single .npz file with observations, noise, and actions."""
-        action_chunks = self._action_chunk_broker.action_chunks
-
         # Check if we have noise data
-        has_noise = any(chunk.noise is not None for chunk in action_chunks)
+        has_noise = any(chunk.noise is not None for chunk in data.action_chunks)
         if not has_noise:
             logger.debug("No debug data to save (no noise present)")
             return
@@ -175,13 +211,14 @@ class Saver(_subscriber.Subscriber):
         data_to_save = {}
 
         # Save the initial state used for this episode
-        data_to_save["initial_state"] = self._environment.current_initial_state
+        if data.initial_state is not None:
+            data_to_save["initial_state"] = data.initial_state
 
-        for i, chunk in enumerate(action_chunks):
+        for i, chunk in enumerate(data.action_chunks):
             prefix = f"chunk_{i:04d}"
 
             # Save observation that triggered this inference
-            obs = self._observations_buffer.get(chunk.observation_step)
+            obs = data.observations_buffer.get(chunk.observation_step)
             if obs is not None:
                 data_to_save[f"{prefix}/observation/state"] = obs.state
                 data_to_save[f"{prefix}/observation/image"] = obs.image
@@ -207,15 +244,19 @@ class Saver(_subscriber.Subscriber):
 
         # Save as compressed npz
         np.savez_compressed(debug_data_file, **data_to_save)
-        logger.info(f"Saved {len(action_chunks)} chunks to {debug_data_file}")
+        logger.info(f"Saved {len(data.action_chunks)} chunks to {debug_data_file}")
 
-    def _save_actions_left(self, out_folder: pathlib.Path) -> None:
+    def _save_actions_left(
+        self, out_folder: pathlib.Path, data: _EpisodeSaveData
+    ) -> None:
         path = out_folder / "actions_left.npy"
-        np.save(path, np.array(self._actions_left_snapshot, dtype=np.int32))
+        np.save(path, np.array(data.actions_left_snapshot, dtype=np.int32))
         logger.info(f"Saved actions_left to {path}")
 
-    def _save_cost_history(self, out_folder: pathlib.Path) -> None:
-        costs = np.array(self._cost_history, dtype=np.float64)
+    def _save_cost_history(
+        self, out_folder: pathlib.Path, data: _EpisodeSaveData
+    ) -> None:
+        costs = np.array(data.cost_history, dtype=np.float64)
         npy_path = out_folder / "cost_history.npy"
         np.save(npy_path, costs)
         logger.info(f"Saved cost_history to {npy_path}")

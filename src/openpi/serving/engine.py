@@ -88,6 +88,7 @@ def _run_gpu_worker(
     _last_infer_step: dict[str, int] = {}
     _prev_actions: dict[str, np.ndarray] = {}
     _action_shape: tuple[int, int] | None = None
+    _last_served_request_id: dict[str, int] = {}  # robot_id -> last sd.request_id sent as a response
 
     def _make_rtc_params(robot_id: str, start_step: int, d_param: int) -> RTCParams | None:
         nonlocal _action_shape
@@ -111,13 +112,27 @@ def _run_gpu_worker(
         # even if the slot was overwritten after the SlotRequest was enqueued.
         slot_datas = [slots.read(sr.slot_index) for sr in slot_reqs]
 
+        # Drop any slot whose request_id has already been served.  This happens when the
+        # scheduler dispatches multiple SlotRequests for the same robot before the GPU
+        # finishes the first one: both read the same (overwritten) slot and would produce
+        # two InferResponses with identical request_ids.  request_ids are monotonically
+        # increasing, so a strict > check also handles episode resets correctly.
+        fresh = [
+            (sr, sd)
+            for sr, sd in zip(slot_reqs, slot_datas, strict=True)
+            if sd.request_id > _last_served_request_id.get(sr.robot_id, 0)
+        ]
+        if not fresh:
+            continue
+        slot_reqs, slot_datas = zip(*fresh, strict=True)
+
         infer_requests = [
             InferRequest(
                 robot_id=sr.robot_id,
                 observation=sd.obs,
                 observation_step=sd.observation_step,
                 action_start_step=sd.action_start_step,
-                min_execution_horizon=sd.min_execution_horizon,
+                execution_horizon=sd.execution_horizon,
                 request_timestamp=sd.request_timestamp,
                 deadline=sd.deadline,
                 infer_type=sd.infer_type,
@@ -141,7 +156,7 @@ def _run_gpu_worker(
                 observation_step=sd.observation_step,
                 action_start_step=sd.action_start_step,
                 request_timestamp=sd.request_timestamp,
-                execution_horizon=len(action_dict["actions"]),
+                execution_horizon=sd.execution_horizon,
                 actions=action_dict["actions"],
                 noise=action_dict["noise"],
                 server_arrival_time=sd.arrival_timestamp,
@@ -159,6 +174,10 @@ def _run_gpu_worker(
                     _action_shape = prev_action.shape
                 _last_infer_step[sr.robot_id] = sd.observation_step
                 _prev_actions[sr.robot_id] = prev_action
+
+        # Record served request_ids before sending so the duplicate check stays consistent.
+        for sr, sd in zip(slot_reqs, slot_datas, strict=True):
+            _last_served_request_id[sr.robot_id] = sd.request_id
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
         response_sock.send_pyobj(responses)
