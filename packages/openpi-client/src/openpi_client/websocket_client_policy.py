@@ -22,15 +22,11 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
     See WebsocketPolicyServer for a corresponding server implementation.
     """
 
-    def __init__(
-        self,
-        robot_id: str,
-        host: str = "0.0.0.0",
-        port: Optional[int] = None,
-        api_key: Optional[str] = None,
-    ) -> None:
-        self._robot_id = robot_id
-        self._uri = f"ws://{host}"
+    def __init__(self, host: str = "0.0.0.0", port: Optional[int] = None, api_key: Optional[str] = None) -> None:
+        if host.startswith("ws"):
+            self._uri = host
+        else:
+            self._uri = f"ws://{host}"
         if port is not None:
             self._uri += f":{port}"
         self._packer = msgpack_numpy.Packer()
