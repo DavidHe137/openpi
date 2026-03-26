@@ -14,11 +14,12 @@ from openpi.training import config as _config
 class EnvMode(enum.Enum):
     """Supported environments."""
 
+
     ALOHA = "aloha"
     ALOHA_SIM = "aloha_sim"
     DROID = "droid"
     LIBERO = "libero"
-
+    REAL = "real"
 
 @dataclasses.dataclass
 class Checkpoint:
@@ -57,6 +58,10 @@ class Args:
 
 # Default checkpoints that should be used for each environment.
 DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
+    EnvMode.REAL: Checkpoint(
+        config="pi05_pick_up_the_legos",
+        dir="/storage/ice1/0/5/dhe83/openpi/checkpoints/pi05_pick_up_the_legos/test/16000",
+    ),
     EnvMode.ALOHA: Checkpoint(
         config="pi05_aloha",
         dir="gs://openpi-assets/checkpoints/pi05_base",
