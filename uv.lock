@@ -4113,8 +4113,10 @@ source = { editable = "packages/openpi-client" }
 dependencies = [
     { name = "dm-tree", version = "0.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "dm-tree", version = "0.1.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "jaxtyping" },
     { name = "msgpack" },
     { name = "numpy" },
+    { name = "pandas" },
     { name = "pillow" },
     { name = "requests" },
     { name = "tree" },
@@ -4129,8 +4131,10 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "dm-tree", specifier = ">=0.1.8" },
+    { name = "jaxtyping", specifier = ">=0.2.36" },
     { name = "msgpack", specifier = ">=1.0.5" },
     { name = "numpy", specifier = ">=1.22.4,<2.0.0" },
+    { name = "pandas", specifier = ">=2.2.3" },
     { name = "pillow", specifier = ">=9.0.0" },
     { name = "requests", specifier = ">=2.28.0" },
     { name = "tree", specifier = ">=0.2.4" },
