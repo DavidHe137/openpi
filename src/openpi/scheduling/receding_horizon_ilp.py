@@ -200,7 +200,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         if now_tick < self._server_available_tick:
             return None
 
-        schedulable = {request.robot_id: request for request in self.get_schedulable_requests()}
+        schedulable = {request.robot_id: request for request in self.schedulable_requests}
         if not schedulable:
             return None
 

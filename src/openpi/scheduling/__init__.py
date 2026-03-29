@@ -46,7 +46,7 @@ class RequestScheduler(ABC):
 
     def schedule(self) -> None:
         """Return a list of batches of requests to be sent to the GPU."""
-        candidates = self.get_schedulable_requests()
+        candidates = self.schedulable_requests
         with self.record_timing() as duration:
             batches = self.get_next_batches()
 
@@ -115,7 +115,8 @@ class RequestScheduler(ABC):
         self._decisions = []
         return samples
 
-    def get_schedulable_requests(self) -> list[SlotRequest]:
+    @property
+    def schedulable_requests(self) -> list[SlotRequest]:
         """Get all requests that have a greater action start step."""
         result = []
         for req in self._latest_requests.values():
