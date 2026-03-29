@@ -41,7 +41,7 @@ class CompletionNotification:
     action_start_step: int
     request_id: int
     batch_size: int
-    inference_duration_ms: float
+    inference_duration: float
 
 
 @dataclass(frozen=True)
@@ -56,9 +56,9 @@ class AckNotification:
 
 @dataclass(frozen=True)
 class BatchProfile:
-    """Latency profile per batch size (ms). Sent once from GPU to scheduler after warmup."""
+    """Latency profile per batch size (seconds). Sent once from GPU to scheduler after warmup."""
 
-    latency_ms: dict[int, float]
+    latencies: dict[int, float]
 
 
 @dataclass
@@ -74,7 +74,7 @@ class SchedulerDecision:
 
     scheduler_name: str
     metric_name: str
-    duration_ms: float
+    duration: float
     recorded_at: float
     candidates: list[dict] = field(default_factory=list)
     scheduled: list[dict] = field(default_factory=list)

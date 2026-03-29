@@ -164,10 +164,8 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         annotated: list[SlotRequest] = []
         for request in candidate:
             self._latest_scheduled_requests[request.robot_id] = request
-            d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
-            step_ms = 1000.0 / request.control_hz
-            d_steps = round(d_ms / step_ms) if d_ms is not None else 0
-            annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
+            total_latency_steps = self.latency.total_latency(request.robot_id, batch_size) / request.control_hz
+            annotated.append(dataclasses.replace(request, estimated_d_param=total_latency_steps))
 
         self._batch_queue.put_nowait(annotated)
         self._register_dispatched_batch(now_tick, tuple(annotated))
@@ -441,7 +439,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                 )
             )
 
-    def _infer_ms(self, batch_size: int) -> float:
+    def _infer_latency(self, batch_size: int) -> float:
         value = self.latency.infer_ms(batch_size)
         if value is None:
             value = self._batch_profile_ms.get(batch_size)
@@ -453,16 +451,16 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         return value
 
     def _infer_ticks(self, batch_size: int) -> int:
-        return self._to_ticks(self._infer_ms(batch_size), minimum=1)
+        return self._to_ticks(self._infer_latency(batch_size), minimum=1)
 
     def _send_ticks(self, robot_id: str) -> int:
-        value = self.latency.obs_network_ms(robot_id)
+        value = self.latency.observation_latency(robot_id)
         if value is None:
             return 0
         return self._to_ticks(max(0.0, value))
 
     def _recv_ticks(self, robot_id: str) -> int:
-        value = self.latency.action_delivery_ms(robot_id)
+        value = self.latency.action_latency(robot_id)
         if value is None:
             return 0
         return self._to_ticks(max(0.0, value))
@@ -496,12 +494,12 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             return 0.0
         return (time.monotonic() - self._solve_kickoff_monotonic) * 1000.0
 
-    def _record_metric(self, metric_name: str, duration_ms: float) -> None:
+    def _record_metric(self, metric_name: str, duration: float) -> None:
         self._decisions.append(
             SchedulerDecision(
                 scheduler_name=self.__class__.__name__,
                 metric_name=metric_name,
-                duration_ms=duration_ms,
+                duration=duration,
                 recorded_at=time.time(),
             )
         )

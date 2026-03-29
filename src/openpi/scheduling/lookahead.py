@@ -174,8 +174,9 @@ class LookaheadScheduler(RequestScheduler):
             raise ValueError(f"Missing batch profile entry for batch_size={batch_size}")
         return latency_ms
 
-    def _to_ticks(self, duration_ms: float) -> int:
-        return max(1, math.ceil(duration_ms / self._timestep_ms))
+    def _to_ticks(self, duration: float) -> int:
+        # FIXME: no longer in ms
+        return max(1, math.ceil(duration / self._timestep_ms))
 
     def _prune_predictions(self, now: float) -> None:
         self._predicted_valid_until = {

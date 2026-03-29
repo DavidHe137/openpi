@@ -1,11 +1,12 @@
 from abc import ABC
 from abc import abstractmethod
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 import dataclasses
 import multiprocessing as mp
 import time
 
-from openpi.scheduling.latency import LatencyTracker
+from openpi.scheduling.latency import EMALatencyTracker
 from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SchedulerDecision
@@ -21,13 +22,13 @@ class RequestScheduler(ABC):
     ):
         self._batch_queue = batch_queue
         self._max_batch_size = max_batch_size
-        self._batch_profile_ms: dict[int, float] = batch_profile or {}
+        self._batch_profile_s: dict[int, float] = batch_profile or {}
 
         self._latest_requests: dict[str, SlotRequest] = {}
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
         self._decisions: list[SchedulerDecision] = []
-        self.latency = LatencyTracker()
+        self.latency = EMALatencyTracker()  # TODO: allow different latency trackers
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
@@ -66,17 +67,15 @@ class RequestScheduler(ABC):
             for request in batch:
                 self._deadlines[request.robot_id] = request.deadline + request.execution_horizon / request.control_hz
                 self._latest_scheduled_requests[request.robot_id] = request
-                d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
-                step_ms = 1000.0 / request.control_hz
-                d_steps = round(d_ms / step_ms) if d_ms is not None else 0
-                annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
+                total_latency_steps = self.latency.total_latency(request.robot_id, batch_size) / request.control_hz
+                annotated.append(dataclasses.replace(request, estimated_d_param=total_latency_steps))
 
             # FIXME: this branch only has single batch decisions for now, will need to refactor timing for multi batch decisions
             self._decisions.append(
                 SchedulerDecision(
                     scheduler_name=self.__class__.__name__,
                     metric_name="batch_scheduled",
-                    duration_ms=duration() * 1e3,
+                    duration=duration(),
                     recorded_at=time.time(),
                     candidates=candidate_entries,
                     scheduled=batch_entries,
@@ -95,7 +94,7 @@ class RequestScheduler(ABC):
         self.latency.reset_robot(robot_id)
 
     @contextmanager
-    def record_timing(self) -> float:
+    def record_timing(self) -> Generator[Callable[[], float], None, None]:
         start = time.perf_counter()
         yield lambda: time.perf_counter() - start
 

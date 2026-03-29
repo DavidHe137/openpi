@@ -33,9 +33,9 @@ def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
             if isinstance(msg, BatchProfile):
                 logger.info(
                     "Received batch profile: {%s}",
-                    ", ".join(f"{k}: {v:.1f}ms" for k, v in sorted(msg.latency_ms.items())),
+                    ", ".join(f"{k}: {v:.1f}s" for k, v in sorted(msg.latencies.items())),
                 )
-                return msg.latency_ms
+                return msg.latencies
             logger.warning("Unexpected message before batch profile: %s", type(msg).__name__)
 
 
@@ -135,10 +135,10 @@ def _run_scheduler(
                 for client_receive_time, server_send_time in msg.delivery_samples:
                     scheduler.latency.update_action_delivery(msg.robot_id, client_receive_time, server_send_time)
                 logger.info(
-                    "Seeded latency for robot %s from warmup, obs_network_ms: %f, action_delivery_ms: %f",
+                    "Seeded latency for robot %s from warmup, observation_latency: %f, action_latency: %f",
                     msg.robot_id,
-                    scheduler.latency.obs_network_ms(msg.robot_id),
-                    scheduler.latency.action_delivery_ms(msg.robot_id),
+                    scheduler.latency.observation_latency(msg.robot_id),
+                    scheduler.latency.action_latency(msg.robot_id),
                 )
             else:
                 logger.warning("Unknown message type: %s", type(msg).__name__)

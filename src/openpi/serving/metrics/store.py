@@ -361,6 +361,7 @@ class MetricsStore(JSONDataclass):
                 )
 
             # ---- batch history for charts ----
+            # FIXME: maybe move these into their own classes
             plan_activation_abs = sorted(
                 sample.recorded_at
                 for sample in self.scheduler_decisions
@@ -473,8 +474,9 @@ class MetricsStore(JSONDataclass):
                         }
                     )
                 else:
+                    # FIXME: idk what this is
                     scheduler_timing_ms.setdefault(f"{sample.scheduler_name}.{sample.metric_name}", []).append(
-                        round(sample.duration_ms, 3)
+                        round(sample.duration * 1000, 3)
                     )
 
             # ---- task events (completed episodes in window) ----

@@ -35,11 +35,11 @@ def _profile_and_send(policy, max_batch_size: int, notify_sock: zmq.Socket) -> N
             t0 = time.perf_counter()
             policy.infer_batch([request] * batch_size)
             t1 = time.perf_counter()
-            latency = (t1 - t0) * 1e3
+            latency = t1 - t0
             latencies.append(latency)
         profile[batch_size] = sum(latencies) / len(latencies)
         logger.info("  batch_size=%d → %.1f ms", batch_size, profile[batch_size])
-    notify_sock.send_pyobj(BatchProfile(latency_ms=profile))
+    notify_sock.send_pyobj(BatchProfile(latencies=profile))
     logger.info("Sent batch profile to scheduler")
 
 
@@ -183,7 +183,7 @@ def _run_gpu_worker(
         response_sock.send_pyobj(responses)
 
         # Notify scheduler of completion so it can update latency estimates
-        inference_duration_ms = (t1 - t0) * 1e3
+        inference_duration = t1 - t0
         notify_sock.send_pyobj(
             [
                 CompletionNotification(
@@ -191,7 +191,7 @@ def _run_gpu_worker(
                     action_start_step=sd.action_start_step,
                     request_id=sd.request_id,
                     batch_size=len(slot_reqs),
-                    inference_duration_ms=inference_duration_ms,
+                    inference_duration=inference_duration,
                 )
                 for sr, sd in zip(slot_reqs, slot_datas, strict=True)
             ],
