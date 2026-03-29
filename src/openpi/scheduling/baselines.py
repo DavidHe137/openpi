@@ -13,7 +13,7 @@ class GreedyScheduler(RequestScheduler):
         if self._batch_queue.qsize() > 0:
             return []
 
-        candidates = self._get_schedulable_requests()
+        candidates = self.get_schedulable_requests()
         if not candidates:
             return []
 
@@ -59,7 +59,7 @@ class RoundRobinScheduler(RequestScheduler):
         if self._batch_queue.qsize() > 0:
             return []
 
-        candidate_by_robot = {req.robot_id: req for req in self._get_schedulable_requests()}
+        candidate_by_robot = {req.robot_id: req for req in self.get_schedulable_requests()}
         n_robots = len(self._rr_robot_order)
         if not candidate_by_robot or n_robots == 0:
             return []
@@ -94,7 +94,7 @@ class RandomBatchScheduler(RequestScheduler):
         if self._batch_queue.qsize() > 0:
             return []
 
-        candidates = list(self._get_schedulable_requests())
+        candidates = list(self.get_schedulable_requests())
         if not candidates:
             return []
 

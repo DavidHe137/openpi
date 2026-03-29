@@ -67,7 +67,7 @@ class LookaheadScheduler(RequestScheduler):
         if self._batch_queue.qsize() > 0 or now < self._server_available_at:
             return []
 
-        schedulable = self._get_schedulable_requests()
+        schedulable = self.get_schedulable_requests()
         if not schedulable:
             return []
 

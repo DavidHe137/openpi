@@ -46,7 +46,7 @@ class RequestScheduler(ABC):
 
     def schedule(self) -> None:
         """Return a list of batches of requests to be sent to the GPU."""
-        candidates = self._get_schedulable_requests()
+        candidates = self.get_schedulable_requests()
         with self.record_timing() as duration:
             batches = self.get_next_batches()
 
@@ -115,13 +115,11 @@ class RequestScheduler(ABC):
         self._decisions = []
         return samples
 
-    def _get_schedulable_requests(self) -> list[SlotRequest]:
-        """Get all requests that are not yet scheduled and past the minimum execution horizon."""
+    def get_schedulable_requests(self) -> list[SlotRequest]:
+        """Get all requests that have a greater action start step."""
         result = []
         for req in self._latest_requests.values():
             last = self._latest_scheduled_requests.get(req.robot_id)
-            if last is req:
-                continue
             if last is not None and req.action_start_step <= last.action_start_step:
                 continue
             result.append(req)
