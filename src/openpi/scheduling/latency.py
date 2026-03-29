@@ -36,29 +36,19 @@ class LatencyTracker(ABC):
     def update_action_delivery(self, robot_id: str, receive_time: float, server_send_time: float) -> None:
         self._update_measurement(self._action_latency, robot_id, receive_time - server_send_time)
 
-    def observation_latency(self, robot_id: str) -> float | None:
-        return self._observation_latency.get(robot_id)
+    # FIXME: how to make sure these are only called when these are available?
+    def observation_latency(self, robot_id: str) -> float:
+        return self._observation_latency[robot_id]
 
-    def infer_latency(self, batch_size: int) -> float | None:
-        return self._infer_latency.get(batch_size)
+    def infer_latency(self, batch_size: int) -> float:
+        return self._infer_latency[batch_size]
 
-    def action_latency(self, robot_id: str) -> float | None:
-        return self._action_latency.get(robot_id)
+    def action_latency(self, robot_id: str) -> float:
+        return self._action_latency[robot_id]
 
     def total_latency(self, robot_id: str, batch_size: int) -> float:
-        """
-        Total latency from observation timestep to robot receiving the action. Used as d param in RTC.
-
-        The robot should be fully warmed up by the time this is called, so we assert all latencies are not None.
-        """
-        observation_latency = self.observation_latency(robot_id)
-        infer_latency = self.infer_latency(batch_size)
-        action_latency = self.action_latency(robot_id)
-        assert observation_latency is not None
-        assert infer_latency is not None
-        assert action_latency is not None
-
-        return observation_latency + infer_latency + action_latency
+        """Total latency from observation timestep to robot receiving the action. Used as d param in RTC."""
+        return self.observation_latency(robot_id) + self.infer_latency(batch_size) + self.action_latency(robot_id)
 
     def reset_robot(self, robot_id: str) -> None:
         self._observation_latency.pop(robot_id, None)

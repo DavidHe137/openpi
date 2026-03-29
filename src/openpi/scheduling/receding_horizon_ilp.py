@@ -84,7 +84,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self,
         batch_queue: mp.Queue,
         max_batch_size: int = 1,
-        batch_profile: dict[int, float] | None = None,
         *,
         tick_ms: int = 10,
         horizon_steps: int = 160,
@@ -94,7 +93,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         pack_early_weight: float = 1.0,
         obs_staleness_weight: float = 0.1,
     ) -> None:
-        super().__init__(batch_queue, max_batch_size, batch_profile)
+        super().__init__(batch_queue, max_batch_size)
 
         assert tick_ms >= 1, "tick_ms must be >= 1"
         assert horizon_steps >= 1, "horizon_steps must be >= 1"
@@ -147,7 +146,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
     def update(self, request: SlotRequest) -> None:
         # ignore deadlines, maybe a todo
         self._latest_requests[request.robot_id] = request
-        self.latency.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
+        self.latency_tracker.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
 
     def schedule(self) -> None:
         if self._batch_queue.qsize() > 0:
@@ -164,7 +163,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         annotated: list[SlotRequest] = []
         for request in candidate:
             self._latest_scheduled_requests[request.robot_id] = request
-            total_latency_steps = self.latency.total_latency(request.robot_id, batch_size) / request.control_hz
+            total_latency_steps = self.latency_tracker.total_latency(request.robot_id, batch_size) / request.control_hz
             annotated.append(dataclasses.replace(request, estimated_d_param=total_latency_steps))
 
         self._batch_queue.put_nowait(annotated)
@@ -439,28 +438,17 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                 )
             )
 
-    def _infer_latency(self, batch_size: int) -> float:
-        value = self.latency.infer_ms(batch_size)
-        if value is None:
-            value = self._batch_profile_ms.get(batch_size)
-        if value is None:
-            raise RuntimeError(
-                f"Missing inference latency estimate for batch_size={batch_size}. "
-                "Warmup profile and runtime EMA are both unavailable."
-            )
-        return value
-
     def _infer_ticks(self, batch_size: int) -> int:
-        return self._to_ticks(self._infer_latency(batch_size), minimum=1)
+        return self._to_ticks(self.latency_tracker.infer_latency(batch_size), minimum=1)
 
     def _send_ticks(self, robot_id: str) -> int:
-        value = self.latency.observation_latency(robot_id)
+        value = self.latency_tracker.observation_latency(robot_id)
         if value is None:
             return 0
         return self._to_ticks(max(0.0, value))
 
     def _recv_ticks(self, robot_id: str) -> int:
-        value = self.latency.action_latency(robot_id)
+        value = self.latency_tracker.action_latency(robot_id)
         if value is None:
             return 0
         return self._to_ticks(max(0.0, value))

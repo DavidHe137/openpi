@@ -48,6 +48,7 @@ _SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
 }
 
 
+# FIXME: underscore method is a weird naming convention
 def _run_scheduler(
     sched_in_ep: str,
     result_ep: str,
@@ -103,10 +104,12 @@ def _run_scheduler(
     result_sock = ctx.socket(zmq.PULL)
     result_sock.bind(result_ep)  # GPU connects
 
-    batch_profile = _recv_batch_profile(result_sock)
-
     extra_kwargs: dict = dict(scheduler_kwargs or {})
-    scheduler = cls(batch_queue, max_batch_size=max_batch_size, batch_profile=batch_profile, **extra_kwargs)
+    scheduler = cls(batch_queue, max_batch_size=max_batch_size, **extra_kwargs)
+
+    batch_profile = _recv_batch_profile(result_sock)
+    for batch_size, latency in batch_profile.items():
+        scheduler.latency_tracker.update_infer(batch_size, latency)
 
     poller = zmq.Poller()
     poller.register(req_sock, zmq.POLLIN)
@@ -131,14 +134,16 @@ def _run_scheduler(
                 logger.debug("Received ack notification: %s", msg)
             elif isinstance(msg, WarmupSeed):
                 for arrival_ts, request_ts in msg.obs_samples:
-                    scheduler.latency.update_obs(msg.robot_id, arrival_ts, request_ts)
+                    scheduler.latency_tracker.update_obs(msg.robot_id, arrival_ts, request_ts)
                 for client_receive_time, server_send_time in msg.delivery_samples:
-                    scheduler.latency.update_action_delivery(msg.robot_id, client_receive_time, server_send_time)
+                    scheduler.latency_tracker.update_action_delivery(
+                        msg.robot_id, client_receive_time, server_send_time
+                    )
                 logger.info(
                     "Seeded latency for robot %s from warmup, observation_latency: %f, action_latency: %f",
                     msg.robot_id,
-                    scheduler.latency.observation_latency(msg.robot_id),
-                    scheduler.latency.action_latency(msg.robot_id),
+                    scheduler.latency_tracker.observation_latency(msg.robot_id),
+                    scheduler.latency_tracker.action_latency(msg.robot_id),
                 )
             else:
                 logger.warning("Unknown message type: %s", type(msg).__name__)

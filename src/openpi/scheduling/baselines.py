@@ -17,6 +17,7 @@ class GreedyScheduler(RequestScheduler):
         if not candidates:
             return []
 
+        # FIXME: should definitely account for network latency
         candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
         earliest_deadline = self._deadlines.get(candidates[0].robot_id, candidates[0].deadline)
         batch_size = self.get_largest_batch_size(earliest_deadline)
@@ -26,16 +27,15 @@ class GreedyScheduler(RequestScheduler):
         """Return the largest batch size whose profiled latency fits within the time remaining until deadline."""
         time_remaining = deadline - time.time()
         for batch_size in range(self._max_batch_size, 0, -1):
-            if self._batch_profile_ms.get(batch_size, 0) <= time_remaining:
+            if self.latency_tracker.infer_latency(batch_size) <= time_remaining:
                 return batch_size
         return self.most_efficient_batch_size
 
     @property
     def most_efficient_batch_size(self) -> int:
         """Batch size with the best throughput (requests / ms). Falls back to 1."""
-        if not self._batch_profile_ms:
-            return 1
-        return max(self._batch_profile_ms, key=lambda bs: bs / self._batch_profile_ms[bs])
+        # FIXME: need to account for inference latency?
+        return max(range(1, self._max_batch_size + 1), key=lambda bs: bs / self.latency_tracker.infer_latency(bs))
 
 
 class RoundRobinScheduler(RequestScheduler):
@@ -45,9 +45,8 @@ class RoundRobinScheduler(RequestScheduler):
         self,
         batch_queue: mp.Queue,
         max_batch_size: int = 1,
-        batch_profile: dict[int, float] | None = None,
     ):
-        super().__init__(batch_queue, max_batch_size, batch_profile)
+        super().__init__(batch_queue, max_batch_size)
         self._rr_index: int = 0
         self._rr_robot_order: list[str] = []
 

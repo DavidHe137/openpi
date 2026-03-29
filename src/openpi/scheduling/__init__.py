@@ -18,29 +18,27 @@ class RequestScheduler(ABC):
         self,
         batch_queue: mp.Queue,
         max_batch_size: int = 1,
-        batch_profile: dict[int, float] | None = None,
     ):
         self._batch_queue = batch_queue
         self._max_batch_size = max_batch_size
-        self._batch_profile_s: dict[int, float] = batch_profile or {}
 
         self._latest_requests: dict[str, SlotRequest] = {}
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
         self._decisions: list[SchedulerDecision] = []
-        self.latency = EMALatencyTracker()  # TODO: allow different latency trackers
+        self.latency_tracker = EMALatencyTracker()  # TODO: allow different latency trackers
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
         if request.deadline is not None and request.deadline > self._deadlines.get(request.robot_id, 0):
             self._deadlines[request.robot_id] = request.deadline
-        self.latency.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
+        self.latency_tracker.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
 
     def update_completion(self, notification: CompletionNotification) -> None:
-        self.latency.update_infer(notification.batch_size, notification.inference_duration_ms)
+        self.latency_tracker.update_infer(notification.batch_size, notification.inference_duration_ms)
 
     def update_ack(self, notification: AckNotification) -> None:
-        self.latency.update_action_delivery(
+        self.latency_tracker.update_action_delivery(
             notification.robot_id,
             notification.receive_time,
             notification.server_send_time,
@@ -56,18 +54,32 @@ class RequestScheduler(ABC):
             batch_size = len(batch)
             # Capture deadlines before the loop overwrites them, sort earliest first.
             candidate_entries = sorted(
-                ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in candidates),
+                (
+                    {
+                        "robot_id": r.robot_id,
+                        "deadline": self._deadlines.get(r.robot_id, r.deadline),
+                    }
+                    for r in candidates
+                ),
                 key=lambda x: x["deadline"],
             )
             batch_entries = sorted(
-                ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in batch),
+                (
+                    {
+                        "robot_id": r.robot_id,
+                        "deadline": self._deadlines.get(r.robot_id, r.deadline),
+                    }
+                    for r in batch
+                ),
                 key=lambda x: x["deadline"],
             )
             annotated = []
             for request in batch:
                 self._deadlines[request.robot_id] = request.deadline + request.execution_horizon / request.control_hz
                 self._latest_scheduled_requests[request.robot_id] = request
-                total_latency_steps = self.latency.total_latency(request.robot_id, batch_size) / request.control_hz
+                total_latency_steps = (
+                    self.latency_tracker.total_latency(request.robot_id, batch_size) / request.control_hz
+                )
                 annotated.append(dataclasses.replace(request, estimated_d_param=total_latency_steps))
 
             # FIXME: this branch only has single batch decisions for now, will need to refactor timing for multi batch decisions
@@ -91,7 +103,7 @@ class RequestScheduler(ABC):
         self._deadlines.pop(robot_id, None)
         self._latest_requests.pop(robot_id, None)
         self._latest_scheduled_requests.pop(robot_id, None)
-        self.latency.reset_robot(robot_id)
+        self.latency_tracker.reset_robot(robot_id)
 
     @contextmanager
     def record_timing(self) -> Generator[Callable[[], float], None, None]:
