@@ -127,7 +127,6 @@ def create_policy(args: Args) -> _policy.Policy:
                 batch_size=args.max_batch_size,
             )
         case Default():
-            print(type(args.policy))
             return create_default_policy(
                 args.env,
                 batch_size=args.max_batch_size,
