@@ -64,13 +64,7 @@ class Args:
     log_dir: str = "logs/server"
 
     # Scheduling algorithm for batching requests. # TODO: maybe should use enum?
-    scheduling_algorithm: Literal[
-        "greedy",
-        "lookahead",
-        "round_robin",
-        "random",
-        "receding_horizon_ilp",
-    ] = "greedy"
+    scheduling_algorithm: Literal["greedy", "lookahead", "round_robin", "random", "receding_horizon_ilp"] = "greedy"
 
     # Lookahead rollout horizon in milliseconds.
     lookahead_horizon_ms: int = 500

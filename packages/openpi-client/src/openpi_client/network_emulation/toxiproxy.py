@@ -24,6 +24,31 @@ NetworkEmulationConfig = ExperimentConfig
 WorkerNetworkContext = Dict[str, Any]
 
 
+def robot_profile_disables_network_emulation(robot_cfg: Dict[str, Any]) -> bool:
+    return (
+        float(robot_cfg["uplink_median_ms"]) == 0.0
+        and float(robot_cfg["uplink_sigma"]) == 0.0
+        and float(robot_cfg["downlink_median_ms"]) == 0.0
+        and float(robot_cfg["downlink_sigma"]) == 0.0
+    )
+
+
+def experiment_requires_network_emulation(
+    config: ExperimentConfig,
+    worker_count: Optional[int] = None,
+) -> bool:
+    robots_cfg = config["robots"]
+    max_workers = int(config["experiment"]["num_robots"]) if worker_count is None else int(worker_count)
+    for idx in range(max(0, max_workers)):
+        robot_id = f"robot_{idx}"
+        robot_cfg = robots_cfg.get(robot_id)
+        if robot_cfg is None:
+            continue
+        if not robot_profile_disables_network_emulation(robot_cfg):
+            return True
+    return False
+
+
 def load_experiment_config(path: Union[str, pathlib.Path]) -> ExperimentConfig:
     """Load and validate experiment config, returning a normalized dict."""
 
@@ -362,11 +387,14 @@ class NetworkEmulationManager:
                 "seed": int(seed),
                 "resample_every_requests": int(sampling_cfg["resample_every_requests"]),
                 "trace_path": str(self._output_dir / f"{robot_id}_latency_trace.jsonl"),
+                "emulate_network": not robot_profile_disables_network_emulation(robot_cfg),
             }
             self._worker_contexts[robot_id] = context
 
         upstream = f"{self._upstream_host}:{self._upstream_port}"
         for context in self._worker_contexts.values():
+            if not bool(context.get("emulate_network", True)):
+                continue
             proxy_name = str(context["proxy_name"])
             listen = f"{context['proxy_host']}:{context['proxy_port']}"
             self._controller.create_proxy(proxy_name, listen=listen, upstream=upstream)

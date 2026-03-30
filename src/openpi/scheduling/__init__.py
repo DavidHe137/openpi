@@ -18,8 +18,6 @@ class RequestScheduler(ABC):
         batch_queue: mp.Queue,
         max_batch_size: int = 1,
         batch_profile: dict[int, float] | None = None,
-        *,
-        latency_alpha: float = 0.1,
     ):
         self._batch_queue = batch_queue
         self._max_batch_size = max_batch_size
@@ -29,7 +27,7 @@ class RequestScheduler(ABC):
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
         self._decisions: list[SchedulerDecision] = []
-        self.latency = LatencyTracker(alpha=latency_alpha)
+        self.latency = LatencyTracker()
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request

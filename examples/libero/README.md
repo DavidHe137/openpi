@@ -69,18 +69,13 @@ python examples/libero/main_multi_robot_runtime.py \
     --control-hz 20 \
     --output-dir data/libero/multi_robot_videos
 
-# Optional: deterministic heterogeneous network emulation with toxiproxy.
-# Provide a unified experiment config with runtime + per-robot uplink/downlink log-normal params.
+# deterministic heterogeneous network emulation with toxiproxy.
 python examples/libero/main_multi_robot_runtime.py \
     --host <host_name> \
     --overwrite \
     --output-dir data/libero/multi_robot_videos \
     --experiment-config examples/libero/experiment_config.example.jsonc \
     --toxiproxy-server-bin /abs/path/toxiproxy-server
-
-# Network emulation artifacts are saved under:
-#   <output-dir>/network_emulation/resolved_config.json
-#   <output-dir>/network_emulation/robot_<id>_latency_trace.jsonl
 
 python examples/libero/combine_videos.py \
     --output-dir data/libero/multi_robot_videos

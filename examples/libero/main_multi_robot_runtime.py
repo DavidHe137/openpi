@@ -22,6 +22,7 @@ from openpi_client.network_emulation import load_experiment_config
 from openpi_client.network_emulation import NetworkEmulationManager
 from openpi_client.network_emulation import RobotNetworkHook
 from openpi_client.network_emulation import WorkerNetworkContext
+from openpi_client.network_emulation import experiment_requires_network_emulation
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import ActionChunkBrokerType, BrokerConfig
@@ -188,10 +189,11 @@ def _robot_worker(worker_args: _WorkerArgs) -> None:
             raise RuntimeError(
                 f"Missing network context for worker robot_id={robot_id}"
             )
-        ws_host = str(context["proxy_host"])
-        ws_port = int(context["proxy_port"])
-        network_hook = RobotNetworkHook(context)
-        pre_send_hook = network_hook.before_send
+        if bool(context.get("emulate_network", True)):
+            ws_host = str(context["proxy_host"])
+            ws_port = int(context["proxy_port"])
+            network_hook = RobotNetworkHook(context)
+            pre_send_hook = network_hook.before_send
 
     ws_client = BidirectionalWebsocket(
         robot_id=robot_id,
@@ -393,10 +395,6 @@ def validate_args(args: Args) -> None:
 def main(args: Args) -> None:
     experiment_config = None
     if args.experiment_config is not None:
-        if not args.toxiproxy_server_bin:
-            raise ValueError(
-                "--toxiproxy-server-bin is required when --experiment-config is set"
-            )
         experiment_config = load_experiment_config(args.experiment_config)
         _apply_experiment_config(args, experiment_config)
         logging.info(
@@ -434,23 +432,39 @@ def main(args: Args) -> None:
     network_manager = None
     network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None
     if experiment_config is not None:
-        network_output_dir = args.output_dir / "network_emulation"
-        network_manager = NetworkEmulationManager(
-            experiment_config,
-            toxiproxy_server_bin=str(args.toxiproxy_server_bin),
-            upstream_host=args.host,
-            upstream_port=args.port,
-            worker_count=active_workers,
-            output_dir=network_output_dir,
-        )
-        try:
-            network_worker_contexts = network_manager.start()
-        except Exception:
-            network_manager.close()
-            raise
-        logging.info(
-            "Network emulation enabled for %d worker(s)", len(network_worker_contexts)
-        )
+        if experiment_requires_network_emulation(
+            experiment_config, worker_count=active_workers
+        ):
+            if not args.toxiproxy_server_bin:
+                raise ValueError(
+                    "--toxiproxy-server-bin is required when experiment config enables network emulation"
+                )
+            network_output_dir = args.output_dir / "network_emulation"
+            network_manager = NetworkEmulationManager(
+                experiment_config,
+                toxiproxy_server_bin=str(args.toxiproxy_server_bin),
+                upstream_host=args.host,
+                upstream_port=args.port,
+                worker_count=active_workers,
+                output_dir=network_output_dir,
+            )
+            try:
+                network_worker_contexts = network_manager.start()
+            except Exception:
+                network_manager.close()
+                raise
+            logging.info(
+                "Network emulation enabled for %d worker(s)",
+                sum(
+                    1
+                    for context in network_worker_contexts.values()
+                    if bool(context.get("emulate_network", True))
+                ),
+            )
+        else:
+            logging.info(
+                "Network emulation disabled: all active robots have zero uplink/downlink medians and sigmas"
+            )
 
     runtime_metadata = RuntimeMetadata(
         task_suite_name=args.task_suite_name,
