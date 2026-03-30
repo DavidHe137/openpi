@@ -18,6 +18,11 @@ import time
 import numpy as np
 from libero.libero import benchmark
 from openpi_client.client import BidirectionalWebsocket
+from openpi_client.network_emulation import load_experiment_config
+from openpi_client.network_emulation import NetworkEmulationManager
+from openpi_client.network_emulation import RobotNetworkHook
+from openpi_client.network_emulation import WorkerNetworkContext
+from openpi_client.network_emulation import experiment_requires_network_emulation
 from openpi_client.runtime import runtime as _runtime, subscriber as _subscriber
 from openpi_client.runtime.agents import policy_agent as _policy_agent
 from openpi_client.action_chunkers import ActionChunkBrokerType, BrokerConfig
@@ -49,9 +54,6 @@ class Args:
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
     execution_horizon: List[int] = field(default_factory=list)
-    latency_ms: List[float] = field(
-        default_factory=list
-    )  # Optional per-robot artificial latency (ms); length <= num_robots
 
     #################################################################################################################
     # LIBERO environment-specific parameters
@@ -67,6 +69,14 @@ class Args:
     control_hz: int = 20  # Target control frequency for each sim #NOTE: int because this is the fps of the video
 
     #################################################################################################################
+    # Network emulation parameters
+    #################################################################################################################
+    experiment_config: Optional[str] = None
+    toxiproxy_server_bin: Optional[str] = (
+        "/coc/flash7/rbansal66/vvla/toxiproxy-server-linux-amd64"
+    )
+
+    #################################################################################################################
     # Utils
     #################################################################################################################
     seed: int = 7  # Random Seed (for reproducibility)
@@ -75,12 +85,6 @@ class Args:
     progress_type: Literal["verbose", "concise", "logging", None] = "verbose"
     log_dir: Optional[pathlib.Path] = None
     debug: bool = False  # Run in single process with immediate progress output
-
-    # FIXME: naming/convention on this
-    def latency_for_robot(self, robot_idx: int) -> float:
-        if not self.latency_ms:
-            return 0.0
-        return float(self.latency_ms[robot_idx])
 
     def execution_horizon_for_robot(self, robot_idx: int) -> int:
         if not self.execution_horizon:
@@ -92,19 +96,44 @@ class Args:
         return f"http://{self.host}:{self.port}"
 
 
+def _apply_experiment_config(args: Args, experiment_config: Dict[str, object]) -> None:
+    """Apply experiment config settings onto runtime args."""
+    experiment = experiment_config["experiment"]
+    robots = experiment_config["robots"]
+    if not isinstance(experiment, dict) or not isinstance(robots, dict):
+        raise ValueError("Experiment config is malformed")
+
+    args.action_chunk_broker_type = ActionChunkBrokerType.from_string(
+        str(experiment["action_chunk_broker_type"])
+    )
+    args.num_robots = int(experiment["num_robots"])
+    args.num_trials_per_task = int(experiment["trials_per_robot"])
+    args.execution_horizon = [
+        int(robots[f"robot_{idx}"]["execution_horizon"])
+        for idx in range(args.num_robots)
+    ]
+
+
 # Shared worker state: set via pool initializer so these are inherited by spawned
 # processes rather than pickled as task arguments (multiprocessing.Queue and Barrier
 # cannot be pickled after spawning).
 _episode_queue: Optional[Any] = None
 _progress_queue: Optional[Any] = None
 _start_barrier: Optional[Any] = None
+_network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None
 
 
-def _init_worker_shared(episode_queue, progress_queue, start_barrier) -> None:
-    global _episode_queue, _progress_queue, _start_barrier
+def _init_worker_shared(
+    episode_queue,
+    progress_queue,
+    start_barrier,
+    network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None,
+) -> None:
+    global _episode_queue, _progress_queue, _start_barrier, _network_worker_contexts
     _episode_queue = episode_queue
     _progress_queue = progress_queue
     _start_barrier = start_barrier
+    _network_worker_contexts = network_worker_contexts
 
 
 @dataclass
@@ -145,14 +174,33 @@ def _robot_worker(worker_args: _WorkerArgs) -> None:
     """Worker process: initialize, then pull episodes from the shared queue until empty."""
     args = worker_args.args
     robot_idx = worker_args.robot_idx
+    robot_id = f"robot_{robot_idx}"
 
     # Stagger startup to avoid flooding the server with simultaneous warmup.
     time.sleep(robot_idx * 0.5)
 
+    ws_host = args.host
+    ws_port = args.port
+    pre_send_hook = None
+    network_hook = None
+    if _network_worker_contexts is not None:
+        context = _network_worker_contexts.get(robot_id)
+        if context is None:
+            raise RuntimeError(
+                f"Missing network context for worker robot_id={robot_id}"
+            )
+        if bool(context.get("emulate_network", True)):
+            ws_host = str(context["proxy_host"])
+            ws_port = int(context["proxy_port"])
+            network_hook = RobotNetworkHook(context)
+            pre_send_hook = network_hook.before_send
+
     ws_client = BidirectionalWebsocket(
-        robot_id=f"robot_{robot_idx}",
-        host=args.host,
-        port=args.port,
+        robot_id=robot_id,
+        host=ws_host,
+        port=ws_port,
+        control_hz=float(args.control_hz),
+        pre_send_hook=pre_send_hook,
     )
     config = BrokerConfig(
         ws_client=ws_client,
@@ -170,73 +218,83 @@ def _robot_worker(worker_args: _WorkerArgs) -> None:
     # Single instance reused across episodes so _done persists across iterations.
     startup_sync = _StartupSyncSubscriber()
 
-    while True:
-        try:
-            episode = _episode_queue.get_nowait()
-        except queue.Empty:
-            break
+    try:
+        while True:
+            try:
+                episode = _episode_queue.get_nowait()
+            except queue.Empty:
+                break
 
-        raw_env, _ = utils._get_libero_env(
-            task_suite.get_task(episode.task_id),
-            seed=args.seed + robot_idx,
-        )
-        env = LiberoSimEnvironment(
-            env=raw_env,
-            task_description=episode.task.language,
-            initial_states=np.array([episode.initial_state]),
-            resize_size=args.resize_size,
-            max_episode_steps=args.max_steps,
-            control_hz=args.control_hz,
-        )
+            raw_env, _ = utils._get_libero_env(
+                task_suite.get_task(episode.task_id),
+                seed=args.seed + robot_idx,
+            )
+            env = LiberoSimEnvironment(
+                env=raw_env,
+                task_description=episode.task.language,
+                initial_states=np.array([episode.initial_state]),
+                resize_size=args.resize_size,
+                max_episode_steps=args.max_steps,
+                control_hz=args.control_hz,
+            )
 
-        subscribers: List[_subscriber.Subscriber] = [
-            startup_sync,
-            Saver(
-                out_dir=args.output_dir,
-                environment=env,
-                action_chunk_broker=broker,
-                task_suite_name=episode.task_suite_name,
-                task_id=episode.task_id,
-                task=episode.task,
-                robot_idx=robot_idx,
-            ),
-            TaskMetricsPublisher(
-                ws_client=ws_client,
-                environment=env,
-                task_suite_name=episode.task_suite_name,
-                task_id=episode.task_id,
-                task=episode.task,
-            ),
-            ProgressSubscriber(
-                queue=_progress_queue,
-                robot_idx=robot_idx,
-                episode=episode,
-                environment=env,
-                update_frequency=10,
-            ),
-        ]
+            subscribers: List[_subscriber.Subscriber] = [
+                startup_sync,
+                Saver(
+                    out_dir=args.output_dir,
+                    environment=env,
+                    action_chunk_broker=broker,
+                    task_suite_name=episode.task_suite_name,
+                    task_id=episode.task_id,
+                    task=episode.task,
+                    robot_idx=robot_idx,
+                ),
+                TaskMetricsPublisher(
+                    ws_client=ws_client,
+                    environment=env,
+                    task_suite_name=episode.task_suite_name,
+                    task_id=episode.task_id,
+                    task=episode.task,
+                ),
+            ]
+            if _progress_queue is not None:
+                subscribers.append(
+                    ProgressSubscriber(
+                        queue=_progress_queue,
+                        robot_idx=robot_idx,
+                        episode=episode,
+                        environment=env,
+                        update_frequency=10,
+                    )
+                )
 
-        runtime = _runtime.Runtime(
-            environment=env,
-            agent=agent,
-            subscribers=subscribers,
-            max_hz=args.control_hz,
-            num_episodes=1,
-            max_episode_steps=env._max_episode_steps,  # type: ignore[attr-defined]
-        )
-        runtime.run()
-        runtime.close()
+            runtime = _runtime.Runtime(
+                environment=env,
+                agent=agent,
+                subscribers=subscribers,
+                max_hz=args.control_hz,
+                num_episodes=1,
+                max_episode_steps=env._max_episode_steps,  # type: ignore[attr-defined]
+            )
+            runtime.run()
+            runtime.close()
+    finally:
+        if network_hook is not None:
+            network_hook.close()
 
 
 def run_robots(
-    args: Args, episodes: List[Episode], server_metadata: ServerMetadata
+    args: Args,
+    episodes: List[Episode],
+    server_metadata: ServerMetadata,
+    network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None,
 ) -> None:
     if args.debug:
         # Debug mode: single process for pdb compatibility, no progress manager.
         ep_queue: queue.Queue = queue.Queue()
         for ep in episodes:
             ep_queue.put(ep)
-        _init_worker_shared(ep_queue, None, None)
+        _init_worker_shared(ep_queue, None, None, network_worker_contexts)
         _robot_worker(
             _WorkerArgs(args=args, server_metadata=server_metadata, robot_idx=0)
         )
@@ -264,7 +322,12 @@ def run_robots(
             with multiprocessing.Pool(
                 processes=active_workers,
                 initializer=_init_worker_shared,
-                initargs=(mp_episode_queue, progress_manager.queue, start_barrier),
+                initargs=(
+                    mp_episode_queue,
+                    progress_manager.queue,
+                    start_barrier,
+                    network_worker_contexts,
+                ),
             ) as pool:
                 try:
                     # use imap_unordered so that exceptions surface immediately
@@ -317,9 +380,6 @@ def validate_args(args: Args) -> None:
     assert args.overwrite or not args.output_dir.exists(), (
         f"Output path {args.output_dir} already exists"
     )
-    assert not args.latency_ms or len(args.latency_ms) == args.num_robots, (
-        f"latency_ms must either be empty or have exactly {args.num_robots} values (one per robot), but got {len(args.latency_ms)} values"
-    )
     assert (
         not args.execution_horizon or len(args.execution_horizon) == args.num_robots
     ), (
@@ -333,11 +393,23 @@ def validate_args(args: Args) -> None:
 
 
 def main(args: Args) -> None:
+    experiment_config = None
+    if args.experiment_config is not None:
+        experiment_config = load_experiment_config(args.experiment_config)
+        _apply_experiment_config(args, experiment_config)
+        logging.info(
+            "Loaded experiment config from %s: mode=%s num_robots=%d trials_per_robot=%d",
+            args.experiment_config,
+            args.action_chunk_broker_type.value,
+            args.num_robots,
+            args.num_trials_per_task,
+        )
+
     validate_args(args)
 
     if args.overwrite:
         shutil.rmtree(args.output_dir, ignore_errors=True)
-        args.output_dir.mkdir(parents=True, exist_ok=True)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.log_dir is not None:
         log_file_name = f"libero_multi_robot_runtime_{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
@@ -355,6 +427,44 @@ def main(args: Args) -> None:
     episodes = create_episodes(args.task_suite_name, args.num_trials_per_task)
 
     server_metadata = fetch_server_metadata(args)
+    active_workers = 1 if args.debug else min(args.num_robots, len(episodes))
+
+    network_manager = None
+    network_worker_contexts: Optional[Dict[str, WorkerNetworkContext]] = None
+    if experiment_config is not None:
+        if experiment_requires_network_emulation(
+            experiment_config, worker_count=active_workers
+        ):
+            if not args.toxiproxy_server_bin:
+                raise ValueError(
+                    "--toxiproxy-server-bin is required when experiment config enables network emulation"
+                )
+            network_output_dir = args.output_dir / "network_emulation"
+            network_manager = NetworkEmulationManager(
+                experiment_config,
+                toxiproxy_server_bin=str(args.toxiproxy_server_bin),
+                upstream_host=args.host,
+                upstream_port=args.port,
+                worker_count=active_workers,
+                output_dir=network_output_dir,
+            )
+            try:
+                network_worker_contexts = network_manager.start()
+            except Exception:
+                network_manager.close()
+                raise
+            logging.info(
+                "Network emulation enabled for %d worker(s)",
+                sum(
+                    1
+                    for context in network_worker_contexts.values()
+                    if bool(context.get("emulate_network", True))
+                ),
+            )
+        else:
+            logging.info(
+                "Network emulation disabled: all active robots have zero uplink/downlink medians and sigmas"
+            )
 
     runtime_metadata = RuntimeMetadata(
         task_suite_name=args.task_suite_name,
@@ -365,7 +475,6 @@ def main(args: Args) -> None:
         broker_type=args.action_chunk_broker_type.value,
         seed=args.seed,
         resize_size=args.resize_size,
-        latency_ms=args.latency_ms,
         episodes=[str(ep) for ep in episodes],
         execution_horizon=args.execution_horizon,
     )
@@ -379,7 +488,16 @@ def main(args: Args) -> None:
     logging.info(f"Saved server metadata to {args.output_dir / 'server_metadata.json'}")
 
     reset_server(args)
-    run_robots(args, episodes, server_metadata)
+    try:
+        run_robots(
+            args,
+            episodes,
+            server_metadata,
+            network_worker_contexts=network_worker_contexts,
+        )
+    finally:
+        if network_manager is not None:
+            network_manager.close()
 
     save_server_metrics_history(args)
 
