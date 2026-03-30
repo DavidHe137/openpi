@@ -38,7 +38,7 @@ def _profile_and_send(policy, max_batch_size: int, notify_sock: zmq.Socket) -> N
             latency = t1 - t0
             latencies.append(latency)
         profile[batch_size] = sum(latencies) / len(latencies)
-        logger.info("  batch_size=%d → %.1f ms", batch_size, profile[batch_size])
+        logger.info("  batch_size=%d: %.1f ms", batch_size, profile[batch_size] * 1000)
     notify_sock.send_pyobj(BatchProfile(latencies=profile))
     logger.info("Sent batch profile to scheduler")
 
