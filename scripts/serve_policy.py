@@ -68,19 +68,9 @@ class Args:
         "greedy",
         "lookahead",
         "round_robin",
-        "wdrr",
         "random",
         "receding_horizon_ilp",
     ] = "greedy"
-
-    # Shared knobs for fairness/cost-aware schedulers.
-    scheduler_ema_alpha: float = 0.3
-    scheduler_lambda_age: float = 0.002
-    scheduler_lambda_debt: float = 0.004
-    scheduler_service_window_decisions: int = 8
-
-    # WDRR knobs.
-    wdrr_q0: float = 1.0
 
     # Lookahead rollout horizon in milliseconds.
     lookahead_horizon_ms: int = 500
@@ -153,15 +143,6 @@ def create_policy(args: Args) -> _policy.Policy:
 
 
 def build_scheduler_kwargs(args: Args, *, action_horizon_steps: int) -> dict[str, object] | None:
-    if args.scheduling_algorithm == "wdrr":
-        return {
-            "scheduler_ema_alpha": args.scheduler_ema_alpha,
-            "scheduler_lambda_age": args.scheduler_lambda_age,
-            "scheduler_lambda_debt": args.scheduler_lambda_debt,
-            "scheduler_service_window_decisions": args.scheduler_service_window_decisions,
-            "wdrr_q0": args.wdrr_q0,
-        }
-
     if args.scheduling_algorithm == "lookahead":
         return {
             "horizon_ms": args.lookahead_horizon_ms,

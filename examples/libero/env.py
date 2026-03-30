@@ -10,6 +10,7 @@ from typing import List
 from typing_extensions import override
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
+NUM_STEPS_WAIT = 10
 
 
 @dataclass
@@ -37,7 +38,6 @@ class LiberoSimEnvironment(_environment.Environment):
         initial_states: np.ndarray,
         *,
         resize_size: int = 224,
-        num_steps_wait: int = 10,
         max_episode_steps: int = 300,
         control_hz: float = 100.0,
     ) -> None:
@@ -45,7 +45,6 @@ class LiberoSimEnvironment(_environment.Environment):
         self._task_description = task_description
         self._initial_states = initial_states
         self._resize_size = resize_size
-        self._num_steps_wait = num_steps_wait
         self._max_episode_steps = max_episode_steps
         self._control_hz = control_hz
 
@@ -67,7 +66,7 @@ class LiberoSimEnvironment(_environment.Environment):
         obs = self._env.set_init_state(self._initial_states[self._episode_idx])
 
         # Let objects fall / settle
-        for _ in range(self._num_steps_wait):
+        for _ in range(self.NUM_STEPS_WAIT):
             obs, _, _, _ = self._env.step(LIBERO_DUMMY_ACTION)
 
         self._last_obs = obs
@@ -112,7 +111,7 @@ class LiberoSimEnvironment(_environment.Environment):
         )
 
     def apply_action(self, action: Action) -> None:
-        """Take one low-level action step in the LIBERO simulator."""
+        """Take one or more low-level action steps in the LIBERO simulator."""
         act = action.action
 
         # Always execute at least one step with the new action

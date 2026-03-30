@@ -12,7 +12,6 @@ from openpi.scheduling import RequestScheduler
 from openpi.scheduling.baselines import GreedyScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
-from openpi.scheduling.baselines import WDRRScheduler
 from openpi.scheduling.lookahead import LookaheadScheduler
 from openpi.scheduling.receding_horizon_ilp import RecedingHorizonILPScheduler
 from openpi.serving.schemas import AckNotification
@@ -44,7 +43,6 @@ _SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
     "greedy": GreedyScheduler,
     "lookahead": LookaheadScheduler,
     "round_robin": RoundRobinScheduler,
-    "wdrr": WDRRScheduler,
     "random": RandomBatchScheduler,
     "receding_horizon_ilp": RecedingHorizonILPScheduler,
 }

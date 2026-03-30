@@ -4,7 +4,7 @@ vs. number of robots, with one line per scheduler.
 
 Usage:
     uv run python plot_sweep_schedulers.py [--data-dir DATA_DIR] [--out-dir OUT_DIR]
-    uv run python plot_sweep_schedulers.py --h0-data-dir DIR0 --h1-data-dir DIR1 [--out-dir OUT_DIR]
+    compare two runs: uv run python plot_sweep_schedulers.py --h0-data-dir DIR0 --h1-data-dir DIR1 [--out-dir OUT_DIR]
 """
 
 import argparse
@@ -23,14 +23,12 @@ import pandas as pd
 SCHEDULER_STYLES = {
     "greedy": {"color": "#555555", "marker": "o", "linestyle": "-"},
     "round_robin": {"color": "#e05c5c", "marker": "s", "linestyle": "-"},
-    "wdrr": {"color": "#d18f1b", "marker": "P", "linestyle": "-"},
     "lookahead": {"color": "#1f77b4", "marker": "^", "linestyle": "-"},
 }
 
 SCHEDULER_LABELS = {
     "greedy": "Greedy",
     "round_robin": "Round Robin",
-    "wdrr": "WDRR",
     "lookahead": "Lookahead",
 }
 

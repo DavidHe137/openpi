@@ -24,56 +24,16 @@ NETWORK_FIELDS = (
     "downlink_median_ms",
     "downlink_sigma",
 )
-REQUIRED_PROFILE_FIELDS = (*NETWORK_FIELDS, "execution_horizon")
-
-
-def _read_json_object(path: pathlib.Path, *, name: str) -> Dict[str, Any]:
-    try:
-        raw = json.loads(path.read_text())
-    except FileNotFoundError as exc:
-        raise ValueError(f"{name} not found: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{name} is not valid JSON: {path}: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ValueError(f"{name} must be a JSON object: {path}")
-    return raw
-
-
-def _validate_k(k: float) -> float:
-    if not (0.0 <= k <= 1.0):
-        raise ValueError(f"--heterogeneity-k must be in [0, 1], got {k}")
-    return float(k)
-
-
-def _validate_num_robots(num_robots: int) -> int:
-    if num_robots <= 0:
-        raise ValueError(f"--num-robots must be > 0, got {num_robots}")
-    return int(num_robots)
 
 
 def load_homogeneous_robot_profile(path: pathlib.Path) -> Dict[str, Any]:
-    profile = _read_json_object(path, name="homogeneous robot profile")
-    missing = [field for field in REQUIRED_PROFILE_FIELDS if field not in profile]
-    if missing:
-        joined = ", ".join(missing)
-        raise ValueError(f"homogeneous robot profile missing required fields: {joined}")
+    profile = json.loads(path.read_text())
 
     uplink_median = float(profile["uplink_median_ms"])
     uplink_sigma = float(profile["uplink_sigma"])
     downlink_median = float(profile["downlink_median_ms"])
     downlink_sigma = float(profile["downlink_sigma"])
     execution_horizon = int(profile["execution_horizon"])
-
-    if uplink_median < 0:
-        raise ValueError("homogeneous uplink_median_ms must be >= 0")
-    if uplink_sigma < 0:
-        raise ValueError("homogeneous uplink_sigma must be >= 0")
-    if downlink_median < 0:
-        raise ValueError("homogeneous downlink_median_ms must be >= 0")
-    if downlink_sigma < 0:
-        raise ValueError("homogeneous downlink_sigma must be >= 0")
-    if execution_horizon <= 0:
-        raise ValueError("homogeneous execution_horizon must be > 0")
 
     normalized = dict(profile)
     normalized["uplink_median_ms"] = uplink_median
@@ -111,24 +71,6 @@ def _build_max_profile(
         "execution_horizon": int(max_execution_horizon),
     }
 
-    if max_profile["uplink_median_ms"] <= 0:
-        raise ValueError("--max-uplink-median-ms must be > 0")
-    if max_profile["uplink_sigma"] < 0:
-        raise ValueError("--max-uplink-sigma must be >= 0")
-    if max_profile["downlink_median_ms"] <= 0:
-        raise ValueError("--max-downlink-median-ms must be > 0")
-    if max_profile["downlink_sigma"] < 0:
-        raise ValueError("--max-downlink-sigma must be >= 0")
-    if max_profile["execution_horizon"] <= 0:
-        raise ValueError("--max-execution-horizon must be > 0")
-
-    for field in REQUIRED_PROFILE_FIELDS:
-        if float(max_profile[field]) < float(homogeneous_profile[field]):
-            raise ValueError(
-                f"max parameter {field} must be >= homogeneous value "
-                f"({max_profile[field]} < {homogeneous_profile[field]})"
-            )
-
     return max_profile
 
 
@@ -147,21 +89,8 @@ def build_output_config(
     sampling_default_seed: int,
     sampling_resample_every_requests: int,
 ) -> Dict[str, Any]:
-    num_robots = _validate_num_robots(num_robots)
-    k = _validate_k(heterogeneity_k)
     broker_type = action_chunk_broker_type.strip().lower()
-    if broker_type not in {"rtc", "sync"}:
-        raise ValueError("--action-chunk-broker-type must be one of: rtc, sync")
-    if trials_per_robot <= 0:
-        raise ValueError("--trials-per-robot must be > 0")
-    if not toxiproxy_api_url.startswith("http://"):
-        raise ValueError("--toxiproxy-api-url must start with http://")
-    if not toxiproxy_listen_host:
-        raise ValueError("--toxiproxy-listen-host must be non-empty")
-    if toxiproxy_listen_port_base <= 0:
-        raise ValueError("--toxiproxy-listen-port-base must be > 0")
-    if sampling_resample_every_requests <= 0:
-        raise ValueError("--sampling-resample-every-requests must be >= 1")
+    k = float(heterogeneity_k)
 
     output: Dict[str, Any] = {
         "experiment": {
