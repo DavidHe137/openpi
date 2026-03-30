@@ -1,0 +1,89 @@
+{
+  "experiment": {
+    "action_chunk_broker_type": "rtc",
+    "num_robots": 10,
+    "trials_per_robot": 2
+  },
+  "toxiproxy": {
+    "api_url": "http://127.0.0.1:8474",
+    "listen_host": "127.0.0.1",
+    "listen_port_base": 15000,
+    "server_args": []
+  },
+  "sampling": {
+    "default_seed": 7,
+    "resample_every_requests": 1
+  },
+  "robots": {
+    "robot_0": {
+      "execution_horizon": 6,
+      "uplink_median_ms": 2.0,
+      "uplink_sigma": 0.15,
+      "downlink_median_ms": 2.0,
+      "downlink_sigma": 0.15
+    },
+    "robot_1": {
+      "execution_horizon": 6,
+      "uplink_median_ms": 5.0,
+      "uplink_sigma": 0.20,
+      "downlink_median_ms": 6.0,
+      "downlink_sigma": 0.20
+    },
+    "robot_2": {
+      "execution_horizon": 7,
+      "uplink_median_ms": 10.0,
+      "uplink_sigma": 0.15,
+      "downlink_median_ms": 12.0,
+      "downlink_sigma": 0.20
+    },
+    "robot_3": {
+      "execution_horizon": 7,
+      "uplink_median_ms": 15.0,
+      "uplink_sigma": 0.15,
+      "downlink_median_ms": 18.0,
+      "downlink_sigma": 0.15
+    },
+    "robot_4": {
+      "execution_horizon": 8,
+      "uplink_median_ms": 22.0,
+      "uplink_sigma": 0.2,
+      "downlink_median_ms": 25.0,
+      "downlink_sigma": 0.15
+    },
+    "robot_5": {
+      "execution_horizon": 8,
+      "uplink_median_ms": 30.0,
+      "uplink_sigma": 0.15,
+      "downlink_median_ms": 28.0,
+      "downlink_sigma": 0.13
+    },
+    "robot_6": {
+      "execution_horizon": 8,
+      "uplink_median_ms": 38.0,
+      "uplink_sigma": 0.15,
+      "downlink_median_ms": 35.0,
+      "downlink_sigma": 0.22
+    },
+    "robot_7": {
+      "execution_horizon": 9,
+      "uplink_median_ms": 48.0,
+      "uplink_sigma": 0.17,
+      "downlink_median_ms": 45.0,
+      "downlink_sigma": 0.5
+    },
+    "robot_8": {
+      "execution_horizon": 9,
+      "uplink_median_ms": 58.0,
+      "uplink_sigma": 0.2,
+      "downlink_median_ms": 55.0,
+      "downlink_sigma": 0.18
+    },
+    "robot_9": {
+      "execution_horizon": 10,
+      "uplink_median_ms": 68.0,
+      "uplink_sigma": 0.15,
+      "downlink_median_ms": 65.0,
+      "downlink_sigma": 0.14
+    }
+  }
+}

@@ -76,9 +76,9 @@ class Args:
 
     # Shared knobs for fairness/cost-aware schedulers.
     scheduler_ema_alpha: float = 0.3
-    scheduler_lambda_age: float = 0.5
-    scheduler_lambda_debt: float = 0.5
-    scheduler_service_window_decisions: int = 20
+    scheduler_lambda_age: float = 0.002
+    scheduler_lambda_debt: float = 0.004
+    scheduler_service_window_decisions: int = 8
 
     # Greedy+ knobs.
     greedy_plus_lambda_var: float = 0.15
