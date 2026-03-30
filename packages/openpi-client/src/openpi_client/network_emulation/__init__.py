@@ -2,7 +2,6 @@ from openpi_client.network_emulation.toxiproxy import DEFAULT_TOXIC_DOWNSTREAM
 from openpi_client.network_emulation.toxiproxy import DEFAULT_TOXIC_UPSTREAM
 from openpi_client.network_emulation.toxiproxy import ExperimentConfig
 from openpi_client.network_emulation.toxiproxy import NetworkEmulationConfig
-from openpi_client.network_emulation.toxiproxy import NetworkEmulationConfigError
 from openpi_client.network_emulation.toxiproxy import NetworkEmulationManager
 from openpi_client.network_emulation.toxiproxy import RobotNetworkHook
 from openpi_client.network_emulation.toxiproxy import ToxiproxyController
@@ -15,7 +14,6 @@ __all__ = [
     "load_experiment_config",
     "ExperimentConfig",
     "NetworkEmulationConfig",
-    "NetworkEmulationConfigError",
     "NetworkEmulationManager",
     "RobotNetworkHook",
     "ToxiproxyController",

@@ -66,7 +66,7 @@ class LiberoSimEnvironment(_environment.Environment):
         obs = self._env.set_init_state(self._initial_states[self._episode_idx])
 
         # Let objects fall / settle
-        for _ in range(self.NUM_STEPS_WAIT):
+        for _ in range(NUM_STEPS_WAIT):
             obs, _, _, _ = self._env.step(LIBERO_DUMMY_ACTION)
 
         self._last_obs = obs

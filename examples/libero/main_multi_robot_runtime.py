@@ -53,9 +53,6 @@ class Args:
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
     execution_horizon: List[int] = field(default_factory=list)
-    latency_ms: List[float] = field(
-        default_factory=list
-    )  # Optional per-robot artificial latency (ms); length <= num_robots
 
     #################################################################################################################
     # LIBERO environment-specific parameters
@@ -87,12 +84,6 @@ class Args:
     progress_type: Literal["verbose", "concise", "logging", None] = "verbose"
     log_dir: Optional[pathlib.Path] = None
     debug: bool = False  # Run in single process with immediate progress output
-
-    # FIXME: naming/convention on this
-    def latency_for_robot(self, robot_idx: int) -> float:
-        if not self.latency_ms:
-            return 0.0
-        return float(self.latency_ms[robot_idx])
 
     def execution_horizon_for_robot(self, robot_idx: int) -> int:
         if not self.execution_horizon:
@@ -206,6 +197,7 @@ def _robot_worker(worker_args: _WorkerArgs) -> None:
         robot_id=robot_id,
         host=ws_host,
         port=ws_port,
+        control_hz=float(args.control_hz),
         pre_send_hook=pre_send_hook,
     )
     config = BrokerConfig(
@@ -386,9 +378,6 @@ def validate_args(args: Args) -> None:
     assert args.overwrite or not args.output_dir.exists(), (
         f"Output path {args.output_dir} already exists"
     )
-    assert not args.latency_ms or len(args.latency_ms) == args.num_robots, (
-        f"latency_ms must either be empty or have exactly {args.num_robots} values (one per robot), but got {len(args.latency_ms)} values"
-    )
     assert (
         not args.execution_horizon or len(args.execution_horizon) == args.num_robots
     ), (
@@ -472,7 +461,6 @@ def main(args: Args) -> None:
         broker_type=args.action_chunk_broker_type.value,
         seed=args.seed,
         resize_size=args.resize_size,
-        latency_ms=args.latency_ms,
         episodes=[str(ep) for ep in episodes],
         execution_horizon=args.execution_horizon,
     )

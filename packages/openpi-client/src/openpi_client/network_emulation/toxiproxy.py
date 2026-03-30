@@ -24,42 +24,21 @@ NetworkEmulationConfig = ExperimentConfig
 WorkerNetworkContext = Dict[str, Any]
 
 
-class NetworkEmulationConfigError(ValueError):
-    """Raised when network emulation config is invalid."""
-
-
 def load_experiment_config(path: Union[str, pathlib.Path]) -> ExperimentConfig:
     """Load and validate experiment config, returning a normalized dict."""
 
     raw = json.loads(pathlib.Path(path).read_text())
-    if not isinstance(raw, dict):
-        raise NetworkEmulationConfigError("Experiment config must be a JSON object")
 
     experiment_raw = raw.get("experiment")
     toxi_raw = raw.get("toxiproxy") or {}
     sampling_raw = raw.get("sampling") or {}
     robots_raw = raw.get("robots")
 
-    if not isinstance(experiment_raw, dict):
-        raise NetworkEmulationConfigError("experiment_config.experiment must be an object")
-    if not isinstance(toxi_raw, dict):
-        raise NetworkEmulationConfigError("experiment_config.toxiproxy must be an object")
-    if not isinstance(sampling_raw, dict):
-        raise NetworkEmulationConfigError("experiment_config.sampling must be an object")
-    if not isinstance(robots_raw, dict) or not robots_raw:
-        raise NetworkEmulationConfigError("experiment_config.robots must be a non-empty object")
-
     experiment = {
         "action_chunk_broker_type": str(experiment_raw.get("action_chunk_broker_type", "")).strip().lower(),
         "num_robots": int(experiment_raw.get("num_robots", 0)),
         "trials_per_robot": int(experiment_raw.get("trials_per_robot", 0)),
     }
-    if experiment["action_chunk_broker_type"] not in {"rtc", "sync"}:
-        raise NetworkEmulationConfigError("experiment.action_chunk_broker_type must be one of: rtc, sync")
-    if experiment["num_robots"] <= 0:
-        raise NetworkEmulationConfigError("experiment.num_robots must be > 0")
-    if experiment["trials_per_robot"] <= 0:
-        raise NetworkEmulationConfigError("experiment.trials_per_robot must be > 0")
 
     toxiproxy = {
         "api_url": str(toxi_raw.get("api_url", "http://127.0.0.1:8474")),
@@ -73,46 +52,13 @@ def load_experiment_config(path: Union[str, pathlib.Path]) -> ExperimentConfig:
         "resample_every_requests": int(sampling_raw.get("resample_every_requests", 1)),
     }
 
-    if not toxiproxy["api_url"].startswith("http://"):
-        raise NetworkEmulationConfigError("toxiproxy.api_url must start with http://")
-    if not toxiproxy["listen_host"]:
-        raise NetworkEmulationConfigError("toxiproxy.listen_host must be non-empty")
-    if toxiproxy["listen_port_base"] <= 0:
-        raise NetworkEmulationConfigError("toxiproxy.listen_port_base must be > 0")
-    if sampling["resample_every_requests"] <= 0:
-        raise NetworkEmulationConfigError("sampling.resample_every_requests must be >= 1")
-
     robots: Dict[str, Dict[str, Any]] = {}
     for robot_id, robot_cfg in robots_raw.items():
-        if not isinstance(robot_cfg, dict):
-            raise NetworkEmulationConfigError(f"robot config for {robot_id!r} must be an object")
-        required_fields = (
-            "uplink_median_ms",
-            "uplink_sigma",
-            "downlink_median_ms",
-            "downlink_sigma",
-            "execution_horizon",
-        )
-        if any(field not in robot_cfg for field in required_fields):
-            raise NetworkEmulationConfigError(
-                f"{robot_id} must define uplink_median_ms, uplink_sigma, downlink_median_ms, downlink_sigma, and execution_horizon"
-            )
-
         uplink_median = float(robot_cfg["uplink_median_ms"])
         uplink_sigma = float(robot_cfg["uplink_sigma"])
         downlink_median = float(robot_cfg["downlink_median_ms"])
         downlink_sigma = float(robot_cfg["downlink_sigma"])
         execution_horizon = int(robot_cfg["execution_horizon"])
-        if uplink_median < 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.uplink_median_ms must be >= 0")
-        if uplink_sigma < 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.uplink_sigma must be >= 0")
-        if downlink_median < 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.downlink_median_ms must be >= 0")
-        if downlink_sigma < 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.downlink_sigma must be >= 0")
-        if execution_horizon <= 0:
-            raise NetworkEmulationConfigError(f"{robot_id}.execution_horizon must be > 0")
 
         robots[str(robot_id)] = {
             "uplink_median_ms": uplink_median,
@@ -126,7 +72,7 @@ def load_experiment_config(path: Union[str, pathlib.Path]) -> ExperimentConfig:
     for idx in range(experiment["num_robots"]):
         robot_id = f"robot_{idx}"
         if robot_id not in robots:
-            raise NetworkEmulationConfigError(
+            raise ValueError(
                 f"Missing robots.{robot_id} in experiment config for num_robots={experiment['num_robots']}"
             )
 
@@ -195,7 +141,7 @@ class ToxiproxyController:
         if not bin_path.exists():
             raise FileNotFoundError(f"toxiproxy server binary not found: {bin_path}")
 
-        # We own lifecycle for this run and should not reuse an already-running local API.
+        # We own lifecycle for this run and should not reuse an already-running local API
         try:
             self.wait_until_ready(timeout_s=0.25, poll_interval_s=0.05)
         except TimeoutError:
@@ -395,7 +341,7 @@ class NetworkEmulationManager:
             robot_id = f"robot_{idx}"
             robot_cfg = robots_cfg.get(robot_id)
             if robot_cfg is None:
-                raise NetworkEmulationConfigError(
+                raise ValueError(
                     f"Missing robots.{robot_id} in experiment config for worker_count={self._worker_count}"
                 )
 
