@@ -20,7 +20,7 @@ class GreedyActionScheduler(RequestScheduler):
     """Earliest-deadline-first: sort all pending requests by deadline."""
 
     def get_next_batches(self) -> list[list[SlotRequest]]:
-        if self._batch_queue.qsize() > 0 or (candidates := self.schedulable_requests) is None:
+        if self._batch_queue.qsize() > 0 or (candidates := self.schedulable_requests) == []:
             return []
 
         potential_batches = itertools.chain.from_iterable(
@@ -39,7 +39,7 @@ class GreedyDeadlineScheduler(RequestScheduler):
     """Earliest-deadline-first: sort all pending requests by deadline."""
 
     def get_next_batches(self) -> list[list[SlotRequest]]:
-        if self._batch_queue.qsize() > 0 or (candidates := self.schedulable_requests) is None:
+        if self._batch_queue.qsize() > 0 or (candidates := self.schedulable_requests) == []:
             return []
 
         candidates_and_infer_deadlines = sorted(
