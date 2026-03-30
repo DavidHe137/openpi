@@ -12,6 +12,7 @@ import tyro
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.policies.policy import EnvMode
+from openpi.serving.scheduler import SCHEDULER_REGISTRY
 from openpi.serving.server import PolicyServer
 from openpi.shared import logging_config
 from openpi.training import config as _config
@@ -63,8 +64,8 @@ class Args:
     # Log directory to save the logs to.
     log_dir: str = "logs/server"
 
-    # Scheduling algorithm for batching requests. # TODO: maybe should use enum?
-    scheduling_algorithm: Literal["greedy", "lookahead", "round_robin", "random", "receding_horizon_ilp"] = "greedy"
+    # Scheduling algorithm for batching requests. Valid options: SCHEDULER_REGISTRY keys.
+    scheduling_algorithm: str = "greedy-action"
 
     # Lookahead rollout horizon in milliseconds.
     lookahead_horizon_ms: int = 500
@@ -162,6 +163,11 @@ def build_scheduler_kwargs(args: Args, *, action_horizon_steps: int) -> dict[str
 
 
 def main(args: Args) -> None:
+    if args.scheduling_algorithm not in SCHEDULER_REGISTRY:
+        raise ValueError(
+            f"Unknown scheduling algorithm {args.scheduling_algorithm!r}, expected one of: {list(SCHEDULER_REGISTRY)}"
+        )
+
     log_path = (
         pathlib.Path(args.log_dir)
         / f"serve_policy_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.log"
