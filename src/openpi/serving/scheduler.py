@@ -31,10 +31,6 @@ def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
         if result_sock.poll(timeout=100):
             msg = result_sock.recv_pyobj()
             if isinstance(msg, BatchProfile):
-                logger.info(
-                    "Received batch profile: {%s}",
-                    ", ".join(f"{k}: {v:.1f}s" for k, v in sorted(msg.latencies.items())),
-                )
                 return msg.latencies
             logger.warning("Unexpected message before batch profile: %s", type(msg).__name__)
 

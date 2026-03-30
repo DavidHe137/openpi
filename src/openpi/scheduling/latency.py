@@ -50,7 +50,7 @@ class LatencyTracker(ABC):
         """Total latency from observation timestep to robot receiving the action. Used as d param in RTC."""
         return self.observation_latency(robot_id) + self.infer_latency(batch_size) + self.action_latency(robot_id)
 
-    def reset_robot(self, robot_id: str) -> None:
+    def clear(self, robot_id: str) -> None:
         self._observation_latency.pop(robot_id, None)
         self._action_latency.pop(robot_id, None)
 

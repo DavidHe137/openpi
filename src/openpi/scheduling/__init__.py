@@ -35,7 +35,7 @@ class RequestScheduler(ABC):
         self.latency_tracker.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
 
     def update_completion(self, notification: CompletionNotification) -> None:
-        self.latency_tracker.update_infer(notification.batch_size, notification.inference_duration_ms)
+        self.latency_tracker.update_infer(notification.batch_size, notification.inference_duration)
 
     def update_ack(self, notification: AckNotification) -> None:
         self.latency_tracker.update_action_delivery(
@@ -103,7 +103,10 @@ class RequestScheduler(ABC):
         self._deadlines.pop(robot_id, None)
         self._latest_requests.pop(robot_id, None)
         self._latest_scheduled_requests.pop(robot_id, None)
-        self.latency_tracker.reset_robot(robot_id)
+
+    def clear(self, robot_id: str) -> None:
+        self.reset_robot(robot_id)
+        self.latency_tracker.clear()
 
     @contextmanager
     def record_timing(self) -> Generator[Callable[[], float], None, None]:
