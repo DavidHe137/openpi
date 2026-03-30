@@ -9,7 +9,8 @@ from openpi_client.messages import ResetRequest
 import zmq
 
 from openpi.scheduling import RequestScheduler
-from openpi.scheduling.baselines import GreedyScheduler
+from openpi.scheduling.baselines import GreedyActionScheduler
+from openpi.scheduling.baselines import GreedyDeadlineScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
 from openpi.scheduling.lookahead import LookaheadScheduler
@@ -35,8 +36,9 @@ def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
             logger.warning("Unexpected message before batch profile: %s", type(msg).__name__)
 
 
-_SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
-    "greedy": GreedyScheduler,
+SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
+    "greedy-action": GreedyActionScheduler,
+    "greedy-deadline": GreedyDeadlineScheduler,
     "lookahead": LookaheadScheduler,
     "round_robin": RoundRobinScheduler,
     "random": RandomBatchScheduler,
@@ -88,10 +90,7 @@ def _run_scheduler(
 
     logger.info("Scheduler starting (algorithm=%s)", algorithm)
 
-    cls = _SCHEDULER_REGISTRY.get(algorithm)
-    if cls is None:
-        raise ValueError(f"Unknown scheduling algorithm {algorithm!r}, expected one of: {list(_SCHEDULER_REGISTRY)}")
-
+    cls = SCHEDULER_REGISTRY.get(algorithm)
     ctx = zmq.Context()
 
     req_sock = ctx.socket(zmq.PULL)

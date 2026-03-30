@@ -1,31 +1,66 @@
+from functools import lru_cache
+import itertools
 import multiprocessing as mp
 import random
 import time
 
 from openpi.scheduling import RequestScheduler
+from openpi.scheduling.latency import LatencyTracker
 from openpi.serving.schemas import SlotRequest
 
 
-class GreedyScheduler(RequestScheduler):
+@lru_cache(maxsize=1000)
+def calculate_usable_time(latency_tracker: LatencyTracker, slot_request: SlotRequest, batch_size: int) -> float:
+    total_latency = latency_tracker.total_latency(slot_request.robot_id, batch_size)
+    total_chunk_time = slot_request.execution_horizon / slot_request.control_hz
+    return total_chunk_time - total_latency
+
+
+class GreedyActionScheduler(RequestScheduler):
     """Earliest-deadline-first: sort all pending requests by deadline."""
 
     def get_next_batches(self) -> list[list[SlotRequest]]:
-        if self._batch_queue.qsize() > 0:
+        if self._batch_queue.qsize() > 0 or (candidates := self.schedulable_requests) is None:
             return []
 
-        candidates = self.schedulable_requests
-        if not candidates:
+        potential_batches = itertools.chain.from_iterable(
+            itertools.combinations(candidates, i) for i in range(1, self._max_batch_size + 1)
+        )
+        return [list(max(potential_batches, key=lambda batch: self.calculate_actions_per_second(batch)))]
+
+    def calculate_actions_per_second(self, batch: tuple[SlotRequest, ...]) -> float:
+        """Return the number of usable actions created per second spent on inference."""
+        return sum(
+            calculate_usable_time(self.latency_tracker, request, len(batch)) for request in batch
+        ) / self.latency_tracker.infer_latency(len(batch))
+
+
+class GreedyDeadlineScheduler(RequestScheduler):
+    """Earliest-deadline-first: sort all pending requests by deadline."""
+
+    def get_next_batches(self) -> list[list[SlotRequest]]:
+        if self._batch_queue.qsize() > 0 or (candidates := self.schedulable_requests) is None:
             return []
 
-        # FIXME: should definitely account for network latency
-        candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
-        earliest_deadline = self._deadlines.get(candidates[0].robot_id, candidates[0].deadline)
-        batch_size = self.get_largest_batch_size(earliest_deadline)
-        return [candidates[:batch_size]]
+        candidates_and_infer_deadlines = sorted(
+            [
+                (
+                    slot_request,
+                    self._deadlines.get(slot_request.robot_id, slot_request.deadline)
+                    - self.latency_tracker.action_latency(slot_request.robot_id),
+                )
+                for slot_request in candidates
+            ],
+            key=lambda x: x[1],
+        )
+        _, earliest_infer_deadline = candidates_and_infer_deadlines[0]
+        batch_size = self.get_largest_batch_size(earliest_infer_deadline)
+        return [[x[0] for x in candidates_and_infer_deadlines[:batch_size]]]
 
-    def get_largest_batch_size(self, deadline: float) -> int:
+    def get_largest_batch_size(self, infer_deadline: float) -> int:
         """Return the largest batch size whose profiled latency fits within the time remaining until deadline."""
-        time_remaining = deadline - time.time()
+        # we can assume inference starts right away because queue is empty
+        time_remaining = infer_deadline - time.time()
         for batch_size in range(self._max_batch_size, 0, -1):
             if self.latency_tracker.infer_latency(batch_size) <= time_remaining:
                 return batch_size
@@ -33,8 +68,7 @@ class GreedyScheduler(RequestScheduler):
 
     @property
     def most_efficient_batch_size(self) -> int:
-        """Batch size with the best throughput (requests / ms). Falls back to 1."""
-        # FIXME: need to account for inference latency?
+        """Batch size with the best throughput (requests / ms)."""
         return max(range(1, self._max_batch_size + 1), key=lambda bs: bs / self.latency_tracker.infer_latency(bs))
 
 

@@ -75,11 +75,15 @@ class RequestScheduler(ABC):
             )
             annotated = []
             for request in batch:
-                self._deadlines[request.robot_id] = request.deadline + request.execution_horizon / request.control_hz
+                # FIXME: this might monotonically increase if we end up serving a newer observation?
+                self._deadlines[request.robot_id] = (
+                    request.request_timestamp + request.execution_horizon / request.control_hz
+                )
                 self._latest_scheduled_requests[request.robot_id] = request
                 total_latency_steps = (
                     self.latency_tracker.total_latency(request.robot_id, batch_size) / request.control_hz
                 )
+                # FIXME: only pass inference + action latency, can determine observation latency when processing
                 annotated.append(dataclasses.replace(request, estimated_d_param=total_latency_steps))
 
             # FIXME: this branch only has single batch decisions for now, will need to refactor timing for multi batch decisions

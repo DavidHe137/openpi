@@ -5,7 +5,7 @@ from abc import abstractmethod
 
 
 class LatencyTracker(ABC):
-    """Per-robot and per-batch-size EMA latency estimates.
+    """Per-robot and per-batch-size latency estimates (in seconds).
 
     Tracks three latencies:
     - observation_latency: time for observation to travel from robot to server
@@ -13,8 +13,6 @@ class LatencyTracker(ABC):
     - infer_ms: GPU inference duration per batch size
     - action_delivery_ms: time for action to travel from server to robot
       (receive_time - server_send_time from ResponseAck)
-
-    All times are in seconds.
     """
 
     def __init__(self) -> None:
