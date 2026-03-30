@@ -20,7 +20,7 @@ from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
-NUM_WARMUP = 10
+NUM_WARMUP = 100
 WARMUP_OBS_BYTES = 3 * 224 * 224 * 3  # 3 channels, 224x224 pixels, 3 bytes per pixel
 
 

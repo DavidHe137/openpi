@@ -66,7 +66,7 @@ from openpi.serving.slots import RobotSlots
 from openpi.serving.slots import SlotData
 
 MAX_ROBOTS = 100
-NUM_WARMUP = 10
+NUM_WARMUP = 100
 logger = logging.getLogger(__name__)
 
 _uid = uuid.uuid4().hex[:8]
