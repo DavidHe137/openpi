@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Callable
 from typing import Optional
 
 import numpy as np
@@ -55,10 +56,12 @@ class BidirectionalWebsocket:
         port: Optional[int] = None,
         api_key: Optional[str] = None,
         control_hz: float = 10.0,
+        pre_send_hook: Optional[Callable[[], None]] = None,
     ) -> None:
         self._robot_id = robot_id
         self._ws_uri, self._http_base = _parse_urls(host, port)
         self._api_key = api_key
+        self._pre_send_hook = pre_send_hook
         self._server_metadata = self._wait_for_server()
         if self._server_metadata.tunnel_url:
             tunnel_host = self._server_metadata.tunnel_url.replace("https://", "", 1)
@@ -122,6 +125,9 @@ class BidirectionalWebsocket:
         execution_horizon: int = 0,
         noise: Optional[np.ndarray] = None,
     ) -> None:
+        if self._pre_send_hook is not None:
+            self._pre_send_hook()
+
         request = messages.InferRequest(
             request_timestamp=time.time(),
             observation_step=obs.step,
