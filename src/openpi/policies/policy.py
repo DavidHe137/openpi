@@ -40,6 +40,7 @@ class EnvMode(enum.Enum):
     LIBERO_PI0 = "libero_pi0"
     LIBERO_PYTORCH = "libero_pytorch"
     LIBERO_REALTIME = "libero_realtime"
+    REAL = "real"
 
 
 class Policy(BasePolicy):
@@ -407,6 +408,7 @@ class Policy(BasePolicy):
             EnvMode.LIBERO_REALTIME,
             EnvMode.LIBERO_PYTORCH,
             EnvMode.LIBERO_PI0,
+            EnvMode.REAL, # hack to use libero images for now
         ]:
             return make_libero_example()
 

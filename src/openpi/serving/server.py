@@ -362,7 +362,7 @@ def create_app(
                         case "ack":
                             ack = ResponseAck(**msg)
                             response = pending_responses.pop(ack.request_id)
-                            state.metrics_store.record_response(robot_id, response, ack)
+                            # state.metrics_store.record_response(robot_id, response, ack)
                             await state.scheduler_sock.send_pyobj(
                                 AckNotification(
                                     robot_id=robot_id,
@@ -373,13 +373,13 @@ def create_app(
                             )
                             continue
                         case "episode_start":
-                            state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
+                            # state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
                             continue
                         case "episode_step":
-                            state.metrics_store.record_episode_step(robot_id, time.time())
+                            # state.metrics_store.record_episode_step(robot_id, time.time())
                             continue
                         case "episode_end":
-                            state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
+                            # state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
                             continue
                         case "infer":
                             pass
@@ -426,7 +426,7 @@ def create_app(
                         control_hz=state.robot_metadata[robot_id].control_hz,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
-                    state.metrics_store.record_request(robot_id, slot_req)
+                    # state.metrics_store.record_request(robot_id, slot_req)
             except WebSocketDisconnect:
                 logger.debug("Robot %s disconnected", robot_id)
 
