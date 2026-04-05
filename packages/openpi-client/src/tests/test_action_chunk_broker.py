@@ -161,24 +161,16 @@ class TestUpdateActionQueue:
 
 class TestInfer:
     def test_null_action_when_queue_empty(self, broker_and_mock):
+        """Null action mirrors the current robot state so absolute-position joints hold in place."""
         broker, _ = broker_and_mock
-        # _observation_step starts at 0 after reset(), so first valid step is 1
-        action = broker.infer(make_obs(1))
+        robot_state = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
+        obs = Observation(state=robot_state, step=1, image=np.zeros((224, 224, 3)), wrist_image=np.zeros((224, 224, 3)))
+
+        action = broker.infer(obs)
 
         assert action.action_chunk_index is None
         assert action.index_in_chunk is None
-        np.testing.assert_array_equal(action.action, np.zeros(7))
-
-    def test_null_action_gripper_from_last_chunk(self, broker_and_mock):
-        """Null action gripper mirrors the last action of the most recent chunk."""
-        broker, _ = broker_and_mock
-        chunk = make_action_chunk(action_start_step=1, execution_horizon=3)
-        broker._action_chunks.append(chunk)
-        # Don't populate the queue — force null action path
-
-        action = broker.infer(make_obs(1))
-
-        assert action.action[-1] == chunk.get_action(-1)[-1]
+        np.testing.assert_array_equal(action.action, robot_state)
 
     def test_returns_action_from_queue(self, broker_and_mock):
         broker, ws_mock = broker_and_mock

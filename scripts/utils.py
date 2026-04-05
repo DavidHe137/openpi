@@ -74,7 +74,7 @@ DEFAULT_CHECKPOINT = {
     },
     EnvMode.REAL: {
         "config": "pi05_pick_up_the_legos",
-        "dir": "./checkpoints/pi05_pick_up_the_legos/test/16000",
+        "dir": "/coc/flash7/rbansal66/vvla/openpi/.cache/openpi/openpi-assets/checkpoints/pi05_bricks_real",
     },
 }
 
