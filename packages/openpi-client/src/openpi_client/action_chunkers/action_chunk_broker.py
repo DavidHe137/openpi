@@ -40,7 +40,7 @@ class ActionChunkBroker(ABC):
         self._realtime = realtime
         self.execution_horizon = execution_horizon
 
-        self._prev_action: Optional[Action] = None
+        self._prev_action: Action = self._create_null_action(None)
 
         self._lock = threading.Lock()
         self._actions_left_history: list[int] = []
@@ -68,11 +68,21 @@ class ActionChunkBroker(ABC):
 
             return action
 
-    def _create_null_action(self, obs: Observation) -> Action:
-        # Hold current joint positions so the robot doesn't move when no action is queued.
+    def _create_null_action(self, obs: Optional[Observation]) -> Action:
+        import numpy as np
+
+        observation_step = obs.step if obs is not None else -1
+
+        if obs is not None:
+            # Hold current joint positions — safe for absolute action policies.
+            action = obs.state.copy()
+        else:
+            # No observation available yet (pre-first-step placeholder); use zeros.
+            action = np.zeros(7)
+
         return Action(
-            step=obs.step,
-            action=obs.state.copy(),
+            step=observation_step,
+            action=action,
             action_chunk_index=None,
             index_in_chunk=None,
         )
