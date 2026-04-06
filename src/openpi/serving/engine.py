@@ -103,6 +103,14 @@ def _run_gpu_worker(
             prev = np.zeros(_action_shape, dtype=np.float32)
         if prev is None:
             return None
+        logger.info(
+            "Built RTC params for robot=%s start_step=%d s=%d d=%d prev_action_shape=%s",
+            robot_id,
+            start_step,
+            s,
+            d_param,
+            tuple(prev.shape),
+        )
         return RTCParams(prev_action=prev, s_param=s, d_param=d_param)
 
     while True:
@@ -169,7 +177,7 @@ def _run_gpu_worker(
         # Update per-robot RTC state
         for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True):
             if sd.infer_type == InferType.INFERENCE_TIME_RTC:
-                prev_action = action_dict["actions"][0]  # shape (ah, ad)
+                prev_action = action_dict.get("rtc_prev_actions", action_dict["actions"])  # shape (ah, ad)
                 if _action_shape is None:
                     _action_shape = prev_action.shape
                 _last_infer_step[sr.robot_id] = sd.observation_step
