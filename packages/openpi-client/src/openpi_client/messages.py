@@ -47,6 +47,14 @@ class InferRequest:
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
     type: Literal["infer"] = "infer"
 
+    def __post_init__(self) -> None:
+        if isinstance(self.infer_type, str):
+            object.__setattr__(self, "infer_type", InferType(self.infer_type))
+
+        if isinstance(self.params, dict):
+            if self.infer_type == InferType.INFERENCE_TIME_RTC:
+                object.__setattr__(self, "params", RTCParams(**self.params))
+
 
 @dataclass(frozen=True)
 class ResetRequest:
