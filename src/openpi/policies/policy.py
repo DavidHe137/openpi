@@ -342,7 +342,7 @@ class Policy(BasePolicy):
             prev_actions = np.stack([np.asarray(params.prev_action) for params in rtc_params], axis=0)
             s_values = np.asarray([params.s_param for params in rtc_params], dtype=np.int32)
             d_values = np.asarray([params.d_param for params in rtc_params], dtype=np.int32)
-            logger.info(
+            logger.debug(
                 "Executing RTC sub-batch: batch_size=%d s=%s d=%s prev_action_shape=%s",
                 len(requests),
                 s_values.tolist(),

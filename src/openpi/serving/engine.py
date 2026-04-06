@@ -103,7 +103,7 @@ def _run_gpu_worker(
             prev = np.zeros(_action_shape, dtype=np.float32)
         if prev is None:
             return None
-        logger.info(
+        logger.debug(
             "Built RTC params for robot=%s start_step=%d s=%d d=%d prev_action_shape=%s",
             robot_id,
             start_step,
