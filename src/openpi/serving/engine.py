@@ -169,7 +169,7 @@ def _run_gpu_worker(
         # Update per-robot RTC state
         for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True):
             if sd.infer_type == InferType.INFERENCE_TIME_RTC:
-                prev_action = action_dict["actions"][0]  # shape (ah, ad)
+                prev_action = action_dict.get("rtc_prev_actions", action_dict["actions"])  # shape (ah, ad)
                 if _action_shape is None:
                     _action_shape = prev_action.shape
                 _last_infer_step[sr.robot_id] = sd.observation_step

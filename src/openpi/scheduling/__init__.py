@@ -11,7 +11,8 @@ from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 
-
+import logging
+logger = logging.getLogger(__name__)
 class RequestScheduler(ABC):
     def __init__(
         self,
@@ -111,7 +112,9 @@ class RequestScheduler(ABC):
             last = self._latest_scheduled_requests.get(req.robot_id)
             if last is req:
                 continue
-            if last is not None and req.action_start_step <= last.action_start_step:
+            if last is not None and req.action_start_step - last.action_start_step < 10:
                 continue
             result.append(req)
+            if last is not None:
+                logger.info(f"Previous request step: {last.action_start_step}, current request step: {req.action_start_step}")
         return result
