@@ -2,6 +2,7 @@ from abc import ABC
 from abc import abstractmethod
 from contextlib import contextmanager
 import dataclasses
+import logging
 import multiprocessing as mp
 import time
 
@@ -11,8 +12,9 @@ from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 
-import logging
 logger = logging.getLogger(__name__)
+
+
 class RequestScheduler(ABC):
     def __init__(
         self,
@@ -116,5 +118,7 @@ class RequestScheduler(ABC):
                 continue
             result.append(req)
             if last is not None:
-                logger.info(f"Previous request step: {last.action_start_step}, current request step: {req.action_start_step}")
+                logger.info(
+                    f"Previous request step: {last.action_start_step}, current request step: {req.action_start_step}"
+                )
         return result

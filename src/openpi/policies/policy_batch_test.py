@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import jax
 import jax.numpy as jnp
 import numpy as np
-
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferType
 from openpi_client.messages import RTCParams

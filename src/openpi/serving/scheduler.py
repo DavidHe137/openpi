@@ -58,6 +58,7 @@ def _run_scheduler(
     scheduler_kwargs: dict | None,
     ready_event: Event,
     log_queue: mp.Queue | None = None,
+    log_level: int = logging.INFO,
 ) -> None:
     """Owns all robot state; dispatches batches to GPU via mp.Queue.
 
@@ -87,7 +88,7 @@ def _run_scheduler(
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     if log_queue is not None:
-        logging_config.setup_worker_logging(log_queue, process_name="scheduler")
+        logging_config.setup_worker_logging(log_queue, process_name="scheduler", level=log_level)
 
     logger.info("Scheduler starting (algorithm=%s)", algorithm)
 

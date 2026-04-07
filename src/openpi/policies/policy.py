@@ -307,7 +307,9 @@ class Policy(BasePolicy):
 
         if self._is_triton_optimized:
             if use_rtc:
-                logger.warning("RTC requested for a Triton-optimized policy batch, but Triton batching does not implement RTC; falling back to standard sampling.")
+                logger.warning(
+                    "RTC requested for a Triton-optimized policy batch, but Triton batching does not implement RTC; falling back to standard sampling."
+                )
 
             sample_kwargs = dict(self._sample_kwargs)
             sample_kwargs["noise"] = np.asarray(noise_to_use)
@@ -335,13 +337,22 @@ class Policy(BasePolicy):
 
         if use_rtc:
             if self._is_pytorch_model:
-                logger.warning("RTC requested for a PyTorch policy batch, but PyTorch batching does not implement RTC; falling back to standard sampling.")
+                logger.warning(
+                    "RTC requested for a PyTorch policy batch, but PyTorch batching does not implement RTC; falling back to standard sampling."
+                )
             else:
                 rtc_params = [request.params for request in requests]
                 assert all(isinstance(params, RTCParams) for params in rtc_params), "RTC batch requires RTCParams"
                 prev_actions = np.stack([np.asarray(params.prev_action) for params in rtc_params], axis=0)
                 s_values = np.asarray([params.s_param for params in rtc_params], dtype=np.int32)
                 d_values = np.asarray([params.d_param for params in rtc_params], dtype=np.int32)
+                logger.info(
+                    "Executing RTC sub-batch: batch_size=%d s=%s d=%s prev_action_shape=%s",
+                    len(requests),
+                    s_values.tolist(),
+                    d_values.tolist(),
+                    tuple(prev_actions.shape),
+                )
 
                 sample_kwargs["use_rtc"] = True
                 sample_kwargs["prev_action"] = jnp.asarray(prev_actions)
@@ -435,7 +446,7 @@ class Policy(BasePolicy):
             EnvMode.LIBERO_REALTIME,
             EnvMode.LIBERO_PYTORCH,
             EnvMode.LIBERO_PI0,
-            EnvMode.REAL, # hack to use libero images for now
+            EnvMode.REAL,  # hack to use libero images for now
         ]:
             return make_libero_example()
 

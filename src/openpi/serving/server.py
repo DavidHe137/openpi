@@ -214,6 +214,7 @@ def _start_backend(
     policy_factory: Callable,
     scheduler_kwargs: dict[str, object] | None,
     log_queue: mp.Queue | None,
+    log_level: int = logging.INFO,
 ) -> tuple[mp.Process, mp.Process, RobotSlots, Event, Event, mp.Queue]:
     slots = RobotSlots(max_robots=MAX_ROBOTS)
     batch_queue: mp.Queue = mp.Queue()
@@ -233,6 +234,7 @@ def _start_backend(
             socket_addresses["result_ep"],
             gpu_ready,
             log_queue,
+            log_level,
         ),
         daemon=True,
     )
@@ -249,6 +251,7 @@ def _start_backend(
             scheduler_kwargs,
             sched_ready,
             log_queue,
+            log_level,
         ),
         daemon=True,
     )
@@ -266,6 +269,7 @@ def create_app(
     policy_factory: Callable,
     scheduler_kwargs: dict[str, object] | None = None,
     log_queue: mp.Queue | None = None,
+    log_level: int = logging.INFO,
 ) -> FastAPI:
     metrics_store = MetricsStore()
 
@@ -276,6 +280,7 @@ def create_app(
             policy_factory,
             scheduler_kwargs,
             log_queue,
+            log_level,
         )
 
         loop = asyncio.get_event_loop()
@@ -479,12 +484,20 @@ class PolicyServer:
         policy_factory: Callable,
         scheduler_kwargs: dict[str, object] | None = None,
         log_queue: mp.Queue | None = None,
+        log_level: int = logging.INFO,
     ):
         self._metadata = metadata
         self._policy_factory = policy_factory
         self._scheduler_kwargs = scheduler_kwargs
         self._log_queue = log_queue
+        self._log_level = log_level
 
     def serve_forever(self, host="0.0.0.0", port=8000):
-        app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue)
+        app = create_app(
+            self._metadata,
+            self._policy_factory,
+            self._scheduler_kwargs,
+            self._log_queue,
+            self._log_level,
+        )
         uvicorn.run(app, host=host, port=port)

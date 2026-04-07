@@ -52,6 +52,7 @@ def _run_gpu_worker(
     result_ep: str,
     ready_event: Event,
     log_queue: mp.Queue | None = None,
+    log_level: int = logging.INFO,
 ) -> None:
     """Loads model, then loops: recv batch → read obs from shared memory → infer → send results.
 
@@ -63,7 +64,7 @@ def _run_gpu_worker(
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     if log_queue is not None:
-        logging_config.setup_worker_logging(log_queue, process_name="gpu-worker")
+        logging_config.setup_worker_logging(log_queue, process_name="gpu-worker", level=log_level)
 
     logger.info("GPU worker starting")
 
@@ -103,6 +104,14 @@ def _run_gpu_worker(
             prev = np.zeros(_action_shape, dtype=np.float32)
         if prev is None:
             return None
+        logger.info(
+            "Built RTC params for robot=%s start_step=%d s=%d d=%d prev_action_shape=%s",
+            robot_id,
+            start_step,
+            s,
+            d_param,
+            tuple(prev.shape),
+        )
         return RTCParams(prev_action=prev, s_param=s, d_param=d_param)
 
     while True:

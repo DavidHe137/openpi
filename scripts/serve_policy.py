@@ -209,6 +209,7 @@ def main(args: Args) -> None:
         policy_factory=policy_factory,
         scheduler_kwargs=scheduler_kwargs,
         log_queue=log_queue,
+        log_level=getattr(logging, args.log_level),
     )
     try:
         server.serve_forever(host="0.0.0.0", port=args.port)
