@@ -40,8 +40,6 @@ from fastapi.concurrency import asynccontextmanager
 from openpi_client import msgpack_numpy
 from openpi_client.messages import ConnectRequest
 from openpi_client.messages import ConnectResponse
-from openpi_client.messages import EpisodeEnd
-from openpi_client.messages import EpisodeStart
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest

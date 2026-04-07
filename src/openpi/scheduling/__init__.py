@@ -56,23 +56,43 @@ class RequestScheduler(ABC):
 
         for batch in batches:
             batch_size = len(batch)
+            if batch_size == 0:
+                continue
             # Capture deadlines before the loop overwrites them, sort earliest first.
             candidate_entries = sorted(
                 ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in candidates),
                 key=lambda x: x["deadline"],
             )
-            batch_entries = sorted(
-                ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in batch),
-                key=lambda x: x["deadline"],
-            )
             annotated = []
             for request in batch:
-                self._deadlines[request.robot_id] = request.deadline + request.execution_horizon / request.control_hz
-                self._latest_scheduled_requests[request.robot_id] = request
-                d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
+                d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size, prefer_max=True)
                 step_ms = 1000.0 / request.control_hz
                 d_steps = round(d_ms / step_ms) if d_ms is not None else 0
-                annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
+                smin_steps = 10  # TODO hardcode for now
+                min_steps = max(d_steps, smin_steps)
+
+                last = self._latest_scheduled_requests.get(request.robot_id)
+                if last is not None and request.action_start_step - last.action_start_step < min_steps:
+                    continue
+                logger.info(
+                    "RTC schedule gate robot=%s smin=%d d_steps=%d min_steps=%d",
+                    request.robot_id,
+                    smin_steps,
+                    d_steps,
+                    min_steps,
+                )
+
+                self._deadlines[request.robot_id] = request.deadline + request.execution_horizon / request.control_hz
+                self._latest_scheduled_requests[request.robot_id] = request
+                annotated.append(dataclasses.replace(request, estimated_d_param=d_steps, scheduled_s_param=min_steps))
+
+            if not annotated:
+                continue
+
+            batch_entries = sorted(
+                ({"robot_id": r.robot_id, "deadline": self._deadlines.get(r.robot_id, r.deadline)} for r in annotated),
+                key=lambda x: x["deadline"],
+            )
 
             # FIXME: this branch only has single batch decisions for now, will need to refactor timing for multi batch decisions
             self._decisions.append(
@@ -114,11 +134,12 @@ class RequestScheduler(ABC):
             last = self._latest_scheduled_requests.get(req.robot_id)
             if last is req:
                 continue
-            if last is not None and req.action_start_step - last.action_start_step < 10:
+            min_steps = 10  # TODO hardcode for now
+            if last is not None and req.action_start_step - last.action_start_step < min_steps:
                 continue
             result.append(req)
-            if last is not None:
-                logger.info(
-                    f"Previous request step: {last.action_start_step}, current request step: {req.action_start_step}"
-                )
+            # if last is not None:
+            #     logger.info(
+            #         f"Previous request step: {last.action_start_step}, current request step: {req.action_start_step}"
+            #     )
         return result

@@ -163,11 +163,28 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         batch_size = len(candidate)
         annotated: list[SlotRequest] = []
         for request in candidate:
-            self._latest_scheduled_requests[request.robot_id] = request
-            d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size)
+            d_ms = self.latency.total_delivery_ms(request.robot_id, batch_size, prefer_max=True)
             step_ms = 1000.0 / request.control_hz
             d_steps = round(d_ms / step_ms) if d_ms is not None else 0
-            annotated.append(dataclasses.replace(request, estimated_d_param=d_steps))
+            smin_steps = int(request.execution_horizon)
+            min_steps = max(d_steps, smin_steps)
+
+            last = self._latest_scheduled_requests.get(request.robot_id)
+            if last is not None and request.action_start_step - last.action_start_step < min_steps:
+                continue
+
+            logger.info(
+                "RTC schedule gate robot=%s smin=%d d_steps=%d min_steps=%d",
+                request.robot_id,
+                smin_steps,
+                d_steps,
+                min_steps,
+            )
+            self._latest_scheduled_requests[request.robot_id] = request
+            annotated.append(dataclasses.replace(request, estimated_d_param=d_steps, scheduled_s_param=min_steps))
+
+        if not annotated:
+            return
 
         self._batch_queue.put_nowait(annotated)
         self._register_dispatched_batch(now_tick, tuple(annotated))
