@@ -28,6 +28,7 @@ import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event
 import os
+import pathlib
 import queue
 import signal
 import time
@@ -37,6 +38,7 @@ from fastapi import FastAPI
 from fastapi import Request
 from fastapi import WebSocket
 from fastapi.concurrency import asynccontextmanager
+import numpy as np
 from openpi_client import msgpack_numpy
 from openpi_client.messages import ConnectRequest
 from openpi_client.messages import ConnectResponse
@@ -84,12 +86,106 @@ class ServerState:
     scheduler_proc: mp.Process
     metrics_store: MetricsStore
     robot_metadata: dict[str, ConnectRequest]
+    rtc_plot_recorder: "RTCChunkPlotRecorder"
+
+
+@dataclass
+class _ChunkSnapshot:
+    action_start_step: int
+    actions: np.ndarray
+
+
+@dataclass
+class _RTCChunkPair:
+    prior: _ChunkSnapshot
+    new: _ChunkSnapshot
+
+
+class RTCChunkPlotRecorder:
+    def __init__(self, plot_dir: pathlib.Path):
+        self._plot_dir = plot_dir
+        self._plot_dir.mkdir(parents=True, exist_ok=True)
+        self._last_chunks: dict[str, _ChunkSnapshot] = {}
+        self._all_pairs: dict[str, list[_RTCChunkPair]] = {}
+
+    def record_response(self, response: InferResponse) -> None:
+        actions = np.asarray(response.actions)
+        if actions.ndim == 3 and actions.shape[0] == 1:
+            actions = actions[0]
+        if actions.ndim != 2:
+            logger.warning("Skipping RTC plot capture for robot %s with unexpected action shape %s", response.robot_id, actions.shape)
+            return
+
+        current = _ChunkSnapshot(action_start_step=response.action_start_step, actions=actions)
+        previous = self._last_chunks.get(response.robot_id)
+        if previous is not None and current.action_start_step > previous.action_start_step:
+            self._all_pairs.setdefault(response.robot_id, []).append(_RTCChunkPair(prior=previous, new=current))
+        self._last_chunks[response.robot_id] = current
+
+    def save_and_clear(self, robot_id: str) -> list[pathlib.Path]:
+        pairs = self._all_pairs.pop(robot_id, [])
+        self._last_chunks.pop(robot_id, None)
+        if not pairs:
+            return []
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        robot_dir = self._plot_dir / f"{robot_id}_{timestamp}"
+        robot_dir.mkdir(parents=True, exist_ok=True)
+        saved_paths: list[pathlib.Path] = []
+        for index, pair in enumerate(pairs):
+            plot_path = robot_dir / f"rtc_overlap_{index:04d}_start_{pair.new.action_start_step}.png"
+            self._save_pair_plot(pair, plot_path, robot_id)
+            saved_paths.append(plot_path)
+        return saved_paths
+
+    def _save_pair_plot(self, pair: _RTCChunkPair, plot_path: pathlib.Path, robot_id: str) -> None:
+        os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-openpi")
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        prior_actions = pair.prior.actions
+        new_actions = pair.new.actions
+        num_dims = min(prior_actions.shape[1], new_actions.shape[1], 7)
+        dim_labels = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
+        shift = max(0, pair.new.action_start_step - pair.prior.action_start_step)
+
+        ncols = 2
+        nrows = (num_dims + ncols - 1) // ncols
+        fig, axes = plt.subplots(nrows, ncols, figsize=(14, 3.8 * nrows), squeeze=False)
+
+        x_prior = np.arange(prior_actions.shape[0])
+        x_new = np.arange(new_actions.shape[0]) + shift
+
+        for dim_idx in range(nrows * ncols):
+            ax = axes[dim_idx // ncols][dim_idx % ncols]
+            if dim_idx >= num_dims:
+                ax.axis("off")
+                continue
+            label = dim_labels[dim_idx] if dim_idx < len(dim_labels) else f"dim_{dim_idx}"
+            ax.plot(x_prior, prior_actions[:, dim_idx], color="blue", label="Prior")
+            ax.plot(x_new, new_actions[:, dim_idx], color="red", label="New")
+            ax.axvline(shift, color="gray", linestyle="--", alpha=0.5)
+            ax.set_title(f"{label} action waypoints")
+            ax.set_ylabel("Value")
+            ax.legend(loc="upper right")
+
+        for ax in axes[-1]:
+            if ax.has_data():
+                ax.set_xlabel("Step #")
+
+        fig.suptitle(f"RTC overlap for {robot_id} (chunk shift={shift})", fontsize=16)
+        fig.tight_layout()
+        fig.savefig(plot_path, dpi=160)
+        plt.close(fig)
 
 
 async def _router_task(
     response_sock: zmq.asyncio.Socket,
     response_queues: dict[str, asyncio.Queue],
     metrics_store: MetricsStore,
+    rtc_plot_recorder: RTCChunkPlotRecorder,
 ) -> None:
     """Reads batches of InferResponses directly from GPU and dispatches to per-robot queues."""
     logger.info("Router task starting")
@@ -98,6 +194,7 @@ async def _router_task(
             responses: list[InferResponse] = await response_sock.recv_pyobj()
             metrics_store.record_batch(responses)
             for response in responses:
+                rtc_plot_recorder.record_response(response)
                 queue = response_queues.get(response.robot_id)
                 if queue is not None:
                     await queue.put(response)
@@ -270,6 +367,8 @@ def create_app(
     log_level: int = logging.INFO,
 ) -> FastAPI:
     metrics_store = MetricsStore()
+    rtc_plot_dir = pathlib.Path("logs/server/rtc_chunk_plots")
+    rtc_plot_recorder = RTCChunkPlotRecorder(rtc_plot_dir)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -306,9 +405,10 @@ def create_app(
             scheduler_proc=scheduler_proc,
             metrics_store=metrics_store,
             robot_metadata={},
+            rtc_plot_recorder=rtc_plot_recorder,
         )
 
-        router = asyncio.create_task(_router_task(response_sock, response_queues, metrics_store))
+        router = asyncio.create_task(_router_task(response_sock, response_queues, metrics_store, rtc_plot_recorder))
         scheduler_metrics = asyncio.create_task(_scheduler_metrics_task(scheduler_metrics_queue, metrics_store))
         watchdog = asyncio.create_task(_watchdog_task(gpu_proc, scheduler_proc))
 
@@ -449,6 +549,14 @@ def create_app(
             await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
             state.slots.free(robot_id)
             state.response_queues.pop(robot_id, None)
+            plot_paths = state.rtc_plot_recorder.save_and_clear(robot_id)
+            if plot_paths:
+                logger.info(
+                    "Saved %d RTC overlap plots for robot %s under %s",
+                    len(plot_paths),
+                    robot_id,
+                    plot_paths[0].parent,
+                )
 
     # can also be used for health check
     @app.get("/metadata")
