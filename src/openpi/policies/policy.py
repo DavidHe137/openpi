@@ -41,6 +41,7 @@ class EnvMode(enum.Enum):
     LIBERO_PYTORCH = "libero_pytorch"
     LIBERO_REALTIME = "libero_realtime"
     REAL = "real"
+    REAL_THROW = "real_throw"
 
 
 class Policy(BasePolicy):

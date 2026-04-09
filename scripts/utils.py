@@ -76,6 +76,10 @@ DEFAULT_CHECKPOINT = {
         "config": "pi05_pick_up_the_legos",
         "dir": "/coc/flash7/rbansal66/vvla/openpi/.cache/openpi/openpi-assets/checkpoints/pi05_bricks_real",
     },
+    EnvMode.REAL_THROW: {
+        "config": "pi05_throw_the_legos",
+        "dir": "/coc/flash7/rbansal66/vvla/openpi-training/checkpoints/pi05_throw_the_legos/throw_legos_exp"
+    },
 }
 
 
