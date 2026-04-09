@@ -598,7 +598,7 @@ class TrainConfig:
     # Random seed that will be used by random generators during training.
     seed: int = 42
     # Global batch size.
-    batch_size: int = 32
+    batch_size: int = 16
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2
@@ -867,6 +867,28 @@ _CONFIGS = [
             extra_delta_transform=True,
         ),
         batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_throw_the_legos",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/sort-and-throw-the-legos-20260409",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        # Pi05 + AdamW + EMA is memory-heavy. On multi-GPU nodes set --fsdp-devices <N> == GPU count (default 2
+        # gives a (batch,fsdp) mesh that can trigger XLA full rematerialization and OOM). batch_size must divide N.
+        batch_size=8,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,

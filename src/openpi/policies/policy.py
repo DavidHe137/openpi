@@ -275,7 +275,11 @@ class Policy(BasePolicy):
 
         return _model.Observation.from_dict(inputs)
 
+<<<<<<< HEAD
     def _infer_batch_group(self, requests: list[InferRequest], use_rtc: bool) -> list[dict[str, Any]]:
+=======
+    def _infer_batch_group(self, requests: list[InferRequest], *, use_rtc: bool) -> list[dict[str, Any]]:
+>>>>>>> training
         """Run a homogeneous sub-batch.
 
         RTC requests require JAX model support plus per-request RTCParams. We keep
@@ -337,6 +341,7 @@ class Policy(BasePolicy):
         sample_kwargs["noise"] = noise_to_use
 
         if use_rtc:
+<<<<<<< HEAD
             if self._is_pytorch_model:
                 logger.warning(
                     "RTC requested for a PyTorch policy batch, but PyTorch batching does not implement RTC; falling back to standard sampling."
@@ -359,6 +364,27 @@ class Policy(BasePolicy):
                 sample_kwargs["prev_action"] = jnp.asarray(prev_actions)
                 sample_kwargs["s"] = jnp.asarray(s_values)
                 sample_kwargs["d"] = jnp.asarray(d_values)
+=======
+            assert not self._is_pytorch_model, "RTC is not supported for PyTorch models"
+
+            rtc_params = [request.params for request in requests]
+            assert all(isinstance(params, RTCParams) for params in rtc_params), "RTC batch requires RTCParams"
+            prev_actions = np.stack([np.asarray(params.prev_action) for params in rtc_params], axis=0)
+            s_values = np.asarray([params.s_param for params in rtc_params], dtype=np.int32)
+            d_values = np.asarray([params.d_param for params in rtc_params], dtype=np.int32)
+            logger.debug(
+                "Executing RTC sub-batch: batch_size=%d s=%s d=%s prev_action_shape=%s",
+                len(requests),
+                s_values.tolist(),
+                d_values.tolist(),
+                tuple(prev_actions.shape),
+            )
+
+            sample_kwargs["use_rtc"] = True
+            sample_kwargs["prev_action"] = jnp.asarray(prev_actions)
+            sample_kwargs["s"] = jnp.asarray(s_values)
+            sample_kwargs["d"] = jnp.asarray(d_values)
+>>>>>>> training
 
         actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
         raw_actions = np.asarray(actions.detach().cpu()) if self._is_pytorch_model else np.asarray(actions)

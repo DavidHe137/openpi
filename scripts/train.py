@@ -195,10 +195,22 @@ def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
 
-    if config.batch_size % jax.device_count() != 0:
-        raise ValueError(
-            f"Batch size {config.batch_size} must be divisible by the number of devices {jax.device_count()}."
-        )
+    num_devices = jax.device_count()
+    if config.batch_size % num_devices != 0:
+        raise ValueError(f"Batch size {config.batch_size} must be divisible by the number of devices {num_devices}.")
+
+    if num_devices > config.fsdp_devices and num_devices % config.fsdp_devices == 0:
+        dp_replicas = num_devices // config.fsdp_devices
+        if dp_replicas > 1:
+            logging.warning(
+                "Mesh is (data_parallel=%d, fsdp=%d). Hybrid DP+FSDP often triggers XLA involuntary "
+                "rematerialization and GPU OOM on Pi0/Pi05. Prefer --fsdp-devices %d when you have the GPUs "
+                "(and batch_size %% %d == 0).",
+                dp_replicas,
+                config.fsdp_devices,
+                num_devices,
+                num_devices,
+            )
 
     jax.config.update("jax_compilation_cache_dir", str(epath.Path("~/.cache/jax").expanduser()))
 

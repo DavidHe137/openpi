@@ -22,7 +22,6 @@ import tyro
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-
 logger = logging.getLogger(__name__)
 
 STATE_KEYS = ("state", "observation/state", "observation.state")
@@ -93,7 +92,7 @@ def _to_numpy_image(value: Any) -> np.ndarray:
             from io import BytesIO
 
             array = np.asarray(Image.open(BytesIO(value["bytes"])))
-        elif "path" in value and value["path"]:
+        elif value.get("path"):
             array = np.asarray(Image.open(value["path"]))
         else:
             raise ValueError(f"Unsupported image dictionary keys: {sorted(value.keys())}")
@@ -223,7 +222,9 @@ def _prompt_from_row(row: dict[str, Any], tasks: pd.DataFrame | None, prompt_ove
     )
 
 
-def _build_observation(row: dict[str, Any], tasks: pd.DataFrame | None, prompt_override: str | None) -> LiberoObservation:
+def _build_observation(
+    row: dict[str, Any], tasks: pd.DataFrame | None, prompt_override: str | None
+) -> LiberoObservation:
     step = 0
     for key in ("frame_index", "index", "timestamp"):
         if key in row:
@@ -254,7 +255,9 @@ def _run_dir(base_dir: pathlib.Path, episode_index: int) -> pathlib.Path:
     return path
 
 
-def _plot_action_overlay(frame_indices: np.ndarray, predicted: np.ndarray, ground_truth: np.ndarray, out_path: pathlib.Path) -> None:
+def _plot_action_overlay(
+    frame_indices: np.ndarray, predicted: np.ndarray, ground_truth: np.ndarray, out_path: pathlib.Path
+) -> None:
     action_dim = ground_truth.shape[1]
     cols = 2
     rows = math.ceil(action_dim / cols)
