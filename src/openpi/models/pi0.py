@@ -405,9 +405,7 @@ class Pi0(_model.BaseModel):
             grad_a_1_prime_x_t = f_vjp((e, jnp.zeros_like(v_t)))
             # jax.debug.print("grad_a_1_prime_x_t 0 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[0].shape)
             # jax.debug.print("grad_a_1_prime_x_t 1 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[1].shape)
-            r_t = ((1 - time) * (1 - time) * sigma_d_sq) / (
-                (1 - time) * (1 - time) + sigma_d_sq * time * time
-            )
+            r_t = ((1 - time) * (1 - time) * sigma_d_sq) / ((1 - time) * (1 - time) + sigma_d_sq * time * time)
 
             a_2_prime = x_t + dt * (
                 v_t - jax.lax.min(beta, time / ((1 - time) * r_t * r_t + 1e-6)) * grad_a_1_prime_x_t[0]
