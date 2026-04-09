@@ -86,7 +86,7 @@ class ServerState:
     scheduler_proc: mp.Process
     metrics_store: MetricsStore
     robot_metadata: dict[str, ConnectRequest]
-    rtc_plot_recorder: "RTCChunkPlotRecorder"
+    rtc_plot_recorder: RTCChunkPlotRecorder
 
 
 @dataclass
@@ -113,7 +113,11 @@ class RTCChunkPlotRecorder:
         if actions.ndim == 3 and actions.shape[0] == 1:
             actions = actions[0]
         if actions.ndim != 2:
-            logger.warning("Skipping RTC plot capture for robot %s with unexpected action shape %s", response.robot_id, actions.shape)
+            logger.warning(
+                "Skipping RTC plot capture for robot %s with unexpected action shape %s",
+                response.robot_id,
+                actions.shape,
+            )
             return
 
         current = _ChunkSnapshot(action_start_step=response.action_start_step, actions=actions)
