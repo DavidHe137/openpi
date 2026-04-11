@@ -9,6 +9,7 @@ from openpi_client.messages import ResetRequest
 import zmq
 
 from openpi.scheduling import RequestScheduler
+from openpi.scheduling.baselines import FixedSizeGreedyScheduler
 from openpi.scheduling.baselines import GreedyActionScheduler
 from openpi.scheduling.baselines import GreedyDeadlineScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
@@ -37,6 +38,7 @@ def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
 
 
 SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
+    "fixed-size-greedy": FixedSizeGreedyScheduler,
     "greedy-action": GreedyActionScheduler,
     "greedy-deadline": GreedyDeadlineScheduler,
     "lookahead": LookaheadScheduler,

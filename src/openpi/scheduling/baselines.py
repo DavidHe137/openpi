@@ -16,6 +16,17 @@ def calculate_usable_time(latency_tracker: LatencyTracker, slot_request: SlotReq
     return total_chunk_time - total_latency
 
 
+class FixedSizeGreedyScheduler(RequestScheduler):
+    """Greedy scheduler that always fills to max_batch_size, prioritizing requests with earliest deadlines."""
+
+    def get_next_batches(self) -> list[list[SlotRequest]]:
+        if self._batch_queue.qsize() > 0 or (candidates := self.schedulable_requests) == []:
+            return []
+
+        candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
+        return [candidates[: self._max_batch_size]]
+
+
 class GreedyActionScheduler(RequestScheduler):
     """Earliest-deadline-first: sort all pending requests by deadline."""
 
