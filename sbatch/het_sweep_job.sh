@@ -1,8 +1,8 @@
 #!/bin/bash
 # Het group 0: server (l40s GPU + 4 CPUs)
 #SBATCH --job-name=sweep_schedulers
-#SBATCH --output=logs/sweep_schedulers_%j.out
-#SBATCH --error=logs/sweep_schedulers_%j.err
+#SBATCH --output=logs/sweep_schedulers_%j_server.out
+#SBATCH --error=logs/sweep_schedulers_%j_server.err
 #SBATCH --partition=overcap
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -11,6 +11,8 @@
 #SBATCH hetjob
 # Het group 1: client (a40 GPU + 20 CPUs)
 #SBATCH --job-name=sweep_schedulers_client
+#SBATCH --output=logs/sweep_schedulers_%j_client.out
+#SBATCH --error=logs/sweep_schedulers_%j_client.err
 #SBATCH --partition=overcap
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
