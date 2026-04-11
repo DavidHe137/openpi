@@ -305,15 +305,21 @@ class Pi0(_model.BaseModel):
         beta: float = 8.0,
     ) -> _model.Actions:
         batch_size = observation.state.shape[0]
-        # get prev_action from s-th step to the end, and then pad s steps with zeros
-        prev_action_slice = prev_action[:, s:, :]  # get prev_action from s-th step to the end
-        # jax.debug.print("prev_action_slice shape: {prev_action_slice_shape}", prev_action_slice_shape=prev_action_slice.shape)
-        # create s steps with zeros
-        zero_actions = jnp.zeros((batch_size, s, self.action_dim))
-        # concatenate prev_action_slice and zero_actions
-        prev_action_slice = jnp.concatenate([prev_action_slice, zero_actions], axis=1)
+        h = self.action_horizon
+        s = jnp.clip(s, 0, h)
+        d = jnp.clip(d, 0, h)
 
-        def make_w(d: int, s: int) -> jnp.ndarray:
+        def shift_prev_action(one_prev_action: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
+            """Left-shift the previous chunk by `one_s`, padding the tail with zeros."""
+            indices = jnp.arange(h) + one_s
+            safe_indices = jnp.minimum(indices, h - 1)
+            shifted = one_prev_action[safe_indices, :]
+            valid = indices < h
+            return jnp.where(valid[:, None], shifted, jnp.zeros_like(shifted))
+
+        prev_action_slice = jax.vmap(shift_prev_action)(prev_action, s)
+
+        def make_w(one_d: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
             """
             generate the weight vector W ∈ R^H
             parameters
@@ -325,19 +331,19 @@ class Pi0(_model.BaseModel):
             ----
             W : jnp.ndarray, shape (H,)
             """
-            h = self.action_horizon
             i = jnp.arange(h)  # 0,1,2,...,H-1
 
             # three-segment condition
-            cond_1 = i < d
-            cond_2 = (i >= d) & (i < h - s)
+            cond_1 = i < one_d
+            cond_2 = (i >= one_d) & (i < h - one_s)
             # cond_3 = i >= H - s  # actually can be else
 
             # segment (1): all 1
             w1 = jnp.ones_like(i, dtype=float)
 
             # segment (2): exponential decay
-            c_i = (h - s - i) / (h - s - d + 1)
+            denom = jnp.maximum(h - one_s - one_d + 1, 1)
+            c_i = (h - one_s - i) / denom
             w2 = jnp.exp(c_i) - 1
             w2 = c_i * w2 / (jnp.e - 1)  # (e^{c_i} - 1) / (e - 1)
 
@@ -345,15 +351,10 @@ class Pi0(_model.BaseModel):
             w3 = jnp.zeros_like(i, dtype=float)
 
             # concatenate three segments
-            w = jnp.where(cond_1, w1, jnp.where(cond_2, w2, w3))
-
-            d = jnp.diag(w)
-
-            return jnp.stack([d] * 1, axis=0)
+            return jnp.where(cond_1, w1, jnp.where(cond_2, w2, w3))
 
         # create W
-        # TODO: optimize
-        diag_w = jnp.stack([make_w(d_i, s_i) for d_i, s_i in zip(d, s, strict=True)], axis=0)
+        weights = jax.vmap(make_w)(d, s)
 
         def func_a_1_prime(x_t, time):
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
@@ -393,7 +394,7 @@ class Pi0(_model.BaseModel):
             (a_1_prime, v_t), f_vjp = jax.vjp(func_a_1_prime, x_t, time)
 
             e = prev_action_slice - a_1_prime
-            e = jnp.matmul(diag_w, e)
+            e = weights[:, :, None] * e
             # Compute vector-Jacobian product
             grad_a_1_prime_x_t = f_vjp((e, jnp.zeros_like(v_t)))
             # jax.debug.print("grad_a_1_prime_x_t 0 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[0].shape)

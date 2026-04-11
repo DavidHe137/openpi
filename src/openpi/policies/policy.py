@@ -273,22 +273,15 @@ class Policy(BasePolicy):
 
         return _model.Observation.from_dict(inputs)
 
-    def infer_batch(self, requests: list[InferRequest]) -> list[InferResponse]:  # FIXME: return type is wrong
-        """Run inference on a batch of request.
+    def _infer_batch_group(self, requests: list[InferRequest], *, use_rtc: bool) -> list[dict[str, Any]]:
+        """Run a homogeneous sub-batch.
 
-        Args:
-            obs_batch: List of InferRequest objects of the same infer_type.
-            noise: Optional noise tensor for batch (shape: batch_size, action_horizon, action_dim)
-
-        Returns:
-            List of InferResponse objects, one for each input request.
+        RTC requests require JAX model support plus per-request RTCParams. We keep
+        RTC and non-RTC requests in separate sub-batches so mixed batches still work.
         """
-        if not requests:
-            return []
-
-        # TODO: really bad code here
         batch_size = len(requests)
-        # Sample batched noise from model
+
+        # Sample batched noise from model.
         if self._is_pytorch_model:
             sample_rng_or_pytorch_device = self._pytorch_device
             noise_to_use = self._model.sample_noise(self._pytorch_device, batch_size=batch_size)
@@ -309,54 +302,61 @@ class Policy(BasePolicy):
                 "prompt": obs["prompt"],
             }
 
-        # TODO: fix typing here, I think observation is sent over as a dict
         observation = self.create_batch_obs([rename_keys(req.observation) for req in requests])
 
         if self._is_triton_optimized:
-            # Batched Triton inference path - TODO Rohan: can be squashed into Jax batch path once below TODO is resolved
+            if use_rtc:
+                logger.warning(
+                    "RTC requested for a Triton-optimized policy batch, but Triton batching does not implement RTC; falling back to standard sampling."
+                )
 
-            # Prepare kwargs for sample_actions
             sample_kwargs = dict(self._sample_kwargs)
-
-            # Always pass noise to model (either provided or sampled)
             sample_kwargs["noise"] = np.asarray(noise_to_use)
 
             # TODO Rohan: return state_norm since Triton kernels bypass input_transform for internal method. Figure out why input_transform doesn't work
             actions, state_norm = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+            raw_actions = np.asarray(actions)
 
-            # Convert actions to numpy
-            actions_np = np.asarray(actions)
-
-            # FIXME: I don't think the code below returns proper InferResponses?
-            # Process each batch element
-            results: list[InferResponse] = []
+            results: list[dict[str, Any]] = []
             for i in range(len(requests)):
-                # Extract actions for this batch element
-                action_i = actions_np[i]
-
-                # Extract normalized state for this batch element
-                state_norm_i = state_norm[i]
-
-                result: dict[str, Any] = {"state": state_norm_i, "actions": action_i}
-
-                # Apply the full output transform (including Unnormalize)
+                result: dict[str, Any] = {"state": state_norm[i], "actions": raw_actions[i]}
                 result = self._output_transform(result)
 
-                # Extract noise for this batch element
                 noise_np = np.asarray(noise_to_use)
                 noise_i = noise_np[i] if noise_np.ndim == 3 else noise_np
                 result["noise"] = noise_i
-
+                # RTC guidance expects actions in model space, before output unnormalization.
+                result["rtc_prev_actions"] = raw_actions[i]
                 results.append(result)
 
             return results
-        # Prepare kwargs for sample_actions
-        sample_kwargs = dict(self._sample_kwargs)
 
-        # Always pass noise (either provided or sampled)
+        sample_kwargs = dict(self._sample_kwargs)
         sample_kwargs["noise"] = noise_to_use
 
+        if use_rtc:
+            assert not self._is_pytorch_model, "RTC is not supported for PyTorch models"
+
+            rtc_params = [request.params for request in requests]
+            assert all(isinstance(params, RTCParams) for params in rtc_params), "RTC batch requires RTCParams"
+            prev_actions = np.stack([np.asarray(params.prev_action) for params in rtc_params], axis=0)
+            s_values = np.asarray([params.s_param for params in rtc_params], dtype=np.int32)
+            d_values = np.asarray([params.d_param for params in rtc_params], dtype=np.int32)
+            logger.debug(
+                "Executing RTC sub-batch: batch_size=%d s=%s d=%s prev_action_shape=%s",
+                len(requests),
+                s_values.tolist(),
+                d_values.tolist(),
+                tuple(prev_actions.shape),
+            )
+
+            sample_kwargs["use_rtc"] = True
+            sample_kwargs["prev_action"] = jnp.asarray(prev_actions)
+            sample_kwargs["s"] = jnp.asarray(s_values)
+            sample_kwargs["d"] = jnp.asarray(d_values)
+
         actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+        raw_actions = np.asarray(actions.detach().cpu()) if self._is_pytorch_model else np.asarray(actions)
         outputs = {
             "state": observation.state,
             "actions": actions,
@@ -369,7 +369,6 @@ class Policy(BasePolicy):
 
         outputs = self._output_transform(outputs)
 
-        # Split batch results back into individual results
         results = []
         for i in range(len(requests)):
             result = {}
@@ -379,17 +378,53 @@ class Policy(BasePolicy):
                 else:
                     result[key] = value
 
-            # Extract noise for this batch element
             if self._is_pytorch_model and hasattr(noise_to_use, "detach"):
                 noise_batch = np.asarray(noise_to_use.detach().cpu())
             else:
                 noise_batch = np.asarray(noise_to_use)
             noise_i = noise_batch[i] if noise_batch.ndim == 3 else noise_batch
             result["noise"] = noise_i
-
+            # RTC guidance expects actions in model space, before output unnormalization.
+            result["rtc_prev_actions"] = raw_actions[i]
             results.append(result)
 
         return results
+
+    def infer_batch(self, requests: list[InferRequest]) -> list[InferResponse]:  # FIXME: return type is wrong
+        """Run inference on a batch of request.
+
+        Args:
+            obs_batch: List of InferRequest objects of the same infer_type.
+            noise: Optional noise tensor for batch (shape: batch_size, action_horizon, action_dim)
+
+        Returns:
+            List of InferResponse objects, one for each input request.
+        """
+        if not requests:
+            return []
+
+        results: list[dict[str, Any] | None] = [None] * len(requests)
+        grouped_indices: dict[bool, list[int]] = {False: [], True: []}
+
+        for index, request in enumerate(requests):
+            can_use_rtc = (
+                not self._is_pytorch_model
+                and not self._is_triton_optimized
+                and request.infer_type == InferType.INFERENCE_TIME_RTC
+                and isinstance(request.params, RTCParams)
+            )
+            grouped_indices[can_use_rtc].append(index)
+
+        for use_rtc, indices in grouped_indices.items():
+            if not indices:
+                continue
+            grouped_requests = [requests[index] for index in indices]
+            grouped_results = self._infer_batch_group(grouped_requests, use_rtc=use_rtc)
+            for index, result in zip(indices, grouped_results, strict=True):
+                results[index] = result
+
+        assert all(result is not None for result in results)
+        return list(results)
 
     @property
     def metadata(self) -> dict[str, Any]:
