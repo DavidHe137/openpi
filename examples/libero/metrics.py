@@ -1,5 +1,6 @@
 """Metrics and plotting utilities for LIBERO experiments."""
 
+import json
 from typing import List, Dict, Callable, Optional, Tuple
 import pandas as pd
 import numpy as np
@@ -848,6 +849,30 @@ def generate_staleness_plot(output_path: pathlib.Path) -> None:
     logger.info(f"Saved {plots_dir / 'staleness_distribution.png'}")
 
 
+def generate_batch_size_plot(output_path: pathlib.Path) -> None:
+    """Distribution of action chunk execution horizons (batch sizes)."""
+
+    with open(output_path / "server_metrics_history.json", "r") as f:
+        data = json.load(f)
+
+    # FIXME: should use JSONDataclass loading
+    batch_sizes = [len(batch[1]) for batch in data["batches"]]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.hist(batch_sizes, bins=30, color="steelblue", alpha=0.7, edgecolor="black")
+    ax.set_title("Batch Sizes chosen by Server", fontsize=14, fontweight="bold")
+    ax.set_xlabel("Batch Size", fontsize=12)
+    ax.set_ylabel("Frequency", fontsize=12)
+    ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    plots_dir = output_path / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plots_dir / "batch_size_distribution.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {plots_dir / 'batch_size_distribution.png'}")
+
+
 def generate_all_plots(output_path: pathlib.Path) -> None:
     """Generate all plots."""
     logger.info("Generating plots...")
@@ -858,6 +883,7 @@ def generate_all_plots(output_path: pathlib.Path) -> None:
     generate_actions_left_heatmap(output_path)
     generate_starvation_plot(output_path)
     generate_staleness_plot(output_path)
+    generate_batch_size_plot(output_path)
     logger.info("Done!")
 
 
