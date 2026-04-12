@@ -30,6 +30,7 @@ class RequestScheduler(ABC):
         self._decisions: list[SchedulerDecision] = []
         self.latency_tracker = EMALatencyTracker()  # TODO: allow different latency trackers
         self.next_batch_id = itertools.count(1)
+        self._in_flight = 0
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
@@ -119,6 +120,14 @@ class RequestScheduler(ABC):
                 )
             )
             self._batch_queue.put_nowait(RequestBatch(requests=annotated, batch_id=batch_id))
+            self._in_flight += 1
+
+    def notify_batch_complete(self) -> None:
+        self._in_flight = max(0, self._in_flight - 1)
+
+    @property
+    def in_flight(self) -> int:
+        return self._in_flight
 
     @abstractmethod
     def get_next_batches(self) -> list[list[SlotRequest]]:

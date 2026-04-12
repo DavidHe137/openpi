@@ -148,11 +148,15 @@ def _run_scheduler(
         while result_sock.poll(0):
             msg = result_sock.recv_pyobj(zmq.NOBLOCK)
             if isinstance(msg, list):
+                saw_completion = False
                 for item in msg:
                     if isinstance(item, CompletionNotification):
                         scheduler.update_completion(item)
+                        saw_completion = True
+                if saw_completion:
+                    scheduler.notify_batch_complete()
 
-        if not batch_queue.full():
+        if scheduler.in_flight == 0:
             scheduler.schedule()
             if scheduler_metrics_queue is not None:
                 samples = scheduler.flush_decisions()
