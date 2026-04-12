@@ -137,10 +137,22 @@ def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
 
         result = Result.from_json(metadata_file)
         costs = np.load(cost_history_file)
-        starvation_steps = int(np.isnan(costs).sum())
+        nan_mask = np.isnan(costs)
+        starvation_steps = int(nan_mask.sum())
         total_steps = int(costs.shape[0])
         assert total_steps > 0, "cost_history should contain at least one step"
         assert control_hz is not None and control_hz > 0
+
+        # Starvation excluding leading NaNs (before the robot's first action).
+        non_nan_idx = np.flatnonzero(~nan_mask)
+        if non_nan_idx.size > 0:
+            first = int(non_nan_idx[0])
+            post_first_observed = total_steps - first
+            post_first_starvation = int(nan_mask[first:].sum())
+        else:
+            post_first_observed = 0
+            post_first_starvation = 0
+
         row = {
             "robot_idx": result.robot_idx,
             "episode_idx": result.episode_idx,
@@ -149,6 +161,8 @@ def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
             "starvation_steps": starvation_steps,
             "observed_steps": total_steps,
             "planner_starvation_seconds": starvation_steps / control_hz,
+            "post_first_starvation_steps": post_first_starvation,
+            "post_first_observed_steps": post_first_observed,
         }
 
         rows.append(row)
@@ -924,10 +938,15 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     aggregation_spec["starvation_steps"] = "sum"
     aggregation_spec["observed_steps"] = "sum"
     aggregation_spec["planner_starvation_seconds"] = "sum"
+    aggregation_spec["post_first_starvation_steps"] = "sum"
+    aggregation_spec["post_first_observed_steps"] = "sum"
 
     summary = df.groupby(["task_suite_name", "task_id"]).agg(aggregation_spec)
     summary["planner_starvation_rate"] = (
         summary["starvation_steps"] / summary["observed_steps"]
+    )
+    summary["post_first_starvation_rate"] = (
+        summary["post_first_starvation_steps"] / summary["post_first_observed_steps"]
     )
     summary.reset_index().to_csv(output_path / "summary.csv", index=False)
 
