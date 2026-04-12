@@ -3,12 +3,14 @@ from abc import abstractmethod
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 import dataclasses
+import itertools
 import multiprocessing as mp
 import time
 
 from openpi.scheduling.latency import EMALatencyTracker
 from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import CompletionNotification
+from openpi.serving.schemas import RequestBatch
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 
@@ -27,6 +29,7 @@ class RequestScheduler(ABC):
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
         self._decisions: list[SchedulerDecision] = []
         self.latency_tracker = EMALatencyTracker()  # TODO: allow different latency trackers
+        self.next_batch_id = itertools.count(1)
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
@@ -95,9 +98,10 @@ class RequestScheduler(ABC):
                     recorded_at=time.time(),
                     candidates=candidate_entries,
                     scheduled=batch_entries,
+                    batch_id=next(self.next_batch_id),
                 )
             )
-            self._batch_queue.put_nowait(annotated)
+            self._batch_queue.put_nowait(RequestBatch(requests=annotated, batch_id=next(self.next_batch_id)))
 
     @abstractmethod
     def get_next_batches(self) -> list[list[SlotRequest]]:
@@ -110,7 +114,7 @@ class RequestScheduler(ABC):
 
     def clear(self, robot_id: str) -> None:
         self.reset_robot(robot_id)
-        self.latency_tracker.clear()
+        self.latency_tracker.clear(robot_id)
 
     @contextmanager
     def record_timing(self) -> Generator[Callable[[], float], None, None]:

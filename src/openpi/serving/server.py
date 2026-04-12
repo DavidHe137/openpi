@@ -58,6 +58,7 @@ from openpi.serving.metrics import MetricsStore
 from openpi.serving.metrics.dash_app import create_dash_app
 from openpi.serving.scheduler import _run_scheduler
 from openpi.serving.schemas import AckNotification
+from openpi.serving.schemas import ResponseBatch
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import WarmupSeed
@@ -97,9 +98,9 @@ async def _router_task(
     logger.info("Router task starting")
     while True:
         try:
-            responses: list[InferResponse] = await response_sock.recv_pyobj()
-            metrics_store.record_batch(responses)
-            for response in responses:
+            batch: ResponseBatch = await response_sock.recv_pyobj()
+            metrics_store.record_batch(batch)
+            for response in batch.responses:
                 queue = response_queues.get(response.robot_id)
                 if queue is not None:
                     await queue.put(response)

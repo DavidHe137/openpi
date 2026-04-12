@@ -16,6 +16,8 @@ import zmq
 
 from openpi.serving.schemas import BatchProfile
 from openpi.serving.schemas import CompletionNotification
+from openpi.serving.schemas import RequestBatch
+from openpi.serving.schemas import ResponseBatch
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.slots import RobotSlots
 from openpi.shared import logging_config
@@ -114,7 +116,8 @@ def _run_gpu_worker(
         return RTCParams(prev_action=prev, s_param=s, d_param=d_param)
 
     while True:
-        slot_reqs: list[SlotRequest] = batch_queue.get()  # blocking
+        batch: RequestBatch = batch_queue.get()  # blocking
+        slot_reqs: list[SlotRequest] = batch.requests
 
         # Read obs and metadata together — guarantees they correspond to the same request,
         # even if the slot was overwritten after the SlotRequest was enqueued.
@@ -188,7 +191,7 @@ def _run_gpu_worker(
             _last_served_request_id[sr.robot_id] = sd.request_id
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
-        response_sock.send_pyobj(responses)
+        response_sock.send_pyobj(ResponseBatch(responses=responses, batch_id=batch.batch_id))
 
         # Notify scheduler of completion so it can update latency estimates
         inference_duration = t1 - t0

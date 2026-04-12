@@ -22,6 +22,7 @@ from openpi.serving.metrics.schemas import ResponseRecord
 from openpi.serving.metrics.schemas import Robot
 from openpi.serving.metrics.schemas import RobotID
 from openpi.serving.metrics.schemas import window_filter
+from openpi.serving.schemas import ResponseBatch
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 
@@ -154,12 +155,13 @@ class MetricsStore(JSONDataclass):
         }
         self.scheduler_decisions = [SchedulerDecision.from_json(s) for s in self.scheduler_decisions]
 
-    def record_batch(self, responses: list[InferResponse]) -> None:
+    def record_batch(self, batch: ResponseBatch) -> None:
         """Called once per batch by _router_task."""
         with lock:
+            responses = batch.responses
             self.batches.append(
                 BatchSummary(
-                    batch_id=len(self.batches),
+                    batch_id=batch.batch_id,
                     robot_ids=[r.robot_id for r in responses],
                     request_ids=[r.request_id for r in responses],
                     inference_start_time=responses[0].inference_start_time,
