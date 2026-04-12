@@ -89,6 +89,7 @@ class SchedulerDecision:
     duration: float
     recorded_at: float
     batch_id: int
+    requests: list[dict] = field(default_factory=list)
     candidates: list[dict] = field(default_factory=list)
     scheduled: list[dict] = field(default_factory=list)
 

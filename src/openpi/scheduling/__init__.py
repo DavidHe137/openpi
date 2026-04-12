@@ -49,18 +49,32 @@ class RequestScheduler(ABC):
 
     def schedule(self) -> None:
         """Return a list of batches of requests to be sent to the GPU."""
+        all_requests = self._latest_requests.values()
         candidates = self.schedulable_requests
         with self.record_timing() as duration:
             batches = self.get_next_batches()
 
+        now = time.time()
         for batch in batches:
             batch_size = len(batch)
             # Capture deadlines before the loop overwrites them, sort earliest first.
+            requests = sorted(
+                (
+                    {
+                        "robot_id": r.robot_id,
+                        "observation_step": r.observation_step,
+                        "action_start_step": r.action_start_step,
+                        "deadline": self._deadlines.get(r.robot_id, r.deadline) - now,
+                    }
+                    for r in all_requests
+                ),
+                key=lambda x: x["deadline"],
+            )
             candidate_entries = sorted(
                 (
                     {
                         "robot_id": r.robot_id,
-                        "deadline": self._deadlines.get(r.robot_id, r.deadline),
+                        "deadline": self._deadlines.get(r.robot_id, r.deadline) - now,
                     }
                     for r in candidates
                 ),
@@ -70,7 +84,7 @@ class RequestScheduler(ABC):
                 (
                     {
                         "robot_id": r.robot_id,
-                        "deadline": self._deadlines.get(r.robot_id, r.deadline),
+                        "deadline": self._deadlines.get(r.robot_id, r.deadline) - now,
                     }
                     for r in batch
                 ),
@@ -89,19 +103,22 @@ class RequestScheduler(ABC):
                 # FIXME: only pass inference + action latency, can determine observation latency when processing
                 annotated.append(dataclasses.replace(request, estimated_d_param=total_latency_steps))
 
+            batch_id = next(self.next_batch_id)
+
             # FIXME: this branch only has single batch decisions for now, will need to refactor timing for multi batch decisions
             self._decisions.append(
                 SchedulerDecision(
                     scheduler_name=self.__class__.__name__,
                     metric_name="batch_scheduled",
                     duration=duration(),
-                    recorded_at=time.time(),
+                    recorded_at=now,
+                    requests=requests,
                     candidates=candidate_entries,
                     scheduled=batch_entries,
-                    batch_id=next(self.next_batch_id),
+                    batch_id=batch_id,
                 )
             )
-            self._batch_queue.put_nowait(RequestBatch(requests=annotated, batch_id=next(self.next_batch_id)))
+            self._batch_queue.put_nowait(RequestBatch(requests=annotated, batch_id=batch_id))
 
     @abstractmethod
     def get_next_batches(self) -> list[list[SlotRequest]]:
