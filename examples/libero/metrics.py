@@ -5,6 +5,7 @@ from typing import List, Dict, Callable, Optional, Tuple
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from matplotlib.patches import Patch
 from dataclasses import asdict
 from rich.console import Console
@@ -614,13 +615,20 @@ def generate_actions_left_heatmap(
     )  # cap at 400 inches (~60k px at 150 dpi)
     fig, ax = plt.subplots(figsize=(fig_width, max(4, n_robots * 0.6)))
 
+    vmax = int(np.nanmax(matrix)) if not np.all(np.isnan(matrix)) else 1
+    # Black for 0 (starvation), then RdYlGn for 1..vmax
+    rdylgn = plt.cm.get_cmap("RdYlGn", vmax)
+    cmap_colors = [(0.0, 0.0, 0.0, 1.0)] + [rdylgn(i) for i in range(vmax)]
+    cmap = mcolors.ListedColormap(cmap_colors)
+
     im = ax.imshow(
         matrix,
         aspect="auto",
-        cmap="RdYlGn",
+        cmap=cmap,
         interpolation="nearest",
         origin="lower",
         vmin=0,
+        vmax=vmax,
     )
 
     # Episode boundary markers (thin white lines)
