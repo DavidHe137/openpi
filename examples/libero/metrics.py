@@ -1002,6 +1002,13 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     total_starvation_steps = int(df["starvation_steps"].sum())
     total_observed_steps = int(df["observed_steps"].sum())
     overall_starvation_rate = total_starvation_steps / total_observed_steps
+    total_post_first_starvation_steps = int(df["post_first_starvation_steps"].sum())
+    total_post_first_observed_steps = int(df["post_first_observed_steps"].sum())
+    overall_post_first_starvation_rate = (
+        total_post_first_starvation_steps / total_post_first_observed_steps
+        if total_post_first_observed_steps > 0
+        else 0.0
+    )
     console.print(
         f"\n[bold green]Total success rate: {summary['success'].mean():.2%}[/bold green]"
     )
@@ -1010,6 +1017,10 @@ def calculate_metrics(output_path: pathlib.Path) -> None:
     )
     console.print(
         f"[bold yellow]Planner starvation rate: {overall_starvation_rate:.2%}[/bold yellow]"
+    )
+    console.print(
+        f"[bold yellow]Planner starvation rate (excl. pre-first-action): "
+        f"{overall_post_first_starvation_rate:.2%}[/bold yellow]"
     )
     console.print(
         f"[bold yellow]Planner starvation time: {df['planner_starvation_seconds'].sum():.2f}s[/bold yellow]"
