@@ -895,6 +895,85 @@ def generate_batch_size_plot(output_path: pathlib.Path) -> None:
     logger.info(f"Saved {plots_dir / 'batch_size_distribution.png'}")
 
 
+def generate_server_timings_plot(output_path: pathlib.Path) -> None:
+    """Plot distributions of step interval, client->server, inference, server->client."""
+    history_path = output_path / "server_metrics_history.json"
+    if not history_path.exists():
+        logger.warning("No server_metrics_history.json; skipping server timings plot")
+        return
+    data = json.loads(history_path.read_text())
+
+    step_intervals: List[float] = []
+    inbound: List[float] = []
+    outbound: List[float] = []
+    for robot in data.get("robots", {}).values():
+        for ep in robot.get("episodes", []):
+            ts = ep.get("step_timestamps") or []
+            if len(ts) >= 2:
+                step_intervals.extend(
+                    (np.diff(np.asarray(ts, dtype=float)) * 1000.0).tolist()
+                )
+            for req in ep.get("requests", []):
+                ra = req.get("server_arrival_time")
+                rt = req.get("request_timestamp")
+                if ra and rt:
+                    inbound.append((ra - rt) * 1000.0)
+            for resp in ep.get("responses", []):
+                rcv = resp.get("receive_time", 0.0) or 0.0
+                snd = resp.get("server_send_time", 0.0) or 0.0
+                if rcv > 0 and snd > 0:
+                    outbound.append((rcv - snd) * 1000.0)
+
+    infer: List[float] = []
+    for b in data.get("batches", []):
+        if isinstance(b, dict):
+            start = b.get("inference_start_time")
+            end = b.get("inference_end_time")
+        else:
+            _, _, _, start, end = b
+        if start and end and end >= start:
+            infer.append((end - start) * 1000.0)
+
+    timings = {
+        "step interval (ms)": np.asarray(step_intervals),
+        "client->server delay (ms)": np.asarray(inbound),
+        "inference time (ms)": np.asarray(infer),
+        "server->client delay (ms)": np.asarray(outbound),
+    }
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+    assert len(timings) == axes.size
+    for ax, (label, arr) in zip(axes.flat, timings.items()):
+        if arr.size == 0:
+            ax.set_title(f"{label} (no data)")
+            ax.set_axis_off()
+            continue
+        hi = float(np.percentile(arr, 99.5))
+        ax.hist(
+            np.clip(arr, None, hi),
+            bins=100,
+            color="steelblue",
+            edgecolor="black",
+            alpha=0.8,
+        )
+        ax.set_xlabel(label)
+        ax.set_ylabel("count")
+        ax.set_title(
+            f"n={arr.size}  p50={np.percentile(arr, 50):.1f}  p95={np.percentile(arr, 95):.1f}  "
+            f"p99={np.percentile(arr, 99):.1f}  max={arr.max():.1f}",
+            fontsize=9,
+        )
+        for p, c in [(50, "green"), (95, "orange"), (99, "red")]:
+            ax.axvline(np.percentile(arr, p), color=c, linestyle="--", linewidth=1)
+    fig.tight_layout()
+
+    out = output_path / "plots" / "server_timings.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+    logger.info("Saved server timings plot to %s", out)
+
+
 def generate_all_plots(output_path: pathlib.Path) -> None:
     """Generate all plots."""
     logger.info("Generating plots...")
@@ -906,6 +985,7 @@ def generate_all_plots(output_path: pathlib.Path) -> None:
     generate_starvation_plot(output_path)
     generate_staleness_plot(output_path)
     generate_batch_size_plot(output_path)
+    generate_server_timings_plot(output_path)
     logger.info("Done!")
 
 

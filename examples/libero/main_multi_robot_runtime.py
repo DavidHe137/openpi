@@ -10,6 +10,7 @@ from typing import (
     Literal,
     Optional,
     Dict,
+    Tuple,
     Type,
 )  # Any used for shared globals
 import datetime
@@ -372,8 +373,138 @@ def save_server_metrics_history(args: Args) -> None:
         hist_path = args.output_dir / "server_metrics_history.json"
         hist_path.write_text(json.dumps(history, indent=2))
         logging.info(f"Saved server metrics history to {hist_path}")
+        check_step_cadence(
+            history, control_hz=args.control_hz, output_dir=args.output_dir
+        )
     except Exception as e:
         logging.warning(f"Could not fetch server metrics history: {e}")
+
+
+def check_step_cadence(
+    history: Dict[str, Any],
+    control_hz: int,
+    output_dir: pathlib.Path,
+    *,
+    p50_tol: float = 0.25,
+    p95_tol: float = 1.0,
+    top_k: int = 10,
+) -> None:
+    """Flag the run as defective if step intervals are far from 1/control_hz.
+
+    Also prints the top-k outliers for step intervals, inbound/outbound network
+    delays, and inference times (with robot/request/batch ids). Writes
+    output_dir/defective_run.json when thresholds are exceeded.
+    """
+    expected_ms = 1000.0 / float(control_hz)
+
+    step_samples: List[Tuple[float, Dict[str, Any]]] = []
+    inbound_samples: List[Tuple[float, Dict[str, Any]]] = []
+    outbound_samples: List[Tuple[float, Dict[str, Any]]] = []
+    for robot_id, robot in history.get("robots", {}).items():
+        for ep_idx, ep in enumerate(robot.get("episodes", [])):
+            ts = ep.get("step_timestamps") or []
+            for i in range(1, len(ts)):
+                step_samples.append(
+                    (
+                        (ts[i] - ts[i - 1]) * 1000.0,
+                        {"robot_id": robot_id, "episode_idx": ep_idx, "step": i},
+                    )
+                )
+            for req in ep.get("requests", []):
+                ra = req.get("server_arrival_time")
+                rt = req.get("request_timestamp")
+                if ra and rt:
+                    inbound_samples.append(
+                        (
+                            (ra - rt) * 1000.0,
+                            {"robot_id": robot_id, "request_id": req.get("request_id")},
+                        )
+                    )
+            for resp in ep.get("responses", []):
+                rcv = resp.get("receive_time", 0.0) or 0.0
+                snd = resp.get("server_send_time", 0.0) or 0.0
+                if rcv > 0 and snd > 0:
+                    req = resp.get("request", {}) or {}
+                    outbound_samples.append(
+                        (
+                            (rcv - snd) * 1000.0,
+                            {
+                                "robot_id": robot_id,
+                                "request_id": req.get("request_id"),
+                                "batch_id": resp.get("batch_id"),
+                            },
+                        )
+                    )
+
+    infer_samples: List[Tuple[float, Dict[str, Any]]] = []
+    for b in history.get("batches", []):
+        if isinstance(b, dict):
+            bid = b.get("batch_id")
+            rids = b.get("request_ids")
+            start = b.get("inference_start_time")
+            end = b.get("inference_end_time")
+        else:
+            bid, _, rids, start, end = b
+        if start and end and end >= start:
+            infer_samples.append(
+                ((end - start) * 1000.0, {"batch_id": bid, "request_ids": rids})
+            )
+
+    def _log_outliers(label: str, samples: List[Tuple[float, Dict[str, Any]]]) -> None:
+        if not samples:
+            logging.info("%s: no samples", label)
+            return
+        samples.sort(key=lambda x: x[0], reverse=True)
+        logging.info("%s top-%d outliers:", label, min(top_k, len(samples)))
+        for val_ms, tag in samples[:top_k]:
+            logging.info("  %.2f ms  %s", val_ms, tag)
+
+    _log_outliers("step interval", step_samples)
+    _log_outliers("client->server delay", inbound_samples)
+    _log_outliers("inference time", infer_samples)
+    _log_outliers("server->client delay", outbound_samples)
+
+    if not step_samples:
+        logging.warning("No step_timestamps found; cannot validate step cadence.")
+        return
+
+    arr = np.asarray([v for v, _ in step_samples])
+    p50 = float(np.percentile(arr, 50))
+    p95 = float(np.percentile(arr, 95))
+    p50_err = abs(p50 - expected_ms) / expected_ms
+    p95_err = abs(p95 - expected_ms) / expected_ms
+    defective = p50_err > p50_tol or p95_err > p95_tol
+
+    stats = {
+        "control_hz": control_hz,
+        "expected_interval_ms": round(expected_ms, 3),
+        "n_intervals": int(arr.size),
+        "p50_ms": round(p50, 3),
+        "p95_ms": round(p95, 3),
+        "p99_ms": round(float(np.percentile(arr, 99)), 3),
+        "max_ms": round(float(arr.max()), 3),
+        "p50_rel_error": round(p50_err, 3),
+        "p95_rel_error": round(p95_err, 3),
+        "p50_tol": p50_tol,
+        "p95_tol": p95_tol,
+        "defective": defective,
+    }
+
+    if defective:
+        logging.warning(
+            "Run flagged DEFECTIVE: step cadence off from %.2fms (p50=%.2fms, p95=%.2fms)",
+            expected_ms,
+            p50,
+            p95,
+        )
+        (output_dir / "defective_run.json").write_text(json.dumps(stats, indent=2))
+    else:
+        logging.info(
+            "Step cadence OK: p50=%.2fms p95=%.2fms (expected %.2fms)",
+            p50,
+            p95,
+            expected_ms,
+        )
 
 
 def validate_args(args: Args) -> None:
