@@ -455,14 +455,46 @@ def check_step_cadence(
             logging.info("%s: no samples", label)
             return
         samples.sort(key=lambda x: x[0], reverse=True)
-        logging.info("%s top-%d outliers:", label, min(top_k, len(samples)))
-        for val_ms, tag in samples[:top_k]:
+        n = min(top_k, len(samples))
+        logging.info("%s top-%d upper outliers:", label, n)
+        for val_ms, tag in samples[:n]:
+            logging.info("  %.2f ms  %s", val_ms, tag)
+        logging.info("%s top-%d lower outliers:", label, n)
+        for val_ms, tag in samples[-n:][::-1]:
             logging.info("  %.2f ms  %s", val_ms, tag)
 
     _log_outliers("step interval", step_samples)
     _log_outliers("client->server delay", inbound_samples)
     _log_outliers("inference time", infer_samples)
     _log_outliers("server->client delay", outbound_samples)
+
+    def _top(samples: List[Tuple[float, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return [
+            {"value_ms": round(v, 3), **tag}
+            for v, tag in sorted(samples, key=lambda x: x[0], reverse=True)[:top_k]
+        ]
+
+    def _bottom(samples: List[Tuple[float, Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        return [
+            {"value_ms": round(v, 3), **tag}
+            for v, tag in sorted(samples, key=lambda x: x[0])[:top_k]
+        ]
+
+    outliers = {
+        "step_interval": {"upper": _top(step_samples), "lower": _bottom(step_samples)},
+        "client_to_server_delay": {
+            "upper": _top(inbound_samples),
+            "lower": _bottom(inbound_samples),
+        },
+        "inference_time": {
+            "upper": _top(infer_samples),
+            "lower": _bottom(infer_samples),
+        },
+        "server_to_client_delay": {
+            "upper": _top(outbound_samples),
+            "lower": _bottom(outbound_samples),
+        },
+    }
 
     if not step_samples:
         logging.warning("No step_timestamps found; cannot validate step cadence.")
@@ -488,6 +520,7 @@ def check_step_cadence(
         "p50_tol": p50_tol,
         "p95_tol": p95_tol,
         "defective": defective,
+        "top_outliers": outliers,
     }
 
     if defective:

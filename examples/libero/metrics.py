@@ -974,6 +974,146 @@ def generate_server_timings_plot(output_path: pathlib.Path) -> None:
     logger.info("Saved server timings plot to %s", out)
 
 
+def generate_server_timings_over_time_plot(output_path: pathlib.Path) -> None:
+    """Plot server timings over wall-clock time to check temporal alignment of spikes."""
+    history_path = output_path / "server_metrics_history.json"
+    if not history_path.exists():
+        logger.warning(
+            "No server_metrics_history.json; skipping server timings over time plot"
+        )
+        return
+    data = json.loads(history_path.read_text())
+
+    step_t: List[float] = []
+    step_v: List[float] = []
+    step_robot: List[str] = []
+    inbound_t: List[float] = []
+    inbound_v: List[float] = []
+    inbound_robot: List[str] = []
+    outbound_t: List[float] = []
+    outbound_v: List[float] = []
+    outbound_robot: List[str] = []
+
+    for robot_id, robot in data.get("robots", {}).items():
+        for ep in robot.get("episodes", []):
+            ts = ep.get("step_timestamps") or []
+            for i in range(1, len(ts)):
+                step_t.append(float(ts[i]))
+                step_v.append((float(ts[i]) - float(ts[i - 1])) * 1000.0)
+                step_robot.append(robot_id)
+            for req in ep.get("requests", []):
+                ra = req.get("server_arrival_time")
+                rt = req.get("request_timestamp")
+                if ra and rt:
+                    inbound_t.append(float(rt))
+                    inbound_v.append((float(ra) - float(rt)) * 1000.0)
+                    inbound_robot.append(robot_id)
+            for resp in ep.get("responses", []):
+                rcv = resp.get("receive_time", 0.0) or 0.0
+                snd = resp.get("server_send_time", 0.0) or 0.0
+                if rcv > 0 and snd > 0:
+                    outbound_t.append(float(snd))
+                    outbound_v.append((float(rcv) - float(snd)) * 1000.0)
+                    outbound_robot.append(robot_id)
+
+    infer_t: List[float] = []
+    infer_v: List[float] = []
+    infer_bs: List[int] = []
+    for b in data.get("batches", []):
+        if isinstance(b, dict):
+            start = b.get("inference_start_time")
+            end = b.get("inference_end_time")
+            rids = b.get("request_ids") or []
+        else:
+            _, _, rids, start, end = b
+        if start and end and end >= start:
+            infer_t.append(float(start))
+            infer_v.append((float(end) - float(start)) * 1000.0)
+            infer_bs.append(len(rids) if rids is not None else 0)
+
+    all_times = step_t + inbound_t + outbound_t + infer_t
+    if not all_times:
+        logger.warning("No server timing samples; skipping over-time plot")
+        return
+    t0 = min(all_times)
+
+    def _rel(ts: List[float]) -> np.ndarray:
+        return np.asarray(ts, dtype=float) - t0
+
+    series = [
+        ("step interval (ms)", _rel(step_t), np.asarray(step_v), step_robot, None),
+        (
+            "client->server delay (ms)",
+            _rel(inbound_t),
+            np.asarray(inbound_v),
+            inbound_robot,
+            None,
+        ),
+        (
+            "inference time (ms)",
+            _rel(infer_t),
+            np.asarray(infer_v),
+            None,
+            np.asarray(infer_bs),
+        ),
+        (
+            "server->client delay (ms)",
+            _rel(outbound_t),
+            np.asarray(outbound_v),
+            outbound_robot,
+            None,
+        ),
+    ]
+
+    robot_ids = sorted({*step_robot, *inbound_robot, *outbound_robot})
+    cmap = plt.get_cmap("tab20" if len(robot_ids) > 10 else "tab10")
+    robot_color = {r: cmap(i % cmap.N) for i, r in enumerate(robot_ids)}
+
+    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
+    assert len(series) == axes.size
+    for ax, (label, t, v, robots, bs) in zip(axes, series):
+        if t.size == 0:
+            ax.set_title(f"{label} (no data)")
+            ax.set_ylabel(label)
+            continue
+        if bs is not None:
+            sc = ax.scatter(t, v, c=bs, cmap="viridis", s=6, alpha=0.7)
+            cbar = fig.colorbar(sc, ax=ax, pad=0.01)
+            cbar.set_label("batch size", fontsize=8)
+        else:
+            colors = [robot_color[r] for r in robots]  # type: ignore[index]
+            ax.scatter(t, v, c=colors, s=4, alpha=0.5, linewidths=0)
+        ax.set_ylabel(label, fontsize=9)
+        hi = float(np.percentile(v, 99.5))
+        ax.set_ylim(0, max(hi * 1.1, 1.0))
+        ax.grid(True, alpha=0.3)
+        ax.set_title(
+            f"n={v.size}  p50={np.percentile(v, 50):.1f}  "
+            f"p95={np.percentile(v, 95):.1f}  p99={np.percentile(v, 99):.1f}  "
+            f"max={v.max():.1f} (y clipped at p99.5)",
+            fontsize=9,
+        )
+
+    axes[-1].set_xlabel("time since first sample (s)")
+    if robot_ids:
+        handles = [Patch(facecolor=robot_color[r], label=r) for r in robot_ids]
+        fig.legend(
+            handles=handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.0),
+            ncol=min(len(robot_ids), 10),
+            fontsize=8,
+            frameon=False,
+        )
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+
+    out = output_path / "plots" / "server_timings_over_time.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+    logger.info("Saved server timings over time plot to %s", out)
+
+
 def generate_all_plots(output_path: pathlib.Path) -> None:
     """Generate all plots."""
     logger.info("Generating plots...")
@@ -986,6 +1126,7 @@ def generate_all_plots(output_path: pathlib.Path) -> None:
     generate_staleness_plot(output_path)
     generate_batch_size_plot(output_path)
     generate_server_timings_plot(output_path)
+    generate_server_timings_over_time_plot(output_path)
     logger.info("Done!")
 
 
