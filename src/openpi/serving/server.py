@@ -65,6 +65,8 @@ from openpi.serving.schemas import WarmupSeed
 from openpi.serving.schemas import _request_id_counter
 from openpi.serving.slots import RobotSlots
 from openpi.serving.slots import SlotData
+from openpi.serving.transport import FastApiWebSocketTransport
+from openpi.serving.transport import ServerTransport
 
 MAX_ROBOTS = 100
 NUM_WARMUP = 100
@@ -112,19 +114,19 @@ async def _router_task(
             logger.exception("Router task error")
 
 
-async def _ws_handshake(
-    websocket: WebSocket,
+async def _handshake(
+    transport: ServerTransport,
     state: ServerState,
 ) -> tuple[str, int, ConnectRequest] | None:
     """Phase 1: receive ConnectRequest (with client-provided robot_id), confirm connection.
 
     Returns (robot_id, slot_index, connect_req) on success, or None if the
-    client sent an unexpected first message (websocket is closed before returning).
+    client sent an unexpected first message (transport is closed before returning).
     """
-    raw = await websocket.receive_bytes()
+    raw = await transport.receive_message()
     msg = msgpack_numpy.unpackb(raw)
     if msg.get("type") != "connect":
-        await websocket.close(code=1002, reason="expected connect message")
+        await transport.close()
         return None
     connect_req = ConnectRequest(**{k: v for k, v in msg.items() if k != "type"})
 
@@ -133,13 +135,13 @@ async def _ws_handshake(
     state.response_queues[robot_id] = asyncio.Queue()
     state.robot_metadata[robot_id] = connect_req
 
-    await websocket.send_bytes(msgpack_numpy.packb(dataclasses.asdict(ConnectResponse())))
+    await transport.send_message(msgpack_numpy.packb(dataclasses.asdict(ConnectResponse())))
     logger.info("Robot %s connected (control_hz=%.1f)", robot_id, connect_req.control_hz)
     return robot_id, slot_index, connect_req
 
 
-async def _ws_warmup(
-    websocket: WebSocket,
+async def _warmup(
+    transport: ServerTransport,
     state: ServerState,
     robot_id: str,
     action_payload_size: int,
@@ -149,7 +151,7 @@ async def _ws_warmup(
     delivery_samples: list[tuple[float, float]] = []
 
     for _ in range(NUM_WARMUP):
-        raw = await websocket.receive_bytes()
+        raw = await transport.receive_message()
         server_receive_time = time.time()
         msg = msgpack_numpy.unpackb(raw)
         if msg.get("type") != "warmup_ping":
@@ -162,10 +164,10 @@ async def _ws_warmup(
             server_send_time=server_send_time,
             payload=bytes(action_payload_size),
         )
-        await websocket.send_bytes(msgpack_numpy.packb(dataclasses.asdict(pong)))
+        await transport.send_message(msgpack_numpy.packb(dataclasses.asdict(pong)))
         obs_samples.append((server_receive_time, msg["client_timestamp"]))
 
-        ack_raw = await websocket.receive_bytes()
+        ack_raw = await transport.receive_message()
         ack_msg = msgpack_numpy.unpackb(ack_raw)
         if ack_msg.get("type") == "warmup_ack":
             delivery_samples.append((ack_msg["client_receive_time"], ack_msg["server_send_time"]))
@@ -180,6 +182,122 @@ async def _ws_warmup(
             len(obs_samples),
             len(delivery_samples),
         )
+
+
+async def handle_connection(
+    transport: ServerTransport,
+    state: ServerState,
+    metadata: ServerMetadata,
+) -> None:
+    """Transport-agnostic per-connection coroutine. Handshake → warmup → recv/send loops."""
+    result = await _handshake(transport, state)
+    if result is None:
+        return
+    robot_id, slot_index, _connect_req = result
+
+    action_payload_size = metadata.action_horizon * metadata.action_dim * 4  # float32 bytes
+    await _warmup(transport, state, robot_id, action_payload_size)
+
+    response_queue: asyncio.Queue = state.response_queues[robot_id]
+    pending_responses: dict[int, InferResponse] = {}
+
+    async def recv():
+        try:
+            while True:
+                raw = await transport.receive_message()
+                msg = msgpack_numpy.unpackb(raw)
+
+                match msg.get("type"):
+                    case "reset":
+                        await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
+                        continue
+                    case "ack":
+                        ack = ResponseAck(**msg)
+                        response = pending_responses.pop(ack.request_id)
+                        state.metrics_store.record_response(robot_id, response, ack)
+                        await state.scheduler_sock.send_pyobj(
+                            AckNotification(
+                                robot_id=robot_id,
+                                request_id=ack.request_id,
+                                receive_time=ack.receive_time,
+                                server_send_time=response.server_send_time,
+                            )
+                        )
+                        continue
+                    case "episode_start":
+                        state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
+                        continue
+                    case "episode_step":
+                        state.metrics_store.record_episode_step(robot_id, time.time())
+                        continue
+                    case "episode_end":
+                        state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
+                        continue
+                    case "infer":
+                        pass
+                    case unknown:
+                        logger.warning("Unknown message type %r, dropping", unknown)
+                        continue
+
+                req = InferRequest(**msg)
+
+                # Write obs + request metadata atomically to shared memory so the
+                # GPU worker always reads metadata that matches the observation it infers.
+                request_id = next(_request_id_counter)
+                arrival_timestamp = time.time()
+                state.slots.write(
+                    slot_index,
+                    SlotData(
+                        obs=req.observation,
+                        request_id=request_id,
+                        arrival_timestamp=arrival_timestamp,
+                        observation_step=req.observation_step,
+                        action_start_step=req.action_start_step,
+                        request_timestamp=req.request_timestamp,
+                        deadline=req.deadline,
+                        execution_horizon=req.execution_horizon,
+                        infer_type=req.infer_type,
+                        params=req.params,
+                        noise=req.noise,
+                    ),
+                )
+
+                slot_req = SlotRequest(
+                    slot_index=slot_index,
+                    robot_id=robot_id,
+                    request_id=request_id,
+                    arrival_timestamp=arrival_timestamp,
+                    observation_step=req.observation_step,
+                    action_start_step=req.action_start_step,
+                    request_timestamp=req.request_timestamp,
+                    deadline=req.deadline,
+                    execution_horizon=req.execution_horizon,
+                    infer_type=req.infer_type,
+                    params=req.params,
+                    noise=req.noise,
+                    control_hz=state.robot_metadata[robot_id].control_hz,
+                )
+                await state.scheduler_sock.send_pyobj(slot_req)
+                state.metrics_store.record_request(robot_id, slot_req)
+        except WebSocketDisconnect:
+            logger.debug("Robot %s disconnected", robot_id)
+
+    async def send():
+        while True:
+            response: InferResponse = await response_queue.get()
+            stamped = dataclasses.replace(response, server_send_time=time.time())
+            pending_responses[response.request_id] = stamped
+            await transport.send_message(msgpack_numpy.packb(asdict(stamped)))
+
+    recv_task = asyncio.create_task(recv())
+    send_task = asyncio.create_task(send())
+    try:
+        await recv_task
+    finally:
+        send_task.cancel()
+        await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
+        state.slots.free(robot_id)
+        state.response_queues.pop(robot_id, None)
 
 
 async def _watchdog_task(gpu_proc: mp.Process, scheduler_proc: mp.Process) -> None:
@@ -267,6 +385,9 @@ def create_app(
     policy_factory: Callable,
     scheduler_kwargs: dict[str, object] | None = None,
     log_queue: mp.Queue | None = None,
+    transport: str = "ws",
+    quic_host: str = "0.0.0.0",
+    quic_port: int | None = None,
 ) -> FastAPI:
     metrics_store = MetricsStore()
 
@@ -310,8 +431,21 @@ def create_app(
         scheduler_metrics = asyncio.create_task(_scheduler_metrics_task(scheduler_metrics_queue, metrics_store))
         watchdog = asyncio.create_task(_watchdog_task(gpu_proc, scheduler_proc))
 
+        quic_server = None
+        if transport == "quic":
+            from openpi.serving.transport import start_quic_listener
+
+            async def _on_quic_connection(t):
+                await handle_connection(t, app.state.server, metadata)
+
+            assert quic_port is not None
+            quic_server = await start_quic_listener(quic_host, quic_port, _on_quic_connection)
+            logger.info("QUIC listener bound on %s:%d", quic_host, quic_port)
+
         yield
 
+        if quic_server is not None:
+            quic_server.close()
         watchdog.cancel()
         scheduler_metrics.cancel()
         router.cancel()
@@ -337,116 +471,8 @@ def create_app(
     async def ws_handler(websocket: WebSocket):
         await websocket.accept()
         state: ServerState = websocket.app.state.server
-
-        result = await _ws_handshake(websocket, state)
-        if result is None:
-            return
-        robot_id, slot_index, _connect_req = result
-
-        action_payload_size = metadata.action_horizon * metadata.action_dim * 4  # float32 bytes
-        await _ws_warmup(websocket, state, robot_id, action_payload_size)
-
-        # Normal operation
-        response_queue: asyncio.Queue = state.response_queues[robot_id]
-        pending_responses: dict[int, InferResponse] = {}
-
-        async def recv():
-            try:
-                while True:
-                    raw = await websocket.receive_bytes()
-                    msg = msgpack_numpy.unpackb(raw)
-
-                    match msg.get("type"):
-                        case "reset":
-                            await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
-                            continue
-                        case "ack":
-                            ack = ResponseAck(**msg)
-                            response = pending_responses.pop(ack.request_id)
-                            state.metrics_store.record_response(robot_id, response, ack)
-                            await state.scheduler_sock.send_pyobj(
-                                AckNotification(
-                                    robot_id=robot_id,
-                                    request_id=ack.request_id,
-                                    receive_time=ack.receive_time,
-                                    server_send_time=response.server_send_time,
-                                )
-                            )
-                            continue
-                        case "episode_start":
-                            state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
-                            continue
-                        case "episode_step":
-                            state.metrics_store.record_episode_step(robot_id, time.time())
-                            continue
-                        case "episode_end":
-                            state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
-                            continue
-                        case "infer":
-                            pass
-                        case unknown:
-                            logger.warning("Unknown message type %r, dropping", unknown)
-                            continue
-
-                    req = InferRequest(**msg)
-
-                    # Write obs + request metadata atomically to shared memory so the
-                    # GPU worker always reads metadata that matches the observation it infers.
-                    request_id = next(_request_id_counter)
-                    arrival_timestamp = time.time()
-                    state.slots.write(
-                        slot_index,
-                        SlotData(
-                            obs=req.observation,
-                            request_id=request_id,
-                            arrival_timestamp=arrival_timestamp,
-                            observation_step=req.observation_step,
-                            action_start_step=req.action_start_step,
-                            request_timestamp=req.request_timestamp,
-                            deadline=req.deadline,
-                            execution_horizon=req.execution_horizon,
-                            infer_type=req.infer_type,
-                            params=req.params,
-                            noise=req.noise,
-                        ),
-                    )
-
-                    slot_req = SlotRequest(
-                        slot_index=slot_index,
-                        robot_id=robot_id,
-                        request_id=request_id,
-                        arrival_timestamp=arrival_timestamp,
-                        observation_step=req.observation_step,
-                        action_start_step=req.action_start_step,
-                        request_timestamp=req.request_timestamp,
-                        deadline=req.deadline,
-                        execution_horizon=req.execution_horizon,
-                        infer_type=req.infer_type,
-                        params=req.params,
-                        noise=req.noise,
-                        control_hz=state.robot_metadata[robot_id].control_hz,
-                    )
-                    await state.scheduler_sock.send_pyobj(slot_req)
-                    state.metrics_store.record_request(robot_id, slot_req)
-            except WebSocketDisconnect:
-                logger.debug("Robot %s disconnected", robot_id)
-
-        async def send():
-            while True:
-                response: InferResponse = await response_queue.get()
-                stamped = dataclasses.replace(response, server_send_time=time.time())
-                pending_responses[response.request_id] = stamped
-                await websocket.send_bytes(msgpack_numpy.packb(asdict(stamped)))
-
-        recv_task = asyncio.create_task(recv())
-        send_task = asyncio.create_task(send())
-        try:
-            await recv_task
-        finally:
-            send_task.cancel()
-            await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
-            state.slots.free(robot_id)
-            state.response_queues.pop(robot_id, None)
+        transport = FastApiWebSocketTransport(websocket)
+        await handle_connection(transport, state, metadata)
 
     # can also be used for health check
     @app.get("/metadata")
@@ -480,12 +506,25 @@ class PolicyServer:
         policy_factory: Callable,
         scheduler_kwargs: dict[str, object] | None = None,
         log_queue: mp.Queue | None = None,
+        transport: str = "ws",
+        quic_port: int | None = None,
     ):
         self._metadata = metadata
         self._policy_factory = policy_factory
         self._scheduler_kwargs = scheduler_kwargs
         self._log_queue = log_queue
+        self._transport = transport
+        self._quic_port = quic_port
 
     def serve_forever(self, host="0.0.0.0", port=8000):
-        app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue)
+        quic_port = self._quic_port if self._quic_port is not None else port + 1
+        app = create_app(
+            self._metadata,
+            self._policy_factory,
+            self._scheduler_kwargs,
+            self._log_queue,
+            transport=self._transport,
+            quic_host=host,
+            quic_port=quic_port,
+        )
         uvicorn.run(app, host=host, port=port)

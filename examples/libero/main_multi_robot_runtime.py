@@ -18,7 +18,7 @@ import time
 
 import numpy as np
 from libero.libero import benchmark
-from openpi_client.client import BidirectionalWebsocket
+from openpi_client.client import PolicyClient
 from openpi_client.network_emulation import load_experiment_config
 from openpi_client.network_emulation import NetworkEmulationManager
 from openpi_client.network_emulation import RobotNetworkHook
@@ -55,6 +55,10 @@ class Args:
     resize_size: int = 224
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
     execution_horizon: List[int] = field(default_factory=list)
+    transport: Literal["ws", "quic"] = "quic"
+    quic_port: Optional[int] = (
+        None  # QUIC port when transport=quic; defaults to port + 1
+    )
 
     #################################################################################################################
     # LIBERO environment-specific parameters
@@ -196,15 +200,20 @@ def _robot_worker(worker_args: _WorkerArgs) -> None:
             network_hook = RobotNetworkHook(context)
             pre_send_hook = network_hook.before_send
 
-    ws_client = BidirectionalWebsocket(
+    transport_port = ws_port
+    if args.transport == "quic":
+        transport_port = args.quic_port if args.quic_port is not None else ws_port + 1
+    client = PolicyClient.connect(
         robot_id=robot_id,
         host=ws_host,
         port=ws_port,
+        transport=args.transport,
+        transport_port=transport_port,
         control_hz=float(args.control_hz),
         pre_send_hook=pre_send_hook,
     )
     config = BrokerConfig(
-        ws_client=ws_client,
+        client=client,
         control_hz=args.control_hz,
         execution_horizon=args.execution_horizon_for_robot(robot_idx),
     )
@@ -251,7 +260,7 @@ def _robot_worker(worker_args: _WorkerArgs) -> None:
                     robot_idx=robot_idx,
                 ),
                 TaskMetricsPublisher(
-                    ws_client=ws_client,
+                    client=client,
                     environment=env,
                     task_suite_name=episode.task_suite_name,
                     task_id=episode.task_id,

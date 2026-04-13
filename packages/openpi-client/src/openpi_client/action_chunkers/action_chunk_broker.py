@@ -4,7 +4,7 @@ from typing import Optional
 from openpi_client.schemas import ActionChunk
 from abc import ABC
 from collections import deque
-from openpi_client.client import BidirectionalWebsocket
+from openpi_client.client import PolicyClient
 from openpi_client.schemas import Action, Observation
 import threading
 
@@ -24,9 +24,9 @@ class ActionChunkBroker(ABC):
     """
 
     def __init__(
-        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
+        self, client: PolicyClient, control_hz: int, realtime: bool = True, execution_horizon: int = 0
     ) -> None:
-        self._ws_client = ws_client
+        self._client = client
         self._action_queue: deque[Action] = deque()
         self._action_chunks: List[ActionChunk] = []
         self._next_observation_step: int = 0  # next observation step to see
@@ -80,7 +80,7 @@ class ActionChunkBroker(ABC):
 
     def _receive_actions(self) -> None:
         while True:
-            infer_response = self._ws_client.receive()
+            infer_response = self._client.receive()
             with self._lock:
                 action_chunk = ActionChunk.from_infer_response(
                     infer_response=infer_response,
@@ -90,7 +90,7 @@ class ActionChunkBroker(ABC):
                 self._action_chunks.append(action_chunk)
                 self._update_action_queue(action_chunk)
                 first_executed_index = max(0, self._next_action_step - action_chunk.action_start_step)
-                self._ws_client.send_ack(
+                self._client.send_ack(
                     action_chunk.request_id,
                     action_chunk.response_timestamp,
                     action_chunk.execution_start_step,
@@ -114,7 +114,7 @@ class ActionChunkBroker(ABC):
         )
 
     def _infer(self, obs: Observation) -> None:
-        self._ws_client.send(
+        self._client.send(
             obs,
             self.deadline,
             self._next_action_step,
@@ -129,7 +129,7 @@ class ActionChunkBroker(ABC):
             self._action_chunks = []
             self._actions_left_history = []
             self._received_first_chunk = False
-            self._ws_client.reset()
+            self._client.reset()
 
     @property
     def action_chunks(self) -> List[ActionChunk]:

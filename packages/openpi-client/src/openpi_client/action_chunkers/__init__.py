@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Type
 
-from openpi_client.client import BidirectionalWebsocket
+from openpi_client.client import PolicyClient
 from openpi_client.action_chunkers.action_chunk_broker import ActionChunkBroker
 from openpi_client.action_chunkers.sync import SyncBroker
 from openpi_client.action_chunkers.naive_async import NaiveAsyncBroker
@@ -14,7 +14,7 @@ from openpi_client.action_chunkers.temporal_ensembling import TemporalEnsembling
 class BrokerConfig:
     """Configuration for action chunk brokers."""
 
-    ws_client: BidirectionalWebsocket
+    client: PolicyClient
     control_hz: int
     execution_horizon: int
     # Optional parameters for specific brokers

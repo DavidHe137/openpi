@@ -100,6 +100,12 @@ class Args:
     # Logging level (DEBUG, INFO, WARNING, ERROR).
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
+    # Transport for policy traffic: "ws" (WebSocket, default) or "quic" (aioquic on quic_port).
+    transport: Literal["ws", "quic"] = "quic"
+
+    # Port for the QUIC listener. If unset, defaults to port + 1.
+    quic_port: int | None = None
+
 
 # FIXME: may not be needed
 class _PolicyFactory:
@@ -214,6 +220,8 @@ def main(args: Args) -> None:
         policy_factory=policy_factory,
         scheduler_kwargs=scheduler_kwargs,
         log_queue=log_queue,
+        transport=args.transport,
+        quic_port=args.quic_port,
     )
     try:
         server.serve_forever(host="0.0.0.0", port=args.port)
