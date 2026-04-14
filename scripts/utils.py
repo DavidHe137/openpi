@@ -78,7 +78,7 @@ DEFAULT_CHECKPOINT = {
     },
     EnvMode.REAL_THROW: {
         "config": "pi05_throw_the_legos",
-        "dir": "/coc/flash7/rbansal66/vvla/openpi-training/checkpoints/pi05_throw_the_legos/throw_legos_exp",
+        "dir": "/coc/flash7/rbansal66/vvla/openpi-training/checkpoints/pi05_throw_the_legos/throw_legos_exp/29999",
     },
 }
 

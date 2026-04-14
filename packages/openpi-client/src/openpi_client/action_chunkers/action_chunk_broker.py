@@ -49,7 +49,10 @@ class ActionChunkBroker(ABC):
         self.reset()
         self._background_thread.start()
 
+        self.prev_obs = None
+
     def infer(self, obs: Observation) -> Action:
+        self.prev_obs = obs
         """Client continuously streams observations to the server."""
         with self._lock:
             # count actions left in queue before we pop the next action

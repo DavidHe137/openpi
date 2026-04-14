@@ -445,6 +445,7 @@ class Policy(BasePolicy):
             EnvMode.LIBERO_PYTORCH,
             EnvMode.LIBERO_PI0,
             EnvMode.REAL,  # hack to use libero images for now
+            EnvMode.REAL_THROW,
         ]:
             return make_libero_example()
 
