@@ -12,7 +12,12 @@ class SyncBroker(ActionChunkBroker):
     """
 
     def __init__(
-        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
+        self,
+        ws_client: BidirectionalWebsocket,
+        control_hz: int,
+        action_contract_type: str,
+        realtime: bool = True,
+        execution_horizon: int = 0,
     ):
         server_action_horizon = ws_client.server_metadata.action_horizon
         resolved_execution_horizon = server_action_horizon if execution_horizon <= 0 else int(execution_horizon)
@@ -21,6 +26,7 @@ class SyncBroker(ActionChunkBroker):
             ws_client=ws_client,
             control_hz=control_hz,
             realtime=realtime,
+            action_contract_type=action_contract_type,
             execution_horizon=resolved_execution_horizon,
         )
 

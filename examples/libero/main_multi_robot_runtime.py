@@ -53,6 +53,9 @@ class Args:
     host: str = "0.0.0.0"
     port: int = 8080
     resize_size: int = 224
+    action_contract_type: str = (
+        "maximal"  # one of "maximal", "observation", or "arrival"
+    )
     action_chunk_broker_type: ActionChunkBrokerType = ActionChunkBrokerType.SYNC
     execution_horizon: List[int] = field(default_factory=list)
 
@@ -113,6 +116,7 @@ def _apply_experiment_config(args: Args, experiment_config: Dict[str, object]) -
         int(robots[f"robot_{idx}"]["execution_horizon"])
         for idx in range(args.num_robots)
     ]
+    args.action_contract_type = str(experiment["action_contract_type"])
 
 
 # Shared worker state: set via pool initializer so these are inherited by spawned
@@ -207,6 +211,7 @@ def _robot_worker(worker_args: _WorkerArgs) -> None:
         ws_client=ws_client,
         control_hz=args.control_hz,
         execution_horizon=args.execution_horizon_for_robot(robot_idx),
+        action_contract_type=args.action_contract_type,
     )
     broker = args.action_chunk_broker_type.create(config)
     agent = _policy_agent.PolicyAgent(broker=broker)

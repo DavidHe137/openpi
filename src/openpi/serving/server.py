@@ -213,7 +213,7 @@ async def _scheduler_metrics_task(
 def _start_backend(
     metadata: ServerMetadata,
     policy_factory: Callable,
-    scheduler_kwargs: dict[str, object] | None,
+    scheduler_kwargs: dict[str, object],
     log_queue: mp.Queue | None,
 ) -> tuple[mp.Process, mp.Process, RobotSlots, Event, Event, mp.Queue]:
     slots = RobotSlots(max_robots=MAX_ROBOTS)
@@ -265,7 +265,7 @@ def _start_backend(
 def create_app(
     metadata: ServerMetadata,
     policy_factory: Callable,
-    scheduler_kwargs: dict[str, object] | None = None,
+    scheduler_kwargs: dict[str, object],
     log_queue: mp.Queue | None = None,
 ) -> FastAPI:
     metrics_store = MetricsStore()
@@ -478,7 +478,7 @@ class PolicyServer:
         self,
         metadata: ServerMetadata,
         policy_factory: Callable,
-        scheduler_kwargs: dict[str, object] | None = None,
+        scheduler_kwargs: dict[str, object],
         log_queue: mp.Queue | None = None,
     ):
         self._metadata = metadata
