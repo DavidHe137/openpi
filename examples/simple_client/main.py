@@ -139,7 +139,7 @@ def main(args: Args) -> None:
     for _ in tqdm.trange(args.num_steps, desc="Running policy"):
         inference_start = time.time()
         action = policy.infer(obs_fn())
-        timing_recorder.record("client_infer_ms", 1000 * (time.time() - inference_start))
+        timing_recorder.record("client_infer_latency", 1000 * (time.time() - inference_start))
         for key, value in action.get("server_timing", {}).items():
             timing_recorder.record(f"server_{key}", value)
 

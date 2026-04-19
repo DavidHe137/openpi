@@ -22,6 +22,7 @@ from openpi.serving.metrics.schemas import ResponseRecord
 from openpi.serving.metrics.schemas import Robot
 from openpi.serving.metrics.schemas import RobotID
 from openpi.serving.metrics.schemas import window_filter
+from openpi.serving.schemas import ResponseBatch
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 
@@ -154,12 +155,13 @@ class MetricsStore(JSONDataclass):
         }
         self.scheduler_decisions = [SchedulerDecision.from_json(s) for s in self.scheduler_decisions]
 
-    def record_batch(self, responses: list[InferResponse]) -> None:
+    def record_batch(self, batch: ResponseBatch) -> None:
         """Called once per batch by _router_task."""
         with lock:
+            responses = batch.responses
             self.batches.append(
                 BatchSummary(
-                    batch_id=len(self.batches),
+                    batch_id=batch.batch_id,
                     robot_ids=[r.robot_id for r in responses],
                     request_ids=[r.request_id for r in responses],
                     inference_start_time=responses[0].inference_start_time,
@@ -361,6 +363,7 @@ class MetricsStore(JSONDataclass):
                 )
 
             # ---- batch history for charts ----
+            # FIXME: maybe move these into their own classes
             plan_activation_abs = sorted(
                 sample.recorded_at
                 for sample in self.scheduler_decisions
@@ -473,8 +476,9 @@ class MetricsStore(JSONDataclass):
                         }
                     )
                 else:
+                    # FIXME: idk what this is
                     scheduler_timing_ms.setdefault(f"{sample.scheduler_name}.{sample.metric_name}", []).append(
-                        round(sample.duration_ms, 3)
+                        round(sample.duration * 1000, 3)
                     )
 
             # ---- task events (completed episodes in window) ----

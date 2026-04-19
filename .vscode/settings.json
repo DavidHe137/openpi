@@ -17,6 +17,7 @@
     ],
     "cursorpyright.analysis.extraPaths": [
         "${workspaceFolder}/third_party/libero"
-    ]
+    ],
+    "ruff.configuration": "${workspaceFolder}/pyproject.toml",
     "workbench.activityBar.orientation": "vertical",
 }
