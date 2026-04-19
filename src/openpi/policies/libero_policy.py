@@ -15,7 +15,7 @@ def make_libero_example() -> dict:
 
     return asdict(
         LiberoObservation(
-            state=np.random.rand(8),
+            state=np.random.rand(7),
             image=np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
             wrist_image=np.random.randint(256, size=(224, 224, 3), dtype=np.uint8),
             prompt="put both moka pots on the stove",

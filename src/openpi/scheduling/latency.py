@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections import deque
+
 
 class LatencyTracker:
-    """Per-robot and per-batch-size EMA latency estimates.
+    """Per-robot and per-batch-size latency estimates.
 
     Tracks three latencies:
     - obs_network_ms: time for observation to travel from robot to server
@@ -13,11 +15,14 @@ class LatencyTracker:
       (receive_time - server_send_time from ResponseAck)
     """
 
-    def __init__(self, alpha: float = 0.1) -> None:
+    def __init__(self, alpha: float = 0.1, history_size: int = 10) -> None:
         self._alpha = alpha
+        self._history_size = max(1, int(history_size))
         self._obs_network_ms: dict[str, float] = {}
         self._infer_ms: dict[int, float] = {}
         self._action_delivery_ms: dict[str, float] = {}
+        self._infer_ms_hist: dict[int, deque[float]] = {}
+        self._action_delivery_ms_hist: dict[str, deque[float]] = {}
 
     def _ema(self, d: dict, key: object, value: float) -> None:
         if key not in d:
@@ -32,10 +37,21 @@ class LatencyTracker:
     def update_infer(self, batch_size: int, duration_ms: float) -> None:
         """Update inference latency estimate for a given batch size."""
         self._ema(self._infer_ms, batch_size, duration_ms)
+        hist = self._infer_ms_hist.get(batch_size)
+        if hist is None:
+            hist = deque(maxlen=self._history_size)
+            self._infer_ms_hist[batch_size] = hist
+        hist.append(duration_ms)
 
     def update_action_delivery(self, robot_id: str, receive_time: float, server_send_time: float) -> None:
         """Update action-delivery latency estimate from server-send and client-receive timestamps."""
-        self._ema(self._action_delivery_ms, robot_id, (receive_time - server_send_time) * 1e3)
+        value_ms = (receive_time - server_send_time) * 1e3
+        self._ema(self._action_delivery_ms, robot_id, value_ms)
+        hist = self._action_delivery_ms_hist.get(robot_id)
+        if hist is None:
+            hist = deque(maxlen=self._history_size)
+            self._action_delivery_ms_hist[robot_id] = hist
+        hist.append(value_ms)
 
     def obs_network_ms(self, robot_id: str) -> float | None:
         return self._obs_network_ms.get(robot_id)
@@ -46,8 +62,21 @@ class LatencyTracker:
     def action_delivery_ms(self, robot_id: str) -> float | None:
         return self._action_delivery_ms.get(robot_id)
 
-    def total_delivery_ms(self, robot_id: str, batch_size: int) -> float | None:
+    def infer_ms_max(self, batch_size: int) -> float | None:
+        hist = self._infer_ms_hist.get(batch_size)
+        return max(hist) if hist else None
+
+    def action_delivery_ms_max(self, robot_id: str) -> float | None:
+        hist = self._action_delivery_ms_hist.get(robot_id)
+        return max(hist) if hist else None
+
+    def total_delivery_ms(self, robot_id: str, batch_size: int, *, prefer_max: bool = True) -> float | None:
         """Total latency from inference-start to robot receiving the action."""
+        if prefer_max:
+            infer = self.infer_ms_max(batch_size)
+            delivery = self.action_delivery_ms_max(robot_id)
+            if infer is not None and delivery is not None:
+                return infer + delivery
         infer = self._infer_ms.get(batch_size)
         delivery = self._action_delivery_ms.get(robot_id)
         if infer is None or delivery is None:
@@ -57,3 +86,4 @@ class LatencyTracker:
     def reset_robot(self, robot_id: str) -> None:
         self._obs_network_ms.pop(robot_id, None)
         self._action_delivery_ms.pop(robot_id, None)
+        self._action_delivery_ms_hist.pop(robot_id, None)

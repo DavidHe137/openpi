@@ -31,6 +31,7 @@ class SlotRequest:
     noise: np.ndarray | None
     control_hz: float
     estimated_d_param: int = 0  # filled by scheduler before batching
+    scheduled_s_param: int = 0  # filled by scheduler before batching
 
 
 @dataclass(frozen=True)

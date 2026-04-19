@@ -72,6 +72,14 @@ DEFAULT_CHECKPOINT = {
         "config": "pi0_libero",
         "dir": "/coc/flash8/rbansal66/openpi_rollout/openpi/.cache/openpi/openpi-assets/checkpoints/pi0_libero_pytorch_dexmal_mokapots",
     },
+    EnvMode.REAL: {
+        "config": "pi05_pick_up_the_legos",
+        "dir": "/coc/flash7/rbansal66/vvla/openpi/.cache/openpi/openpi-assets/checkpoints/pi05_bricks_real",
+    },
+    EnvMode.REAL_THROW: {
+        "config": "pi05_throw_the_legos",
+        "dir": "/coc/flash7/rbansal66/vvla/openpi-training/checkpoints/pi05_throw_the_legos/throw_legos_exp/29999",
+    },
 }
 
 

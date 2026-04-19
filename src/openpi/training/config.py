@@ -23,6 +23,7 @@ import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
+import openpi.training.misc.polaris_config as polaris_config
 import openpi.training.misc.roboarena_config as roboarena_config
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
@@ -93,8 +94,8 @@ class DataConfig:
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
-    # Path to the data filter file for DROID dataset
-    filter_dict_path: str | None = None
+    # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
+    datasets: Sequence[droid_rlds_dataset.RLDSDataset] = ()
 
 
 class GroupFactory(Protocol):
@@ -461,8 +462,16 @@ class RLDSDroidDataConfig(DataConfigFactory):
     # Filtering options. Can pass a path to a dictionary that maps episodes to timestep ranges
     # to tuples denoting ranges of time steps to keep (start, end). Episodes are uniquely identified with
     # f"{recording_folderpath}--{file_path}", both of which are present in the RLDS episode metadata.
-    # Path to the filter dictionary file.
-    filter_dict_path: str | None = "gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json"
+
+    # List of datasets to sample from: name, version, weight, and optionally filter_dict_path
+    datasets: Sequence[droid_rlds_dataset.RLDSDataset] = (
+        droid_rlds_dataset.RLDSDataset(
+            name="droid",
+            version="1.0.1",
+            weight=1.0,
+            filter_dict_path="gs://openpi-assets/droid/droid_sample_ranges_v1_0_1.json",
+        ),
+    )
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -505,7 +514,7 @@ class RLDSDroidDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
             rlds_data_dir=self.rlds_data_dir,
             action_space=self.action_space,
-            filter_dict_path=self.filter_dict_path,
+            datasets=self.datasets,
         )
 
 
@@ -589,7 +598,7 @@ class TrainConfig:
     # Random seed that will be used by random generators during training.
     seed: int = 42
     # Global batch size.
-    batch_size: int = 32
+    batch_size: int = 16
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
     num_workers: int = 2
@@ -850,14 +859,14 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
-        name="pi05_libero_act_horizon_25",
-        model=pi0_config.Pi0Config(pi05=True, action_horizon=25, max_token_len=200, discrete_state_input=False),
+        name="pi05_pick_up_the_legos",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
         data=LeRobotLiberoDataConfig(
-            repo_id="physical-intelligence/libero",
+            repo_id="davidhe137/pick-up-the-legos-and-sort-them-into-the-correct-bins-20260324",
             base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
+            extra_delta_transform=True,
         ),
-        batch_size=256,
+        batch_size=32,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -867,82 +876,35 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        # pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
     TrainConfig(
-        name="pi05_libero_lora",
-        # model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
-        model=pi0_config.Pi0Config(
-            pi05=True, action_horizon=100, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ),
+        name="pi05_throw_the_legos",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
         data=LeRobotLiberoDataConfig(
-            repo_id="physical-intelligence/libero",
+            repo_id="solace222/sort-and-throw-the-legos-20260409",
             base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
+            extra_delta_transform=True,
         ),
+        # Pi05 + AdamW + EMA is memory-heavy. On multi-GPU nodes set --fsdp-devices <N> == GPU count (default 2
+        # gives a (batch,fsdp) mesh that can trigger XLA full rematerialization and OOM). batch_size must divide N.
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_libero/params"
-        ),  # NOTE: using pi05_libero base model
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ).get_freeze_filter(),
-        # Turn off EMA for LoRA finetuning.
-        ema_decay=None,
-    ),
-    TrainConfig(
-        name="pi05_libero90_lora",
-        # model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
-        model=pi0_config.Pi0Config(
-            pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ),
-        data=LeRobotLiberoDataConfig(
-            repo_id="libero_90_lerobot",  # NOTE: using pre converted libero_90 dataset
-            base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
-        ),
-        num_train_steps=30_000,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_libero/params"
-        ),  # NOTE: using pi05_libero base model
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ).get_freeze_filter(),
-        # Turn off EMA for LoRA finetuning.
-        ema_decay=None,
-    ),
-    TrainConfig(
-        name="pi05_libero90_lora_reasoning_prompt",
-        # Model config with LoRA for efficient fine-tuning
-        model=pi0_config.Pi0Config(
-            pi05=True, action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ),
-        # Use reasoning data config that replaces task prompts with reasoning components
-        data=LeRobotLiberoDataConfigWithReasoning(
-            repo_id="libero_90_lerobot",  # NOTE: using pre converted libero_90 dataset
-            base_config=DataConfig(prompt_from_task=True),
-            extra_delta_transform=False,
-            mapping_file_path="/coc/flash7/zhenyang/VLA-data-augmentation/ECoT_LeRobot_data_ID_mapping/mapping.json",
-            reasoning_file_path="/coc/flash7/zhenyang/data/embodied_features_and_demos_libero/libero_reasonings.json",
-            eval=False,
-            reasoning_components=["subtask", "movement"],
-        ),
-        num_train_steps=30_000,
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "gs://openpi-assets/checkpoints/pi05_libero/params"
-        ),  # NOTE: using pi05_libero base model
-        freeze_filter=pi0_config.Pi0Config(
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
-        ).get_freeze_filter(),
-        # Turn off EMA for LoRA finetuning.
-        ema_decay=None,
     ),
     #
     # Fine-tuning Aloha configs.
     #
     # This is a test config that is used to illustate how train on a custom LeRobot dataset.
-    # For instuctions on how to convert and train on your own Aloha dataset see examples/aloha_real/README.md
+    # For instructions on how to convert and train on your own Aloha dataset see examples/aloha_real/README.md
     TrainConfig(
         name="pi0_aloha_pen_uncap",
         model=pi0_config.Pi0Config(),
@@ -1180,10 +1142,9 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
-    #
-    # RoboArena configs.
-    #
+    # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
+    *polaris_config.get_polaris_configs(),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

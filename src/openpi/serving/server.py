@@ -28,6 +28,7 @@ import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event
 import os
+import pathlib
 import queue
 import signal
 import time
@@ -40,8 +41,6 @@ from fastapi.concurrency import asynccontextmanager
 from openpi_client import msgpack_numpy
 from openpi_client.messages import ConnectRequest
 from openpi_client.messages import ConnectResponse
-from openpi_client.messages import EpisodeEnd
-from openpi_client.messages import EpisodeStart
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
@@ -86,12 +85,27 @@ class ServerState:
     scheduler_proc: mp.Process
     metrics_store: MetricsStore
     robot_metadata: dict[str, ConnectRequest]
+    rtc_plot_recorder: RTCChunkPlotRecorder
+
+
+class RTCChunkPlotRecorder:
+    """Hook for optional RTC overlap diagnostics; plot capture/saving is disabled."""
+
+    def __init__(self, plot_dir: pathlib.Path):
+        _ = plot_dir
+
+    def record_response(self, _response: InferResponse) -> None:
+        return
+
+    def discard(self, _robot_id: str) -> None:
+        return
 
 
 async def _router_task(
     response_sock: zmq.asyncio.Socket,
     response_queues: dict[str, asyncio.Queue],
     metrics_store: MetricsStore,
+    rtc_plot_recorder: RTCChunkPlotRecorder,
 ) -> None:
     """Reads batches of InferResponses directly from GPU and dispatches to per-robot queues."""
     logger.info("Router task starting")
@@ -100,6 +114,7 @@ async def _router_task(
             responses: list[InferResponse] = await response_sock.recv_pyobj()
             metrics_store.record_batch(responses)
             for response in responses:
+                rtc_plot_recorder.record_response(response)
                 queue = response_queues.get(response.robot_id)
                 if queue is not None:
                     await queue.put(response)
@@ -214,6 +229,7 @@ def _start_backend(
     policy_factory: Callable,
     scheduler_kwargs: dict[str, object] | None,
     log_queue: mp.Queue | None,
+    log_level: int = logging.INFO,
 ) -> tuple[mp.Process, mp.Process, RobotSlots, Event, Event, mp.Queue]:
     slots = RobotSlots(max_robots=MAX_ROBOTS)
     batch_queue: mp.Queue = mp.Queue()
@@ -233,6 +249,7 @@ def _start_backend(
             socket_addresses["result_ep"],
             gpu_ready,
             log_queue,
+            log_level,
         ),
         daemon=True,
     )
@@ -249,6 +266,7 @@ def _start_backend(
             scheduler_kwargs,
             sched_ready,
             log_queue,
+            log_level,
         ),
         daemon=True,
     )
@@ -266,8 +284,10 @@ def create_app(
     policy_factory: Callable,
     scheduler_kwargs: dict[str, object] | None = None,
     log_queue: mp.Queue | None = None,
+    log_level: int = logging.INFO,
 ) -> FastAPI:
     metrics_store = MetricsStore()
+    rtc_plot_recorder = RTCChunkPlotRecorder(pathlib.Path())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -276,6 +296,7 @@ def create_app(
             policy_factory,
             scheduler_kwargs,
             log_queue,
+            log_level,
         )
 
         loop = asyncio.get_event_loop()
@@ -303,9 +324,10 @@ def create_app(
             scheduler_proc=scheduler_proc,
             metrics_store=metrics_store,
             robot_metadata={},
+            rtc_plot_recorder=rtc_plot_recorder,
         )
 
-        router = asyncio.create_task(_router_task(response_sock, response_queues, metrics_store))
+        router = asyncio.create_task(_router_task(response_sock, response_queues, metrics_store, rtc_plot_recorder))
         scheduler_metrics = asyncio.create_task(_scheduler_metrics_task(scheduler_metrics_queue, metrics_store))
         watchdog = asyncio.create_task(_watchdog_task(gpu_proc, scheduler_proc))
 
@@ -362,7 +384,7 @@ def create_app(
                         case "ack":
                             ack = ResponseAck(**msg)
                             response = pending_responses.pop(ack.request_id)
-                            state.metrics_store.record_response(robot_id, response, ack)
+                            # state.metrics_store.record_response(robot_id, response, ack)
                             await state.scheduler_sock.send_pyobj(
                                 AckNotification(
                                     robot_id=robot_id,
@@ -373,13 +395,13 @@ def create_app(
                             )
                             continue
                         case "episode_start":
-                            state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
+                            # state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
                             continue
                         case "episode_step":
-                            state.metrics_store.record_episode_step(robot_id, time.time())
+                            # state.metrics_store.record_episode_step(robot_id, time.time())
                             continue
                         case "episode_end":
-                            state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
+                            # state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))
                             continue
                         case "infer":
                             pass
@@ -426,7 +448,7 @@ def create_app(
                         control_hz=state.robot_metadata[robot_id].control_hz,
                     )
                     await state.scheduler_sock.send_pyobj(slot_req)
-                    state.metrics_store.record_request(robot_id, slot_req)
+                    # state.metrics_store.record_request(robot_id, slot_req)
             except WebSocketDisconnect:
                 logger.debug("Robot %s disconnected", robot_id)
 
@@ -446,6 +468,7 @@ def create_app(
             await state.scheduler_sock.send_pyobj(ResetRequest(robot_id=robot_id))
             state.slots.free(robot_id)
             state.response_queues.pop(robot_id, None)
+            state.rtc_plot_recorder.discard(robot_id)
 
     # can also be used for health check
     @app.get("/metadata")
@@ -479,12 +502,20 @@ class PolicyServer:
         policy_factory: Callable,
         scheduler_kwargs: dict[str, object] | None = None,
         log_queue: mp.Queue | None = None,
+        log_level: int = logging.INFO,
     ):
         self._metadata = metadata
         self._policy_factory = policy_factory
         self._scheduler_kwargs = scheduler_kwargs
         self._log_queue = log_queue
+        self._log_level = log_level
 
     def serve_forever(self, host="0.0.0.0", port=8000):
-        app = create_app(self._metadata, self._policy_factory, self._scheduler_kwargs, self._log_queue)
+        app = create_app(
+            self._metadata,
+            self._policy_factory,
+            self._scheduler_kwargs,
+            self._log_queue,
+            self._log_level,
+        )
         uvicorn.run(app, host=host, port=port)

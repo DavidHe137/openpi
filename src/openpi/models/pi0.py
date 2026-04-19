@@ -16,6 +16,10 @@ from openpi.shared import array_typing as at
 
 logger = logging.getLogger("openpi")
 
+# RTC guidance tuning knobs for real-robot experimentation.
+RTC_GUIDANCE_BETA = 10.0
+RTC_GUIDANCE_SIGMA_D = 0.2
+
 
 def _check_jax_compilation_cache():
     """Check if JAX compilation cache is enabled and warn if not."""
@@ -302,12 +306,14 @@ class Pi0(_model.BaseModel):
         prev_action: _model.Actions,
         s: at.Int[at.Array, " b"],
         d: at.Int[at.Array, " b"],
-        beta: float = 8.0,
+        beta: float = RTC_GUIDANCE_BETA,
+        sigma_d: float = RTC_GUIDANCE_SIGMA_D,
     ) -> _model.Actions:
         batch_size = observation.state.shape[0]
         h = self.action_horizon
         s = jnp.clip(s, 0, h)
         d = jnp.clip(d, 0, h)
+        sigma_d_sq = max(float(sigma_d), 1e-6) ** 2
 
         def shift_prev_action(one_prev_action: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
             """Left-shift the previous chunk by `one_s`, padding the tail with zeros."""
@@ -399,7 +405,7 @@ class Pi0(_model.BaseModel):
             grad_a_1_prime_x_t = f_vjp((e, jnp.zeros_like(v_t)))
             # jax.debug.print("grad_a_1_prime_x_t 0 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[0].shape)
             # jax.debug.print("grad_a_1_prime_x_t 1 shape: {grad_a_1_prime_x_t_shape}", grad_a_1_prime_x_t_shape=grad_a_1_prime_x_t[1].shape)
-            r_t = time * time / (time * time + (1 - time) * (1 - time))
+            r_t = ((1 - time) * (1 - time) * sigma_d_sq) / ((1 - time) * (1 - time) + sigma_d_sq * time * time)
 
             a_2_prime = x_t + dt * (
                 v_t - jax.lax.min(beta, time / ((1 - time) * r_t * r_t + 1e-6)) * grad_a_1_prime_x_t[0]

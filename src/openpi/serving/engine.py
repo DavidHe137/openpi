@@ -52,6 +52,7 @@ def _run_gpu_worker(
     result_ep: str,
     ready_event: Event,
     log_queue: mp.Queue | None = None,
+    log_level: int = logging.INFO,
 ) -> None:
     """Loads model, then loops: recv batch → read obs from shared memory → infer → send results.
 
@@ -63,7 +64,7 @@ def _run_gpu_worker(
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     if log_queue is not None:
-        logging_config.setup_worker_logging(log_queue, process_name="gpu-worker")
+        logging_config.setup_worker_logging(log_queue, process_name="gpu-worker", level=log_level)
 
     logger.info("GPU worker starting")
 
@@ -90,28 +91,27 @@ def _run_gpu_worker(
     _action_shape: tuple[int, int] | None = None
     _last_served_request_id: dict[str, int] = {}  # robot_id -> last sd.request_id sent as a response
 
-    def _make_rtc_params(robot_id: str, start_step: int, d_param: int) -> RTCParams | None:
+    def _make_rtc_params(robot_id: str, start_step: int, s_param: int, d_param: int) -> RTCParams | None:
         nonlocal _action_shape
         last = _last_infer_step.get(robot_id)
         if last is not None and start_step < last:
             _last_infer_step.pop(robot_id, None)
             _prev_actions.pop(robot_id, None)
             last = None
-        s = start_step - last if last is not None else 0
         prev = _prev_actions.get(robot_id)
         if prev is None and _action_shape is not None:
             prev = np.zeros(_action_shape, dtype=np.float32)
         if prev is None:
             return None
-        logger.debug(
+        logger.info(
             "Built RTC params for robot=%s start_step=%d s=%d d=%d prev_action_shape=%s",
             robot_id,
             start_step,
-            s,
+            s_param,
             d_param,
             tuple(prev.shape),
         )
-        return RTCParams(prev_action=prev, s_param=s, d_param=d_param)
+        return RTCParams(prev_action=prev, s_param=s_param, d_param=d_param)
 
     while True:
         slot_reqs: list[SlotRequest] = batch_queue.get()  # blocking
@@ -144,7 +144,7 @@ def _run_gpu_worker(
                 request_timestamp=sd.request_timestamp,
                 deadline=sd.deadline,
                 infer_type=sd.infer_type,
-                params=_make_rtc_params(sr.robot_id, sd.observation_step, sr.estimated_d_param)
+                params=_make_rtc_params(sr.robot_id, sd.observation_step, sr.scheduled_s_param, sr.estimated_d_param)
                 if sd.infer_type == InferType.INFERENCE_TIME_RTC
                 else sd.params,
                 noise=sd.noise,

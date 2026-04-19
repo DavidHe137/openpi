@@ -24,7 +24,11 @@ class ActionChunkBroker(ABC):
     """
 
     def __init__(
-        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
+        self,
+        ws_client: BidirectionalWebsocket,
+        control_hz: int,
+        realtime: bool = True,
+        execution_horizon: int = 0,
     ) -> None:
         self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
@@ -36,7 +40,7 @@ class ActionChunkBroker(ABC):
         self._realtime = realtime
         self.execution_horizon = execution_horizon
 
-        self._prev_action: Action = self._create_null_action(-1)
+        self._prev_action: Action = self._create_null_action(None)
 
         self._lock = threading.Lock()
         self._actions_left_history: list[int] = []
@@ -45,7 +49,10 @@ class ActionChunkBroker(ABC):
         self.reset()
         self._background_thread.start()
 
+        self.prev_obs = None
+
     def infer(self, obs: Observation) -> Action:
+        self.prev_obs = obs
         """Client continuously streams observations to the server."""
         with self._lock:
             # count actions left in queue before we pop the next action
@@ -56,7 +63,7 @@ class ActionChunkBroker(ABC):
                 action = self._action_queue.popleft()
                 self._next_action_step += 1
             else:
-                action = self._create_null_action(obs.step)
+                action = self._create_null_action(obs)
 
             self._prev_action = action
 
@@ -64,12 +71,17 @@ class ActionChunkBroker(ABC):
 
             return action
 
-    def _create_null_action(self, observation_step: int) -> Action:
-        # FIXME: hardcoded, should move this outside of this class
+    def _create_null_action(self, obs: Optional[Observation]) -> Action:
         import numpy as np
 
-        action = np.zeros(7)
-        action[-1] = self.current_action_chunk.get_action(-1)[-1] if self.current_action_chunk is not None else 0.0
+        observation_step = obs.step if obs is not None else -1
+
+        if obs is not None:
+            # Hold current joint positions — safe for absolute action policies.
+            action = obs.state.copy()
+        else:
+            # No observation available yet (pre-first-step placeholder); use zeros.
+            action = np.zeros(7)
 
         return Action(
             step=observation_step,
