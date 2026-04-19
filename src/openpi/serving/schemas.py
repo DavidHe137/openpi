@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-import itertools
 from typing import NamedTuple
 
 import numpy as np
@@ -11,8 +10,6 @@ from openpi_client.messages import InferType
 from openpi_client.messages import RTCParams
 from openpi_client.messages import TrainTimeRTCParams
 from openpi_client.messages import VlashParams
-
-_request_id_counter = itertools.count(1)
 
 
 @dataclass(frozen=True)
@@ -84,7 +81,6 @@ class ResponseBatch(NamedTuple):
 class SchedulerDecision:
     """A scheduler decision: a batch scheduling event."""
 
-    scheduler_name: str
     metric_name: str
     duration: float
     recorded_at: float

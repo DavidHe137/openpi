@@ -24,6 +24,7 @@ from collections.abc import Callable
 import dataclasses
 from dataclasses import asdict
 from dataclasses import dataclass
+import itertools
 import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event
@@ -62,7 +63,6 @@ from openpi.serving.schemas import ResponseBatch
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 from openpi.serving.schemas import WarmupSeed
-from openpi.serving.schemas import _request_id_counter
 from openpi.serving.slots import RobotSlots
 from openpi.serving.slots import SlotData
 
@@ -76,6 +76,8 @@ socket_addresses = {
     "gpu_out_ep": f"ipc:///tmp/openpi_gpu_out_{_uid}",
     "result_ep": f"ipc:///tmp/openpi_result_{_uid}",
 }
+
+_request_id_counter = itertools.count(1)
 
 
 @dataclass

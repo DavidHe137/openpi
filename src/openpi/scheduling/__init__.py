@@ -109,7 +109,6 @@ class RequestScheduler(ABC):
             # FIXME: this branch only has single batch decisions for now, will need to refactor timing for multi batch decisions
             self._decisions.append(
                 SchedulerDecision(
-                    scheduler_name=self.__class__.__name__,
                     metric_name="batch_scheduled",
                     duration=duration(),
                     recorded_at=now,

@@ -485,7 +485,6 @@ class RecedingHorizonILPScheduler(RequestScheduler):
     def _record_metric(self, metric_name: str, duration: float) -> None:
         self._decisions.append(
             SchedulerDecision(
-                scheduler_name=self.__class__.__name__,
                 metric_name=metric_name,
                 duration=duration,
                 recorded_at=time.time(),
