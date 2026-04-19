@@ -17,7 +17,7 @@ class BrokerConfig:
     ws_client: BidirectionalWebsocket
     control_hz: int
     execution_horizon: int
-    action_contract_type: str  # one of "maximal", "observation", or "arrival"
+    action_contract_type: str = "maximal"  # one of "maximal", "observation", or "arrival"
     # Optional parameters for specific brokers
     m_param: float = 1.0  # For temporal_ensembling: exponential decay rate
 

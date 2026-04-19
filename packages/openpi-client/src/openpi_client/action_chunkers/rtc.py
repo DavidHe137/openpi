@@ -10,7 +10,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
         self,
         ws_client: BidirectionalWebsocket,
         control_hz: int,
-        action_contract_type: str = "maximal",
+        action_contract_type: str,
         realtime: bool = True,
         execution_horizon: int = 0,
     ):

@@ -29,8 +29,8 @@ class ActionChunkBroker(ABC):
         self,
         ws_client: BidirectionalWebsocket,
         control_hz: int,
+        action_contract_type: str,
         realtime: bool = True,
-        action_contract_type: str = "maximal",
         execution_horizon: int = 0,
     ) -> None:
         self._ws_client = ws_client
