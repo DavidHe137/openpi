@@ -52,7 +52,6 @@ dependencies = [
     "plotly-resampler>=0.10.0",
     "trace-updater>=0.0.8",
     "av>=16.0.1",
-    "pulp>=3.3.0",
 ]
 
 
