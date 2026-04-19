@@ -6,8 +6,6 @@ from abc import ABC
 from collections import deque
 from openpi_client.client import BidirectionalWebsocket
 from openpi_client.schemas import Action, Observation
-from openpi_client.action_chunkers.action_contracts import ActionContract
-from openpi_client.action_chunkers.action_contracts import ACTION_CONTRACT_REGISTRY
 import threading
 
 
@@ -26,23 +24,13 @@ class ActionChunkBroker(ABC):
     """
 
     def __init__(
-        self,
-        ws_client: BidirectionalWebsocket,
-        control_hz: int,
-        action_contract_type: str,
-        realtime: bool = True,
-        execution_horizon: int = 0,
+        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
     ) -> None:
         self._ws_client = ws_client
-        self._action_contract = ACTION_CONTRACT_REGISTRY.get(action_contract_type, ActionContract)()
         self._action_queue: deque[Action] = deque()
         self._action_chunks: List[ActionChunk] = []
         self._next_observation_step: int = 0  # next observation step to see
         self._next_action_step: int = 0  # next action step to execute
-        self._next_step_time: float = (
-            0.0  # next step time according to the client's clock, used for deadline estimation
-        )
-        self.deadline: float = time.time()
 
         self._step_duration = 1 / control_hz
         self._realtime = realtime
@@ -72,8 +60,6 @@ class ActionChunkBroker(ABC):
 
             self._prev_action = action
 
-            # FIXME: this can probably be estimated in a more sophisticated way
-            self._next_step_time = time.time() + self._step_duration
             self._infer(obs)
 
             return action
@@ -115,10 +101,6 @@ class ActionChunkBroker(ABC):
         while self._action_queue and self._action_queue[-1].step >= action_chunk.action_start_step:
             self._action_queue.pop()
 
-        actual_execution_horizon = self._action_contract.calculate_execution_horizon(
-            action_chunk, self._step_duration, self._next_step_time, self._next_action_step
-        )
-
         # assumes that pausing is preferable to executing actions past the execution horizon
         self._action_queue.extend(
             Action(
@@ -127,11 +109,9 @@ class ActionChunkBroker(ABC):
                 action_chunk_index=len(self._action_chunks) - 1,
                 index_in_chunk=i,
             )
-            for i in range(actual_execution_horizon)
+            for i in range(action_chunk.execution_horizon)
             if action_chunk.action_start_step + i >= self._next_action_step
         )
-
-        self.deadline = self._next_step_time + self._step_duration * len(self._action_queue)
 
     def _infer(self, obs: Observation) -> None:
         self._ws_client.send(
@@ -163,3 +143,7 @@ class ActionChunkBroker(ABC):
     def actions_left_history(self) -> List[int]:
         """Actions remaining in queue after each step (recorded inside the lock)."""
         return list(self._actions_left_history)
+
+    @property
+    def deadline(self) -> float:
+        return time.time() + len(self._action_queue) * self._step_duration

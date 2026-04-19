@@ -56,7 +56,7 @@ def _run_scheduler(
     scheduler_metrics_queue: mp.Queue | None,
     max_batch_size: int,
     algorithm: str,
-    scheduler_kwargs: dict,
+    scheduler_kwargs: dict | None,
     ready_event: Event,
     log_queue: mp.Queue | None = None,
 ) -> None:
@@ -101,7 +101,8 @@ def _run_scheduler(
     result_sock = ctx.socket(zmq.PULL)
     result_sock.bind(result_ep)  # GPU connects
 
-    scheduler = cls(batch_queue, max_batch_size=max_batch_size, **scheduler_kwargs)
+    extra_kwargs: dict = dict(scheduler_kwargs or {})
+    scheduler = cls(batch_queue, max_batch_size=max_batch_size, **extra_kwargs)
 
     batch_profile = _recv_batch_profile(result_sock)
     for batch_size, latency in batch_profile.items():

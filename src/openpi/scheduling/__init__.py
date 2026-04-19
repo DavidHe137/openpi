@@ -7,9 +7,6 @@ import itertools
 import multiprocessing as mp
 import time
 
-from openpi_client.action_chunkers.action_contracts import ACTION_CONTRACT_REGISTRY
-from openpi_client.action_chunkers.action_contracts import ActionContract
-
 from openpi.scheduling.latency import EMALatencyTracker
 from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import CompletionNotification
@@ -23,7 +20,6 @@ class RequestScheduler(ABC):
         self,
         batch_queue: mp.Queue,
         max_batch_size: int = 1,
-        action_contract_type: str = "maximal",
     ):
         self._batch_queue = batch_queue
         self._max_batch_size = max_batch_size
@@ -33,13 +29,11 @@ class RequestScheduler(ABC):
         self._deadlines: dict[str, float] = {}  # includes chunks that have been sent to the GPU but not yet completed
         self._decisions: list[SchedulerDecision] = []
         self.latency_tracker = EMALatencyTracker()  # TODO: allow different latency trackers
-        self.action_contract = ACTION_CONTRACT_REGISTRY.get(action_contract_type, ActionContract)()  # type: ignore
         self.next_batch_id = itertools.count(1)
         self._in_flight = 0
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
-        # FIXME: probably a lot of edge cases in updating deadlines properly, but this should address the common case
         if request.deadline is not None and request.deadline > self._deadlines.get(request.robot_id, 0):
             self._deadlines[request.robot_id] = request.deadline
         self.latency_tracker.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
@@ -65,7 +59,6 @@ class RequestScheduler(ABC):
         for batch in batches:
             batch_size = len(batch)
             # Capture deadlines before the loop overwrites them, sort earliest first.
-            # FIXME: this kind of logging/telemetry should be abstracted out
             requests = sorted(
                 (
                     {
@@ -101,14 +94,8 @@ class RequestScheduler(ABC):
             annotated = []
             for request in batch:
                 # FIXME: this might monotonically increase if we end up serving a newer observation?
-                estimated_arrival_timestamp = request.request_timestamp + self.latency_tracker.total_latency(
-                    request.robot_id, batch_size
-                )
-                self._deadlines[request.robot_id] = self.action_contract.estimate_deadline_server_side(
-                    request.request_timestamp,
-                    estimated_arrival_timestamp,
-                    request.execution_horizon,
-                    request.control_hz,
+                self._deadlines[request.robot_id] = (
+                    request.request_timestamp + request.execution_horizon / request.control_hz
                 )
                 self._latest_scheduled_requests[request.robot_id] = request
                 total_latency_steps = (

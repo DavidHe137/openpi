@@ -67,9 +67,6 @@ class Args:
     # Scheduling algorithm for batching requests. Valid options: SCHEDULER_REGISTRY keys.
     scheduling_algorithm: str = "greedy-action"
 
-    # action contract type for the scheduler to use when estimating deadlines; one of "maximal", "observation", or "arrival"
-    action_contract_type: str = "maximal"
-
     # Lookahead rollout horizon in milliseconds.
     lookahead_horizon_ms: int = 500
 
@@ -139,11 +136,9 @@ def create_policy(args: Args) -> _policy.Policy:
             )
 
 
-def build_scheduler_kwargs(args: Args, *, action_horizon_steps: int) -> dict[str, object]:
-    kwargs: dict[str, object] = {"action_contract_type": args.action_contract_type}
-
+def build_scheduler_kwargs(args: Args, *, action_horizon_steps: int) -> dict[str, object] | None:
     if args.scheduling_algorithm == "lookahead":
-        kwargs |= {
+        return {
             "horizon_ms": args.lookahead_horizon_ms,
             "timestep_ms": args.lookahead_timestep_ms,
             "action_horizon_steps": action_horizon_steps,
@@ -154,7 +149,7 @@ def build_scheduler_kwargs(args: Args, *, action_horizon_steps: int) -> dict[str
         ilp_action_horizon = args.ilp_action_horizon_steps or action_horizon_steps or 10
         if ilp_action_horizon < 1:
             ilp_action_horizon = 10
-        kwargs |= {
+        return {
             "tick_ms": args.ilp_timestep_ms,
             "horizon_steps": args.ilp_horizon_steps,
             "execution_fraction": args.ilp_execution_fraction,
@@ -164,7 +159,7 @@ def build_scheduler_kwargs(args: Args, *, action_horizon_steps: int) -> dict[str
             "obs_staleness_weight": args.ilp_obs_staleness_weight,
         }
 
-    return kwargs
+    return None
 
 
 def main(args: Args) -> None:

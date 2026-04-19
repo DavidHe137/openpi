@@ -7,27 +7,17 @@ from openpi_client import messages
 
 class InferenceTimeRTCBroker(ActionChunkBroker):
     def __init__(
-        self,
-        ws_client: BidirectionalWebsocket,
-        control_hz: int,
-        action_contract_type: str,
-        realtime: bool = True,
-        execution_horizon: int = 0,
+        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
     ):
         """
         Args:
             ws_client: the websocket client to use for inference
             control_hz: the control frequency of the environment
-            action_contract_type: the type of action contract to use
             realtime: whether to run in realtime mode, setting this False essentially means inference latency is 0
             execution_horizon: how many steps in the predicted chunk the robot is willing to execute
         """
         super().__init__(
-            ws_client=ws_client,
-            control_hz=control_hz,
-            action_contract_type=action_contract_type,
-            realtime=realtime,
-            execution_horizon=execution_horizon,
+            ws_client=ws_client, control_hz=control_hz, realtime=realtime, execution_horizon=execution_horizon
         )
 
     @override
