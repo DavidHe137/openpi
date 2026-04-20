@@ -448,7 +448,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         return self._to_ticks(max(0.0, value))
 
     def _recv_ticks(self, robot_id: str) -> int:
-        value = self.latency_tracker.action_latency(robot_id)
+        value = self.latency_tracker.action_latency[robot_id]
         if value is None:
             return 0
         return self._to_ticks(max(0.0, value))

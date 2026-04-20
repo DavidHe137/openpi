@@ -116,7 +116,7 @@ class ActionChunkBroker(ABC):
     def _infer(self, obs: Observation) -> None:
         self._ws_client.send(
             obs,
-            self.deadline,
+            self.deadline_step
             self._next_action_step,
             execution_horizon=self.execution_horizon,
         )
@@ -145,5 +145,5 @@ class ActionChunkBroker(ABC):
         return list(self._actions_left_history)
 
     @property
-    def deadline(self) -> float:
-        return time.time() + len(self._action_queue) * self._step_duration
+    def deadline_step(self) -> int:
+        return self._next_observation_step + len(self._action_queue)

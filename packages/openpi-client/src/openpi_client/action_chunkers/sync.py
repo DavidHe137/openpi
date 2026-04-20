@@ -29,4 +29,4 @@ class SyncBroker(ActionChunkBroker):
         if len(self._action_queue) > 0:
             return
 
-        self._ws_client.send(obs, self.deadline, self._next_action_step, execution_horizon=self.execution_horizon)
+        self._ws_client.send(obs, self.deadline_step, self._next_action_step, execution_horizon=self.execution_horizon)

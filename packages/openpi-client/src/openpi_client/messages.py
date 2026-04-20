@@ -40,7 +40,7 @@ class InferRequest:
     observation_step: int
     action_start_step: int
     request_timestamp: float
-    deadline: float
+    deadline_step: int
     execution_horizon: int
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None

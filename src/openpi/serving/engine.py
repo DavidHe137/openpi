@@ -145,7 +145,7 @@ def _run_gpu_worker(
                 action_start_step=sd.action_start_step,
                 execution_horizon=sd.execution_horizon,
                 request_timestamp=sd.request_timestamp,
-                deadline=sd.deadline,
+                deadline_step=sd.deadline_step,
                 infer_type=sd.infer_type,
                 params=_make_rtc_params(sr.robot_id, sd.observation_step, sr.estimated_d_param)
                 if sd.infer_type == InferType.INFERENCE_TIME_RTC

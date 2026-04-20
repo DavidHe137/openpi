@@ -405,7 +405,7 @@ def create_app(
                             observation_step=req.observation_step,
                             action_start_step=req.action_start_step,
                             request_timestamp=req.request_timestamp,
-                            deadline=req.deadline,
+                            deadline_step=req.deadline_step,
                             execution_horizon=req.execution_horizon,
                             infer_type=req.infer_type,
                             params=req.params,

@@ -24,7 +24,7 @@ class InferenceTimeRTCBroker(ActionChunkBroker):
     def _infer(self, obs: Observation) -> None:
         self._ws_client.send(
             obs,
-            self.deadline,
+            self.deadline_step,
             self._next_action_step,
             infer_type=messages.InferType.INFERENCE_TIME_RTC,
             execution_horizon=self.execution_horizon,

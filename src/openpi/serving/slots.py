@@ -25,7 +25,7 @@ class SlotData:
     observation_step: int
     action_start_step: int
     request_timestamp: float
-    deadline: float
+    deadline_step: int
     execution_horizon: int  # how many steps of the predicted chunk the robot is willing to execute
     infer_type: Any
     params: Any
