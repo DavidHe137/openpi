@@ -45,15 +45,11 @@ class InferRequest:
     infer_type: InferType
     params: Optional[Union[RTCParams, VlashParams, TrainTimeRTCParams]] = None
     noise: Optional[Float[np.ndarray, "action_horizon noise_dim"]] = None
-    client_send_timestamp: float = 0.0
     type: Literal["infer"] = "infer"
 
     def __post_init__(self) -> None:
         if isinstance(self.infer_type, str):
             object.__setattr__(self, "infer_type", InferType(self.infer_type))
-
-        if self.client_send_timestamp <= 0.0:
-            object.__setattr__(self, "client_send_timestamp", self.request_timestamp)
 
         if isinstance(self.params, dict):
             if self.infer_type == InferType.INFERENCE_TIME_RTC:

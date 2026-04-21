@@ -25,7 +25,6 @@ class RequestRecord:
     execution_horizon: int
     request_timestamp: float  # client: when request was created
     server_arrival_time: float  # server: when observation arrived
-    client_send_timestamp: float = 0.0  # client: just before websocket send
 
 
 @dataclass

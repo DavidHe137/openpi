@@ -26,7 +26,6 @@ class SlotRequest:
     observation_step: int
     action_start_step: int
     request_timestamp: float
-    client_send_timestamp: float
     deadline: float
     execution_horizon: int
     infer_type: InferType

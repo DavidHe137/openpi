@@ -187,14 +187,11 @@ class MetricsStore(JSONDataclass):
                 action_start_step=request.action_start_step,
                 execution_horizon=request.execution_horizon,
                 request_timestamp=request.request_timestamp,
-                client_send_timestamp=getattr(request, "client_send_timestamp", request.request_timestamp),
                 server_arrival_time=request.arrival_timestamp,  # FIXME: make timestamp/arrival time naming convention consistent
             )
             robot = self.robots[robot_id]
             if robot.episodes and request.observation_step == robot.current_episode.num_observation_steps:
-                step_timestamp = (
-                    record.client_send_timestamp if record.client_send_timestamp > 0 else record.request_timestamp
-                )
+                step_timestamp = record.request_timestamp
                 robot.add_step(step_timestamp)
                 self.end_time = max(self.end_time, step_timestamp)
             robot.add_request(record)

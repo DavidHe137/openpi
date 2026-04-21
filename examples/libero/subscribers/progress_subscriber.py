@@ -94,9 +94,7 @@ class ProgressSubscriber(_subscriber.Subscriber):
             [np.diff(step_times) for step_times in self.step_times]
         )
         steps_per_sec = 1.0 / float(np.mean(intervals))
-        if steps_per_sec < 20.0:
-            logger.info(f"Steps per second is too low: {steps_per_sec:.2f}")
-        return 1.0 / float(np.mean(intervals))
+        return steps_per_sec
 
     @override
     def on_step(self, observation: dict, action: dict) -> None:

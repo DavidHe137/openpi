@@ -142,7 +142,6 @@ class BidirectionalWebsocket:
                 "execution_horizon": execution_horizon,
                 "infer_type": infer_type.value,
                 "noise": noise,
-                "client_send_timestamp": time.time(),
             }
         )
         self._ws.send(data)  # type: ignore

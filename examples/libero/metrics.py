@@ -24,9 +24,9 @@ def _episode_step_timestamps(ep: dict) -> List[float]:
 
     requests = ep.get("requests") or []
     return [
-        float(req.get("client_send_timestamp") or req.get("request_timestamp"))
+        float(req.get("request_timestamp"))
         for req in requests
-        if (req.get("client_send_timestamp") or req.get("request_timestamp"))
+        if req.get("request_timestamp")
     ]
 
 
@@ -929,9 +929,7 @@ def generate_server_timings_plot(output_path: pathlib.Path) -> None:
                 )
             for req in ep.get("requests", []):
                 ra = req.get("server_arrival_time")
-                send_ts = req.get("client_send_timestamp") or req.get(
-                    "request_timestamp"
-                )
+                send_ts = req.get("request_timestamp")
                 if ra and send_ts:
                     inbound.append((ra - send_ts) * 1000.0)
             for resp in ep.get("responses", []):
@@ -1019,9 +1017,7 @@ def generate_server_timings_over_time_plot(output_path: pathlib.Path) -> None:
                 step_robot.append(robot_id)
             for req in ep.get("requests", []):
                 ra = req.get("server_arrival_time")
-                send_ts = req.get("client_send_timestamp") or req.get(
-                    "request_timestamp"
-                )
+                send_ts = req.get("request_timestamp")
                 if ra and send_ts:
                     inbound_t.append(float(send_ts))
                     inbound_v.append((float(ra) - float(send_ts)) * 1000.0)
