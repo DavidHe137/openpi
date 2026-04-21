@@ -7,6 +7,9 @@ from openpi_client.runtime import subscriber as _subscriber
 from typing_extensions import override
 from examples.libero.env import LiberoSimEnvironment
 from examples.libero.episodes import Episode
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ProgressSubscriber(_subscriber.Subscriber):
@@ -90,6 +93,9 @@ class ProgressSubscriber(_subscriber.Subscriber):
         intervals = np.concatenate(
             [np.diff(step_times) for step_times in self.step_times]
         )
+        steps_per_sec = 1.0 / float(np.mean(intervals))
+        if steps_per_sec < 20.0:
+            logger.info(f"Steps per second is too low: {steps_per_sec:.2f}")
         return 1.0 / float(np.mean(intervals))
 
     @override

@@ -25,6 +25,7 @@ class RequestRecord:
     execution_horizon: int
     request_timestamp: float  # client: when request was created
     server_arrival_time: float  # server: when observation arrived
+    client_send_timestamp: float = 0.0  # client: just before websocket send
 
 
 @dataclass
@@ -81,7 +82,7 @@ class Episode:
     responses: list[ResponseRecord]
     success: bool | None = None
     num_observation_steps: int = 0
-    step_timestamps: list[float] = field(default_factory=list)
+    step_timestamps: list[float] = field(default_factory=list)  # client-side step timestamps
 
     def __post_init__(self) -> None:
         self.requests = [RequestRecord(**r) if isinstance(r, dict) else r for r in self.requests]

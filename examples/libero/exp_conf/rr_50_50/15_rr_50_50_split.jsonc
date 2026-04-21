@@ -2,7 +2,7 @@
   "experiment": {
     "action_chunk_broker_type": "rtc",
     "num_robots": 15,
-    "trials_per_robot": 5
+    "trials_per_robot": 2
   },
   "toxiproxy": {
     "api_url": "http://127.0.0.1:8474",

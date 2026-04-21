@@ -16,6 +16,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _episode_step_timestamps(ep: dict) -> List[float]:
+    ts = ep.get("step_timestamps") or []
+    if ts:
+        return [float(t) for t in ts]
+
+    requests = ep.get("requests") or []
+    return [
+        float(req.get("client_send_timestamp") or req.get("request_timestamp"))
+        for req in requests
+        if (req.get("client_send_timestamp") or req.get("request_timestamp"))
+    ]
+
+
 # =============================================================================
 # Data Loading
 # =============================================================================
@@ -908,16 +922,18 @@ def generate_server_timings_plot(output_path: pathlib.Path) -> None:
     outbound: List[float] = []
     for robot in data.get("robots", {}).values():
         for ep in robot.get("episodes", []):
-            ts = ep.get("step_timestamps") or []
+            ts = _episode_step_timestamps(ep)
             if len(ts) >= 2:
                 step_intervals.extend(
                     (np.diff(np.asarray(ts, dtype=float)) * 1000.0).tolist()
                 )
             for req in ep.get("requests", []):
                 ra = req.get("server_arrival_time")
-                rt = req.get("request_timestamp")
-                if ra and rt:
-                    inbound.append((ra - rt) * 1000.0)
+                send_ts = req.get("client_send_timestamp") or req.get(
+                    "request_timestamp"
+                )
+                if ra and send_ts:
+                    inbound.append((ra - send_ts) * 1000.0)
             for resp in ep.get("responses", []):
                 rcv = resp.get("receive_time", 0.0) or 0.0
                 snd = resp.get("server_send_time", 0.0) or 0.0
@@ -935,8 +951,8 @@ def generate_server_timings_plot(output_path: pathlib.Path) -> None:
             infer.append((end - start) * 1000.0)
 
     timings = {
-        "step interval (ms)": np.asarray(step_intervals),
-        "client->server delay (ms)": np.asarray(inbound),
+        "step interval (client-local ms)": np.asarray(step_intervals),
+        "client->server transport delay (ms)": np.asarray(inbound),
         "inference time (ms)": np.asarray(infer),
         "server->client delay (ms)": np.asarray(outbound),
     }
@@ -996,17 +1012,19 @@ def generate_server_timings_over_time_plot(output_path: pathlib.Path) -> None:
 
     for robot_id, robot in data.get("robots", {}).items():
         for ep in robot.get("episodes", []):
-            ts = ep.get("step_timestamps") or []
+            ts = _episode_step_timestamps(ep)
             for i in range(1, len(ts)):
                 step_t.append(float(ts[i]))
                 step_v.append((float(ts[i]) - float(ts[i - 1])) * 1000.0)
                 step_robot.append(robot_id)
             for req in ep.get("requests", []):
                 ra = req.get("server_arrival_time")
-                rt = req.get("request_timestamp")
-                if ra and rt:
-                    inbound_t.append(float(rt))
-                    inbound_v.append((float(ra) - float(rt)) * 1000.0)
+                send_ts = req.get("client_send_timestamp") or req.get(
+                    "request_timestamp"
+                )
+                if ra and send_ts:
+                    inbound_t.append(float(send_ts))
+                    inbound_v.append((float(ra) - float(send_ts)) * 1000.0)
                     inbound_robot.append(robot_id)
             for resp in ep.get("responses", []):
                 rcv = resp.get("receive_time", 0.0) or 0.0
@@ -1041,9 +1059,15 @@ def generate_server_timings_over_time_plot(output_path: pathlib.Path) -> None:
         return np.asarray(ts, dtype=float) - t0
 
     series = [
-        ("step interval (ms)", _rel(step_t), np.asarray(step_v), step_robot, None),
         (
-            "client->server delay (ms)",
+            "step interval (client-local ms)",
+            _rel(step_t),
+            np.asarray(step_v),
+            step_robot,
+            None,
+        ),
+        (
+            "client->server transport delay (ms)",
             _rel(inbound_t),
             np.asarray(inbound_v),
             inbound_robot,

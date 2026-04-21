@@ -128,18 +128,23 @@ class BidirectionalWebsocket:
         if self._pre_send_hook is not None:
             self._pre_send_hook()
 
-        request = messages.InferRequest(
-            request_timestamp=time.time(),
-            observation_step=obs.step,
-            action_start_step=action_start_step,
-            robot_id=self._robot_id,
-            observation=asdict(obs),
-            deadline=deadline,
-            infer_type=infer_type,
-            noise=noise,
-            execution_horizon=execution_horizon,
+        request_timestamp = time.time()
+        # Build the wire payload once so we do not deep-copy image observations multiple times.
+        data = msgpack_numpy.packb(
+            {
+                "type": "infer",
+                "robot_id": self._robot_id,
+                "observation": asdict(obs),
+                "observation_step": obs.step,
+                "action_start_step": action_start_step,
+                "request_timestamp": request_timestamp,
+                "deadline": deadline,
+                "execution_horizon": execution_horizon,
+                "infer_type": infer_type.value,
+                "noise": noise,
+                "client_send_timestamp": time.time(),
+            }
         )
-        data = msgpack_numpy.packb(asdict(request))
         self._ws.send(data)  # type: ignore
 
     def receive(
@@ -188,10 +193,6 @@ class BidirectionalWebsocket:
             max_episode_steps=max_episode_steps,
             task_language=task_language,
         )
-        self._ws.send(msgpack_numpy.packb(asdict(payload)))
-
-    def send_episode_step(self) -> None:
-        payload = messages.EpisodeStep()
         self._ws.send(msgpack_numpy.packb(asdict(payload)))
 
     def send_episode_end(

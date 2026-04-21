@@ -11,6 +11,7 @@ import time
 import numpy as np
 from openpi_client.messages import EpisodeEnd
 from openpi_client.messages import EpisodeStart
+from openpi_client.messages import EpisodeStep
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResponseAck
 from openpi_client.schemas import JSONDataclass
@@ -186,9 +187,17 @@ class MetricsStore(JSONDataclass):
                 action_start_step=request.action_start_step,
                 execution_horizon=request.execution_horizon,
                 request_timestamp=request.request_timestamp,
+                client_send_timestamp=getattr(request, "client_send_timestamp", request.request_timestamp),
                 server_arrival_time=request.arrival_timestamp,  # FIXME: make timestamp/arrival time naming convention consistent
             )
-            self.robots[robot_id].add_request(record)
+            robot = self.robots[robot_id]
+            if robot.episodes and request.observation_step == robot.current_episode.num_observation_steps:
+                step_timestamp = (
+                    record.client_send_timestamp if record.client_send_timestamp > 0 else record.request_timestamp
+                )
+                robot.add_step(step_timestamp)
+                self.end_time = max(self.end_time, step_timestamp)
+            robot.add_request(record)
 
             self.start_time = min(self.start_time, request.request_timestamp)
 
@@ -228,9 +237,10 @@ class MetricsStore(JSONDataclass):
                 self.robots[robot_id] = Robot(robot_id=robot_id, episodes=[])
             self.robots[robot_id].start_episode(episode_start)
 
-    def record_episode_step(self, robot_id: str, timestamp: float) -> None:
+    def record_episode_step(self, robot_id: str, episode_step: EpisodeStep) -> None:
         with lock:
             if robot_id in self.robots and self.robots[robot_id].episodes:
+                timestamp = episode_step.client_timestamp if episode_step.client_timestamp > 0 else time.time()
                 self.robots[robot_id].add_step(timestamp)
                 self.end_time = max(self.end_time, timestamp)
 
