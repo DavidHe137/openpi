@@ -15,6 +15,7 @@ import gurobipy as gp
 from openpi.scheduling import RequestScheduler
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
+from openpi.shared.clock import Clock
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +93,9 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         action_horizon_steps: int = 10,
         pack_early_weight: float = 1.0,
         obs_staleness_weight: float = 0.1,
+        clock: Clock | None = None,
     ) -> None:
-        super().__init__(batch_queue, max_batch_size)
+        super().__init__(batch_queue, max_batch_size, clock=clock)
 
         assert tick_ms >= 1, "tick_ms must be >= 1"
         assert horizon_steps >= 1, "horizon_steps must be >= 1"
@@ -113,7 +115,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         self._pack_early_weight = pack_early_weight
         self._obs_staleness_weight = obs_staleness_weight
 
-        self._epoch_monotonic = time.monotonic()
+        self._epoch_monotonic = self._clock.monotonic()
         self._bootstrap_start_monotonic = self._epoch_monotonic
         self._bootstrap_recorded = False
 
@@ -263,7 +265,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         #     impossible_robots,
         #     len(solve_input.robot_ids),
         # )
-        self._solve_kickoff_monotonic = time.monotonic()
+        self._solve_kickoff_monotonic = self._clock.monotonic()
         self._inflight_solve_id = solve_id
         self._solve_future = self._executor.submit(self._solve_ilp, solve_input)
 
@@ -304,7 +306,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
                         )
                     )
 
-        now_wall_time = time.time()
+        now_wall_time = self._clock.time()
         obs_age_tick_at_start = {
             robot_id: self._to_ticks(
                 max(0.0, (now_wall_time - self._latest_requests[robot_id].request_timestamp) * 1000.0)
@@ -397,7 +399,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
             self._pending_plan = None
             self._record_metric("ilp_plan_activated", 0.0)
             if not self._bootstrap_recorded:
-                bootstrap_wait_ms = (time.monotonic() - self._bootstrap_start_monotonic) * 1000.0
+                bootstrap_wait_ms = (self._clock.monotonic() - self._bootstrap_start_monotonic) * 1000.0
                 self._record_metric("bootstrap_wait_ms", bootstrap_wait_ms)
                 self._bootstrap_recorded = True
             return
@@ -472,7 +474,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         return start_tick + self._to_ticks(wait_ms)
 
     def _now_tick(self) -> int:
-        return math.floor((time.monotonic() - self._epoch_monotonic) / self._tick_s)
+        return math.floor((self._clock.monotonic() - self._epoch_monotonic) / self._tick_s)
 
     def _to_ticks(self, duration_ms: float, *, minimum: int = 0) -> int:
         return max(minimum, math.ceil(duration_ms / self._tick_ms))
@@ -480,14 +482,14 @@ class RecedingHorizonILPScheduler(RequestScheduler):
     def _kickoff_to_ready_ms(self) -> float:
         if self._solve_kickoff_monotonic is None:
             return 0.0
-        return (time.monotonic() - self._solve_kickoff_monotonic) * 1000.0
+        return (self._clock.monotonic() - self._solve_kickoff_monotonic) * 1000.0
 
     def _record_metric(self, metric_name: str, duration: float) -> None:
         self._decisions.append(
             SchedulerDecision(
                 metric_name=metric_name,
                 duration=duration,
-                recorded_at=time.time(),
+                recorded_at=self._clock.time(),
             )
         )
 

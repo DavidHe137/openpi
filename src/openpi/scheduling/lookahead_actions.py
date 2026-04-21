@@ -1,4 +1,3 @@
-import time
 from typing import TypeVar
 
 from action_chunk_scheduling.classes import SimulatorParameters
@@ -30,7 +29,7 @@ class LookaheadActionScheduler(RequestScheduler):
         def convert_to_ms(latencies: dict[T, float]) -> dict[T, int]:
             return {k: int(v * 1000) for k, v in latencies.items()}
 
-        now = time.time()
+        now = self._clock.time()
         start_offsets = {}
         existing_actions = {}
         for robot_id, request in self._latest_requests.items():

@@ -14,6 +14,8 @@ from openpi.serving.schemas import CompletionNotification
 from openpi.serving.schemas import RequestBatch
 from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
+from openpi.shared.clock import Clock
+from openpi.shared.clock import default_clock
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +25,11 @@ class RequestScheduler(ABC):
         self,
         batch_queue: mp.Queue,
         max_batch_size: int = 1,
+        clock: Clock | None = None,
     ):
         self._batch_queue = batch_queue  # TODO: try to move this out of this class
         self._max_batch_size = max_batch_size
+        self._clock = clock if clock is not None else default_clock()
 
         self._latest_requests: dict[str, SlotRequest] = {}
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
@@ -41,7 +45,7 @@ class RequestScheduler(ABC):
             logger.warning(
                 "Updated deadline step for robot %s from %d to %d",
                 request.robot_id,
-                self._deadline_steps[request.robot_id],
+                self._deadline_steps.get(request.robot_id, 0),
                 request.deadline_step,
             )
             self._deadline_steps[request.robot_id] = request.deadline_step
@@ -60,7 +64,7 @@ class RequestScheduler(ABC):
     def collect_trace(self, batch: list[SlotRequest]) -> dict:
         all_requests = list(self._latest_requests.values())
         candidates = list(self.schedulable_requests)
-        now = time.time()
+        now = self._clock.time()
 
         return {
             "requests": sorted(
@@ -103,7 +107,7 @@ class RequestScheduler(ABC):
             batches = self.get_next_batches()
 
         # TODO: choose batches, collect trace, update deadliens
-        now = time.time()
+        now = self._clock.time()
         for batch in batches:
             batch_size = len(batch)
             # Capture deadlines before the loop overwrites them, sort earliest first.

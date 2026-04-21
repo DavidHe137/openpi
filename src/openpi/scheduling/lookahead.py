@@ -3,10 +3,10 @@ from __future__ import annotations
 from functools import cache
 import math
 import multiprocessing as mp
-import time
 
 from openpi.scheduling import RequestScheduler
 from openpi.serving.schemas import SlotRequest
+from openpi.shared.clock import Clock
 
 
 class LookaheadScheduler(RequestScheduler):
@@ -19,8 +19,9 @@ class LookaheadScheduler(RequestScheduler):
         timestep_ms: int = 50,
         action_horizon_steps: int = 10,
         control_hz: int = 20,
+        clock: Clock | None = None,
     ) -> None:
-        super().__init__(batch_queue, max_batch_size)
+        super().__init__(batch_queue, max_batch_size, clock=clock)
         assert timestep_ms > 0, "timestep_ms must be positive"
         assert horizon_ms > 0, "horizon_ms must be positive"
         assert action_horizon_steps > 0, "action_horizon_steps must be positive"
@@ -45,7 +46,7 @@ class LookaheadScheduler(RequestScheduler):
     def schedule(self) -> None:
         """Dispatch the best batch and update predicted in-flight timing state."""
         batches = self.get_next_batches()
-        now = time.time()
+        now = self._clock.time()
         for batch in batches:
             batch_size = len(batch)
             start_time = max(now, self._server_available_at)
@@ -61,7 +62,7 @@ class LookaheadScheduler(RequestScheduler):
             now = finish_time
 
     def get_next_batches(self) -> list[list[SlotRequest]]:
-        now = time.time()
+        now = self._clock.time()
         self._prune_predictions(now)
 
         if self._batch_queue.qsize() > 0 or now < self._server_available_at:

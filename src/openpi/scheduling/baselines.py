@@ -41,7 +41,7 @@ class GreedyDeadlineScheduler(RequestScheduler):
     def get_largest_batch_size(self, infer_deadline: float) -> int:
         """Return the largest batch size whose profiled latency fits within the time remaining until deadline."""
         # we can assume inference starts right away because queue is empty
-        time_remaining = infer_deadline - time.time()
+        time_remaining = infer_deadline - self._clock.time()
         for batch_size in range(self._max_batch_size, 0, -1):
             if self.latency_tracker.infer_latency[batch_size] <= time_remaining:
                 return batch_size

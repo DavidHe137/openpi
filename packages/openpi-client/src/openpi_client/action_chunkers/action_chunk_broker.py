@@ -24,7 +24,13 @@ class ActionChunkBroker(ABC):
     """
 
     def __init__(
-        self, ws_client: BidirectionalWebsocket, control_hz: int, realtime: bool = True, execution_horizon: int = 0
+        self,
+        ws_client: BidirectionalWebsocket,
+        control_hz: int,
+        realtime: bool = True,
+        execution_horizon: int = 0,
+        *,
+        start_receive_thread: bool = True,
     ) -> None:
         self._ws_client = ws_client
         self._action_queue: deque[Action] = deque()
@@ -40,10 +46,11 @@ class ActionChunkBroker(ABC):
 
         self._lock = threading.Lock()
         self._actions_left_history: list[int] = []
-        self._background_thread = threading.Thread(target=self._receive_actions, daemon=True)
 
         self.reset()
-        self._background_thread.start()
+        if start_receive_thread:
+            self._background_thread = threading.Thread(target=self._receive_actions, daemon=True)
+            self._background_thread.start()
 
     def infer(self, obs: Observation) -> Action:
         """Client continuously streams observations to the server."""
@@ -81,21 +88,29 @@ class ActionChunkBroker(ABC):
     def _receive_actions(self) -> None:
         while True:
             infer_response = self._ws_client.receive()
-            with self._lock:
-                action_chunk = ActionChunk.from_infer_response(
-                    infer_response=infer_response,
-                    execution_start_step=self._next_observation_step,
-                )
+            self._on_response(infer_response)
 
-                self._action_chunks.append(action_chunk)
-                self._update_action_queue(action_chunk)
-                first_executed_index = max(0, self._next_action_step - action_chunk.action_start_step)
-                self._ws_client.send_ack(
-                    action_chunk.request_id,
-                    action_chunk.response_timestamp,
-                    action_chunk.execution_start_step,
-                    first_executed_index,
-                )
+    def _on_response(self, infer_response) -> None:
+        """Integrate a received InferResponse into broker state.
+
+        Called by the background thread in production; drivable directly from
+        single-threaded sim code.
+        """
+        with self._lock:
+            action_chunk = ActionChunk.from_infer_response(
+                infer_response=infer_response,
+                execution_start_step=self._next_observation_step,
+            )
+
+            self._action_chunks.append(action_chunk)
+            self._update_action_queue(action_chunk)
+            first_executed_index = max(0, self._next_action_step - action_chunk.action_start_step)
+            self._ws_client.send_ack(
+                action_chunk.request_id,
+                action_chunk.response_timestamp,
+                action_chunk.execution_start_step,
+                first_executed_index,
+            )
 
     def _update_action_queue(self, action_chunk: ActionChunk) -> None:
         while self._action_queue and self._action_queue[-1].step >= action_chunk.action_start_step:
@@ -116,7 +131,7 @@ class ActionChunkBroker(ABC):
     def _infer(self, obs: Observation) -> None:
         self._ws_client.send(
             obs,
-            self.deadline_step
+            self.deadline_step,
             self._next_action_step,
             execution_horizon=self.execution_horizon,
         )
