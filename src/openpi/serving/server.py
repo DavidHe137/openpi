@@ -38,6 +38,7 @@ from fastapi import Request
 from fastapi import WebSocket
 from fastapi.concurrency import asynccontextmanager
 from openpi_client import msgpack_numpy
+from openpi_client.messages import ClockSyncPong
 from openpi_client.messages import ConnectRequest
 from openpi_client.messages import ConnectResponse
 from openpi_client.messages import EpisodeEnd
@@ -138,13 +139,38 @@ async def _ws_handshake(
     return robot_id, slot_index, connect_req
 
 
+async def _ws_clock_sync(websocket: WebSocket) -> None:
+    """Phase 2: NUM_WARMUP clock-sync round trips so the client can estimate clock offset.
+
+    Uses tiny symmetric payloads (timestamps only) so the NTP formula gives an
+    unbiased offset estimate before profiling begins with realistic payload sizes.
+    """
+    for _ in range(NUM_WARMUP):
+        raw = await websocket.receive_bytes()
+        server_receive_time = time.time()
+        msg = msgpack_numpy.unpackb(raw)
+        if msg.get("type") != "clock_sync_ping":
+            break
+        server_send_time = time.time()
+        pong = ClockSyncPong(
+            client_timestamp=msg["client_timestamp"],
+            server_receive_time=server_receive_time,
+            server_send_time=server_send_time,
+        )
+        await websocket.send_bytes(msgpack_numpy.packb(dataclasses.asdict(pong)))
+
+
 async def _ws_warmup(
     websocket: WebSocket,
     state: ServerState,
     robot_id: str,
     action_payload_size: int,
 ) -> None:
-    """Phase 2: NUM_WARMUP ping/pong round trips to seed LatencyTracker."""
+    """Phase 3: NUM_WARMUP ping/pong round trips to seed LatencyTracker.
+
+    Clock offset has already been set on the client, so client_receive_time in
+    acks is expressed in server-clock units and delivery_samples are accurate.
+    """
     obs_samples: list[tuple[float, float]] = []
     delivery_samples: list[tuple[float, float]] = []
 
@@ -344,6 +370,7 @@ def create_app(
         robot_id, slot_index, _connect_req = result
 
         action_payload_size = metadata.action_horizon * metadata.action_dim * 4  # float32 bytes
+        await _ws_clock_sync(websocket)
         await _ws_warmup(websocket, state, robot_id, action_payload_size)
 
         # Normal operation
