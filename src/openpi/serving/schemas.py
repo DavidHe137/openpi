@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-import itertools
 from typing import NamedTuple
 
 import numpy as np
@@ -11,8 +10,6 @@ from openpi_client.messages import InferType
 from openpi_client.messages import RTCParams
 from openpi_client.messages import TrainTimeRTCParams
 from openpi_client.messages import VlashParams
-
-_request_id_counter = itertools.count(1)
 
 
 @dataclass(frozen=True)
@@ -26,7 +23,7 @@ class SlotRequest:
     observation_step: int
     action_start_step: int
     request_timestamp: float
-    deadline: float
+    deadline_step: int
     execution_horizon: int
     infer_type: InferType
     params: RTCParams | VlashParams | TrainTimeRTCParams | None
@@ -84,14 +81,10 @@ class ResponseBatch(NamedTuple):
 class SchedulerDecision:
     """A scheduler decision: a batch scheduling event."""
 
-    scheduler_name: str
-    metric_name: str
-    duration: float
-    recorded_at: float
     batch_id: int
-    requests: list[dict] = field(default_factory=list)
-    candidates: list[dict] = field(default_factory=list)
-    scheduled: list[dict] = field(default_factory=list)
+    recorded_at: float
+    duration: float
+    trace: dict = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, data: SchedulerDecision | dict) -> SchedulerDecision:

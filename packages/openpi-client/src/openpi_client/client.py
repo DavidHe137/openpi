@@ -119,7 +119,7 @@ class BidirectionalWebsocket:
     def send(
         self,
         obs: Observation,
-        deadline: float,
+        deadline_step: int,
         action_start_step: int,
         infer_type: messages.InferType = messages.InferType.SYNC,
         execution_horizon: int = 0,
@@ -134,7 +134,7 @@ class BidirectionalWebsocket:
             action_start_step=action_start_step,
             robot_id=self._robot_id,
             observation=asdict(obs),
-            deadline=deadline,
+            deadline_step=deadline_step,
             infer_type=infer_type,
             noise=noise,
             execution_horizon=execution_horizon,

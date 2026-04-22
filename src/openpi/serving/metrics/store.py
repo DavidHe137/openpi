@@ -477,9 +477,7 @@ class MetricsStore(JSONDataclass):
                     )
                 else:
                     # FIXME: idk what this is
-                    scheduler_timing_ms.setdefault(f"{sample.scheduler_name}.{sample.metric_name}", []).append(
-                        round(sample.duration * 1000, 3)
-                    )
+                    scheduler_timing_ms.setdefault(f"{sample.metric_name}", []).append(round(sample.duration * 1000, 3))
 
             # ---- task events (completed episodes in window) ----
             task_events = []

@@ -10,11 +10,11 @@ import zmq
 
 from openpi.scheduling import RequestScheduler
 from openpi.scheduling.baselines import FixedSizeGreedyScheduler
-from openpi.scheduling.baselines import GreedyActionScheduler
 from openpi.scheduling.baselines import GreedyDeadlineScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
 from openpi.scheduling.lookahead import LookaheadScheduler
+from openpi.scheduling.lookahead_actions import LookaheadActionScheduler
 from openpi.scheduling.receding_horizon_ilp import RecedingHorizonILPScheduler
 from openpi.serving.schemas import AckNotification
 from openpi.serving.schemas import BatchProfile
@@ -39,9 +39,9 @@ def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
 
 SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
     "fixed-size-greedy": FixedSizeGreedyScheduler,
-    "greedy-action": GreedyActionScheduler,
     "greedy-deadline": GreedyDeadlineScheduler,
     "lookahead": LookaheadScheduler,
+    "lookahead-action": LookaheadActionScheduler,
     "round_robin": RoundRobinScheduler,
     "random": RandomBatchScheduler,
     "receding_horizon_ilp": RecedingHorizonILPScheduler,
@@ -53,7 +53,7 @@ def _run_scheduler(
     sched_in_ep: str,
     result_ep: str,
     batch_queue: mp.Queue,
-    scheduler_metrics_queue: mp.Queue | None,
+    scheduler_metrics_queue: mp.Queue,
     max_batch_size: int,
     algorithm: str,
     scheduler_kwargs: dict | None,
@@ -93,6 +93,7 @@ def _run_scheduler(
     logger.info("Scheduler starting (algorithm=%s)", algorithm)
 
     cls = SCHEDULER_REGISTRY.get(algorithm)
+    assert cls is not None, f"Unknown scheduling algorithm: {algorithm}"
     ctx = zmq.Context()
 
     req_sock = ctx.socket(zmq.PULL)
@@ -139,8 +140,8 @@ def _run_scheduler(
                 logger.info(
                     "Seeded latency for robot %s from warmup, observation_latency: %f, action_latency: %f",
                     msg.robot_id,
-                    scheduler.latency_tracker.observation_latency(msg.robot_id),
-                    scheduler.latency_tracker.action_latency(msg.robot_id),
+                    scheduler.latency_tracker.observation_latency[msg.robot_id],
+                    scheduler.latency_tracker.action_latency[msg.robot_id],
                 )
             else:
                 logger.warning("Unknown message type: %s", type(msg).__name__)
