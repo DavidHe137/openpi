@@ -164,7 +164,7 @@ class RecedingHorizonILPScheduler(RequestScheduler):
         batch_size = len(candidate)
         annotated: list[SlotRequest] = []
         for request in candidate:
-            self._latest_scheduled_requests[request.robot_id] = request
+            self._record_scheduled_chunk(request, batch_size)
             total_latency_steps = self.latency_tracker.total_latency(request.robot_id, batch_size) / request.control_hz
             annotated.append(dataclasses.replace(request, estimated_d_param=total_latency_steps))
 

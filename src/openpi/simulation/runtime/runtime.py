@@ -11,12 +11,12 @@ Given a scheduler and a per-batch-size latency profile, SimRuntime:
   - steps the event loop until the simulated end time.
 
 Tests can then assert against ``runtime.trace(robot_id)``, inspect the real
-scheduler's state (``scheduler.latency_tracker``,
-``scheduler._deadline_steps``), and inspect the real broker's state
-(``broker.action_chunks``, ``broker._action_queue``) — there is no separate
-ground-truth mirror because the sim itself IS the ground truth: d_net and
-d_infer are known, observation cadence is known, so the exact action
-consumed at each step is derivable from first principles.
+scheduler's state (``scheduler.latency_tracker``, ``scheduler._mirror``),
+and inspect the real broker's state (``broker.action_chunks``,
+``broker._action_queue``) — there is no separate ground-truth mirror because
+the sim itself IS the ground truth: d_net and d_infer are known, observation
+cadence is known, so the exact action consumed at each step is derivable
+from first principles.
 """
 
 from __future__ import annotations

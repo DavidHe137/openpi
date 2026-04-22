@@ -55,7 +55,7 @@ class LookaheadScheduler(RequestScheduler):
 
             for request in batch:
                 self._deadlines[request.robot_id] = request.deadline
-                self._latest_scheduled_requests[request.robot_id] = request
+                self._record_scheduled_chunk(request, batch_size)
                 self._predicted_valid_until[request.robot_id] = finish_time + self._chunk_duration_s
 
             self._batch_queue.put_nowait(batch)

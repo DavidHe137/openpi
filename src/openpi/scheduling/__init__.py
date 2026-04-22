@@ -16,6 +16,8 @@ from openpi.serving.schemas import SchedulerDecision
 from openpi.serving.schemas import SlotRequest
 from openpi.shared.clock import Clock
 from openpi.shared.clock import default_clock
+from openpi.simulation.classes import ActionChunk
+from openpi.simulation.classes import RobotState
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,11 @@ class RequestScheduler(ABC):
 
         self._latest_requests: dict[str, SlotRequest] = {}
         self._latest_scheduled_requests: dict[str, SlotRequest] = {}
-        self._deadline_steps: dict[str, int] = {}  # observation step that the robot will be starved
+        # Mirror of each robot's scheduled-chunk history. The same ActionChunk / RobotState
+        # types the offline simulator uses (see openpi.simulation.classes), so deadlines,
+        # in-flight chunk counts, and schedulable checks can be derived from a single source
+        # of truth and compared directly against sim ground truth in tests.
+        self._mirror: dict[str, RobotState] = {}
         self._decisions: list[SchedulerDecision] = []
         self.latency_tracker = EMALatencyTracker()  # TODO: allow different latency trackers
         self.next_batch_id = itertools.count(1)
@@ -41,14 +47,7 @@ class RequestScheduler(ABC):
 
     def update(self, request: SlotRequest) -> None:
         self._latest_requests[request.robot_id] = request
-        if request.deadline_step is not None and request.deadline_step > self._deadline_steps.get(request.robot_id, 0):
-            logger.warning(
-                "Updated deadline step for robot %s from %d to %d",
-                request.robot_id,
-                self._deadline_steps.get(request.robot_id, 0),
-                request.deadline_step,
-            )
-            self._deadline_steps[request.robot_id] = request.deadline_step
+        self._mirror.setdefault(request.robot_id, RobotState(step_based_coverage=True))
         self.latency_tracker.update_obs(request.robot_id, request.arrival_timestamp, request.request_timestamp)
 
     def update_completion(self, notification: CompletionNotification) -> None:
@@ -60,6 +59,27 @@ class RequestScheduler(ABC):
             notification.receive_time,
             notification.server_send_time,
         )
+
+    def _record_scheduled_chunk(self, request: SlotRequest, batch_size: int) -> ActionChunk:
+        """Append a chunk to the mirror for a request we're dispatching, and remember
+        the SlotRequest itself. Subclasses that override ``schedule()`` must call this
+        (or ``schedule()`` below which calls it) so mirror-derived state stays current.
+        """
+        try:
+            total_latency_s = self.latency_tracker.total_latency(request.robot_id, batch_size)
+        except KeyError:
+            total_latency_s = 0.0
+        arrival_step = request.observation_step + max(0, round(total_latency_s * request.control_hz))
+        chunk = ActionChunk(
+            start_action=request.action_start_step,
+            horizon=request.execution_horizon,
+            arrival_step=arrival_step,
+            observation_step=request.observation_step,
+        )
+        state = self._mirror.setdefault(request.robot_id, RobotState(step_based_coverage=True))
+        state.chunks.append(chunk)
+        self._latest_scheduled_requests[request.robot_id] = request
+        return chunk
 
     def collect_trace(self, batch: list[SlotRequest]) -> dict:
         all_requests = list(self._latest_requests.values())
@@ -110,15 +130,11 @@ class RequestScheduler(ABC):
         now = self._clock.time()
         for batch in batches:
             batch_size = len(batch)
-            # Capture deadlines before the loop overwrites them, sort earliest first.
+            # Capture deadlines before mirror mutations shift them, sort earliest first.
             trace = self.collect_trace(batch)
             annotated = []
             for request in batch:
-                # FIXME: this might monotonically increase if we end up serving a newer observation?
-                self._deadline_steps[request.robot_id] = (
-                    request.request_timestamp + request.execution_horizon / request.control_hz
-                )
-                self._latest_scheduled_requests[request.robot_id] = request
+                self._record_scheduled_chunk(request, batch_size)
                 total_latency_steps = (
                     self.latency_tracker.total_latency(request.robot_id, batch_size) / request.control_hz
                 )
@@ -146,7 +162,7 @@ class RequestScheduler(ABC):
         pass
 
     def reset_robot(self, robot_id: str) -> None:
-        self._deadline_steps.pop(robot_id, None)
+        self._mirror.pop(robot_id, None)
         self._latest_requests.pop(robot_id, None)
         self._latest_scheduled_requests.pop(robot_id, None)
 
@@ -155,13 +171,28 @@ class RequestScheduler(ABC):
         self.latency_tracker.clear(robot_id)
 
     def deadline(self, robot_id: str) -> float:
-        """Return the time until the robot will be starved (seconds)."""
-        deadline_step = self._deadline_steps[robot_id]
+        """Wall-clock time at which the robot runs out of actions (the 'anticipated'
+        deadline — includes chunks dispatched but not yet arrived). Derived from the mirror;
+        falls back to the client's ``deadline_step`` hint before the first schedule."""
         latest_request = self._latest_requests.get(robot_id)
         assert latest_request is not None, f"Missing latest request for robot {robot_id}"
 
+        chunks = self._mirror[robot_id].chunks if robot_id in self._mirror else ()
+        if chunks:
+            deadline_step = max(chunk.start_action + chunk.horizon for chunk in chunks)
+        else:
+            deadline_step = latest_request.deadline_step
+
         steps_remaining = deadline_step - latest_request.observation_step
         return latest_request.request_timestamp + (steps_remaining / latest_request.control_hz)
+
+    def in_flight_chunks(self, robot_id: str) -> list[ActionChunk]:
+        """Chunks dispatched for this robot whose predicted arrival step is still
+        beyond the latest observation step — i.e. still on the wire to the robot."""
+        latest_request = self._latest_requests.get(robot_id)
+        if latest_request is None or robot_id not in self._mirror:
+            return []
+        return [c for c in self._mirror[robot_id].chunks if c.arrival_step > latest_request.observation_step]
 
     @contextmanager
     def record_timing(self) -> Generator[Callable[[], float], None, None]:
@@ -175,11 +206,11 @@ class RequestScheduler(ABC):
 
     @property
     def schedulable_requests(self) -> list[SlotRequest]:
-        """Get all requests that have a greater action start step."""
+        """Latest-per-robot requests whose observation is newer than any chunk we've already dispatched."""
         result = []
         for req in self._latest_requests.values():
-            last = self._latest_scheduled_requests.get(req.robot_id)
-            if last is not None and req.action_start_step <= last.action_start_step:
+            chunks = self._mirror[req.robot_id].chunks if req.robot_id in self._mirror else ()
+            if chunks and req.action_start_step <= chunks[-1].start_action:
                 continue
             result.append(req)
         return result

@@ -28,7 +28,7 @@ class GreedyDeadlineScheduler(RequestScheduler):
             [
                 (
                     slot_request,
-                    self._deadline(slot_request.robot_id) - self.latency_tracker.action_latency[slot_request.robot_id],
+                    self.deadline(slot_request.robot_id) - self.latency_tracker.action_latency[slot_request.robot_id],
                 )
                 for slot_request in candidates
             ],

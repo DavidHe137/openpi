@@ -1,5 +1,6 @@
 from collections.abc import Callable, Generator
 import itertools
+import logging
 import os
 import random
 import subprocess
@@ -12,6 +13,8 @@ from .classes import SimulatorParameters
 from .cost_functions import constant_cost_function
 from .sim import Scheduler
 from .sim import Simulator
+
+logger = logging.getLogger(__name__)
 
 
 class ILPBatchedScheduler(Scheduler):
@@ -120,10 +123,13 @@ class LookaheadScheduler(Scheduler):
         self,
         simulator_parameters: SimulatorParameters,
         cost_function: Callable[[RobotState, int], float] = constant_cost_function,
+        *,
+        progress: bool = True,
     ):
         super().__init__(simulator_parameters)
         self.cost_function = cost_function
-        self.schedule = iter(self.search())
+        self.progress = progress
+        self._schedule: Generator[list[str], None, None] | None = None
 
     def _generate_candidates(
         self,
@@ -165,15 +171,15 @@ class LookaheadScheduler(Scheduler):
         # Seed best_starvation with greedy solution for tighter initial bound
         greedy_sim = Simulator(self.simulator_parameters)
         greedy = GreedyScheduler(self.simulator_parameters)
-        greedy_sim.run(greedy)
+        greedy_sim.run(greedy, progress=self.progress)
         best_starvation = greedy_sim.calculate_starvation()
         best_trajectory = []
         # Reconstruct greedy trajectory from batch history
         for batch in greedy_sim.batch_history:
             best_trajectory.append(batch.robot_indices)
-        print(f"Greedy seed: starvation={best_starvation}")
+        logger.debug("Greedy seed: starvation=%s", best_starvation)
 
-        pbar = tqdm(desc="Leaf nodes evaluated", unit="leaves")
+        pbar = tqdm(desc="Leaf nodes evaluated", unit="leaves", disable=not self.progress)
 
         def dfs(current_trajectory):
             nonlocal best_starvation, best_trajectory
@@ -206,12 +212,14 @@ class LookaheadScheduler(Scheduler):
 
         dfs([])
         pbar.close()
-        print(best_starvation, best_trajectory)
+        logger.debug("best_starvation=%s best_trajectory=%s", best_starvation, best_trajectory)
 
         return best_trajectory
 
     def select_robots(self, simulator: Simulator) -> list[int]:
-        return next(self.schedule, [])
+        if self._schedule is None:
+            self._schedule = iter(self.search())
+        return next(self._schedule, [])
 
 
 class FixedScheduler(Scheduler):

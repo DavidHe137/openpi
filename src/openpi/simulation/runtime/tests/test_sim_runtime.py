@@ -313,7 +313,7 @@ class TestReset:
         # reset_robot should have cleared per-robot scheduler entries.
         assert "r0" not in rt.scheduler._latest_requests
         assert "r0" not in rt.scheduler._latest_scheduled_requests
-        assert "r0" not in rt.scheduler._deadline_steps
+        assert "r0" not in rt.scheduler._mirror
 
     def test_broker_state_after_reset(self):
         rt = build_runtime(latency_s_by_batch_size={1: 0.05})

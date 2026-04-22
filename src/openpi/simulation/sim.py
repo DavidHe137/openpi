@@ -36,16 +36,23 @@ class Scheduler(ABC):
 
 
 class Simulator:
-    def __init__(self, simulator_parameters: SimulatorParameters):
+    def __init__(
+        self,
+        simulator_parameters: SimulatorParameters,
+        initial_state: SimulationState | None = None,
+    ):
         self.params = simulator_parameters
         # TODO: get rid of step-based coverage
-        self.state = SimulationState(
-            time=0,
-            robots={
-                robot_id: RobotState(step_based_coverage=simulator_parameters.step_based_coverage)
-                for robot_id in simulator_parameters.robot_ids
-            },
-        )
+        if initial_state is not None:
+            self.state = initial_state
+        else:
+            self.state = SimulationState(
+                time=0,
+                robots={
+                    robot_id: RobotState(step_based_coverage=simulator_parameters.step_based_coverage)
+                    for robot_id in simulator_parameters.robot_ids
+                },
+            )
 
         self.batch_history: list[BatchRecord] = []
         self._server_available_stack: list[sim_time] = []
@@ -53,8 +60,8 @@ class Simulator:
         self._action_index_lengths_stack: list[list[int]] = []
 
     # FIXME: weird coupling between simulator and scheduler
-    def run(self, scheduler: Scheduler) -> None:
-        with tqdm(total=self.params.end_time) as pbar:
+    def run(self, scheduler: Scheduler, *, progress: bool = True) -> None:
+        with tqdm(total=self.params.end_time, disable=not progress) as pbar:
             prev = 0
             while self.state.time < self.params.end_time:
                 robot_ids = scheduler.select_robots(self)
