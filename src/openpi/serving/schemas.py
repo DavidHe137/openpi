@@ -33,6 +33,7 @@ class SlotRequest:
     noise: np.ndarray | None
     control_hz: float
     estimated_d_param: int = 0  # filled by scheduler before batching
+    is_padding: bool = False  # true for artificial slots used only to pad GPU batch size
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,7 @@ class RequestBatch(NamedTuple):
 class ResponseBatch(NamedTuple):
     responses: list[InferResponse]
     batch_id: int
+    batch_size: int | None = None
 
 
 @dataclass

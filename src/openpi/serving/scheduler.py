@@ -14,6 +14,7 @@ from openpi.scheduling.baselines import GreedyActionScheduler
 from openpi.scheduling.baselines import GreedyDeadlineScheduler
 from openpi.scheduling.baselines import RandomBatchScheduler
 from openpi.scheduling.baselines import RoundRobinScheduler
+from openpi.scheduling.baselines import TrueMaxBatchScheduler
 from openpi.scheduling.lookahead import LookaheadScheduler
 from openpi.scheduling.receding_horizon_ilp import RecedingHorizonILPScheduler
 from openpi.serving.schemas import AckNotification
@@ -39,6 +40,8 @@ def _recv_batch_profile(result_sock: zmq.Socket) -> dict[int, float]:
 
 SCHEDULER_REGISTRY: dict[str, type[RequestScheduler]] = {
     "fixed-size-greedy": FixedSizeGreedyScheduler,
+    "true-max-batch": TrueMaxBatchScheduler,
+    "max-batch": TrueMaxBatchScheduler,
     "greedy-action": GreedyActionScheduler,
     "greedy-deadline": GreedyDeadlineScheduler,
     "lookahead": LookaheadScheduler,

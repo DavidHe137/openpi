@@ -184,6 +184,8 @@ benchmarks/
 jax_cache/
 plots/
 .ruff_cache/
+*.out
+*.err
 
 # AI
 .claude/

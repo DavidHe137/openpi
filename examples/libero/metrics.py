@@ -16,6 +16,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _episode_step_timestamps(ep: dict) -> List[float]:
+    ts = ep.get("step_timestamps") or []
+    if ts:
+        return [float(t) for t in ts]
+
+    requests = ep.get("requests") or []
+    return [
+        float(req.get("request_timestamp"))
+        for req in requests
+        if req.get("request_timestamp")
+    ]
+
+
 # =============================================================================
 # Data Loading
 # =============================================================================
@@ -115,6 +129,30 @@ def load_experiment_duration(output_path: pathlib.Path) -> Optional[float]:
     if t_min == float("inf"):
         return None
     return t_max - t_min
+
+
+def _server_batch_fields(
+    batch,
+) -> Tuple[object, List[str], List[int], Optional[float], Optional[float], int]:
+    """Parse old 5-field and new 6-field server batch records."""
+    if isinstance(batch, dict):
+        robot_ids = batch.get("robot_ids") or []
+        request_ids = batch.get("request_ids") or []
+        batch_size = int(batch.get("batch_size") or len(robot_ids))
+        return (
+            batch.get("batch_id"),
+            robot_ids,
+            request_ids,
+            batch.get("inference_start_time"),
+            batch.get("inference_end_time"),
+            batch_size,
+        )
+
+    batch_id, robot_ids, request_ids, start, end = batch[:5]
+    batch_size = (
+        int(batch[5]) if len(batch) >= 6 and batch[5] is not None else len(robot_ids)
+    )
+    return batch_id, robot_ids, request_ids, start, end, batch_size
 
 
 def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
@@ -878,7 +916,7 @@ def generate_batch_size_plot(output_path: pathlib.Path) -> None:
         data = json.load(f)
 
     # FIXME: should use JSONDataclass loading
-    batch_sizes = [len(batch[1]) for batch in data["batches"]]
+    batch_sizes = [_server_batch_fields(batch)[5] for batch in data["batches"]]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(batch_sizes, bins=30, color="steelblue", alpha=0.7, edgecolor="black")
@@ -908,16 +946,16 @@ def generate_server_timings_plot(output_path: pathlib.Path) -> None:
     outbound: List[float] = []
     for robot in data.get("robots", {}).values():
         for ep in robot.get("episodes", []):
-            ts = ep.get("step_timestamps") or []
+            ts = _episode_step_timestamps(ep)
             if len(ts) >= 2:
                 step_intervals.extend(
                     (np.diff(np.asarray(ts, dtype=float)) * 1000.0).tolist()
                 )
             for req in ep.get("requests", []):
                 ra = req.get("server_arrival_time")
-                rt = req.get("request_timestamp")
-                if ra and rt:
-                    inbound.append((ra - rt) * 1000.0)
+                send_ts = req.get("request_timestamp")
+                if ra and send_ts:
+                    inbound.append((ra - send_ts) * 1000.0)
             for resp in ep.get("responses", []):
                 rcv = resp.get("receive_time", 0.0) or 0.0
                 snd = resp.get("server_send_time", 0.0) or 0.0
@@ -926,17 +964,13 @@ def generate_server_timings_plot(output_path: pathlib.Path) -> None:
 
     infer: List[float] = []
     for b in data.get("batches", []):
-        if isinstance(b, dict):
-            start = b.get("inference_start_time")
-            end = b.get("inference_end_time")
-        else:
-            _, _, _, start, end = b
+        _, _, _, start, end, _ = _server_batch_fields(b)
         if start and end and end >= start:
             infer.append((end - start) * 1000.0)
 
     timings = {
-        "step interval (ms)": np.asarray(step_intervals),
-        "client->server delay (ms)": np.asarray(inbound),
+        "step interval (client-local ms)": np.asarray(step_intervals),
+        "client->server transport delay (ms)": np.asarray(inbound),
         "inference time (ms)": np.asarray(infer),
         "server->client delay (ms)": np.asarray(outbound),
     }
@@ -996,17 +1030,17 @@ def generate_server_timings_over_time_plot(output_path: pathlib.Path) -> None:
 
     for robot_id, robot in data.get("robots", {}).items():
         for ep in robot.get("episodes", []):
-            ts = ep.get("step_timestamps") or []
+            ts = _episode_step_timestamps(ep)
             for i in range(1, len(ts)):
                 step_t.append(float(ts[i]))
                 step_v.append((float(ts[i]) - float(ts[i - 1])) * 1000.0)
                 step_robot.append(robot_id)
             for req in ep.get("requests", []):
                 ra = req.get("server_arrival_time")
-                rt = req.get("request_timestamp")
-                if ra and rt:
-                    inbound_t.append(float(rt))
-                    inbound_v.append((float(ra) - float(rt)) * 1000.0)
+                send_ts = req.get("request_timestamp")
+                if ra and send_ts:
+                    inbound_t.append(float(send_ts))
+                    inbound_v.append((float(ra) - float(send_ts)) * 1000.0)
                     inbound_robot.append(robot_id)
             for resp in ep.get("responses", []):
                 rcv = resp.get("receive_time", 0.0) or 0.0
@@ -1020,16 +1054,11 @@ def generate_server_timings_over_time_plot(output_path: pathlib.Path) -> None:
     infer_v: List[float] = []
     infer_bs: List[int] = []
     for b in data.get("batches", []):
-        if isinstance(b, dict):
-            start = b.get("inference_start_time")
-            end = b.get("inference_end_time")
-            rids = b.get("request_ids") or []
-        else:
-            _, _, rids, start, end = b
+        _, _, _, start, end, batch_size = _server_batch_fields(b)
         if start and end and end >= start:
             infer_t.append(float(start))
             infer_v.append((float(end) - float(start)) * 1000.0)
-            infer_bs.append(len(rids) if rids is not None else 0)
+            infer_bs.append(batch_size)
 
     all_times = step_t + inbound_t + outbound_t + infer_t
     if not all_times:
@@ -1041,9 +1070,15 @@ def generate_server_timings_over_time_plot(output_path: pathlib.Path) -> None:
         return np.asarray(ts, dtype=float) - t0
 
     series = [
-        ("step interval (ms)", _rel(step_t), np.asarray(step_v), step_robot, None),
         (
-            "client->server delay (ms)",
+            "step interval (client-local ms)",
+            _rel(step_t),
+            np.asarray(step_v),
+            step_robot,
+            None,
+        ),
+        (
+            "client->server transport delay (ms)",
             _rel(inbound_t),
             np.asarray(inbound_v),
             inbound_robot,

@@ -42,6 +42,7 @@ from openpi_client.messages import ConnectRequest
 from openpi_client.messages import ConnectResponse
 from openpi_client.messages import EpisodeEnd
 from openpi_client.messages import EpisodeStart
+from openpi_client.messages import EpisodeStep
 from openpi_client.messages import InferRequest
 from openpi_client.messages import InferResponse
 from openpi_client.messages import ResetRequest
@@ -377,7 +378,7 @@ def create_app(
                             state.metrics_store.record_episode_start(robot_id, EpisodeStart(**msg))
                             continue
                         case "episode_step":
-                            state.metrics_store.record_episode_step(robot_id, time.time())
+                            state.metrics_store.record_episode_step(robot_id, EpisodeStep(**msg))
                             continue
                         case "episode_end":
                             state.metrics_store.record_episode_end(robot_id, EpisodeEnd(**msg))

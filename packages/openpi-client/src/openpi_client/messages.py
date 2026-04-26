@@ -100,6 +100,7 @@ class EpisodeStart:
 
 @dataclass(frozen=True)
 class EpisodeStep:
+    client_timestamp: float = 0.0
     type: Literal["episode_step"] = "episode_step"
 
 
