@@ -134,7 +134,7 @@ class BidirectionalWebsocket:
             {
                 "type": "infer",
                 "robot_id": self._robot_id,
-                "observation": asdict(obs),
+                "observation": vars(obs),
                 "observation_step": obs.step,
                 "action_start_step": action_start_step,
                 "request_timestamp": request_timestamp,
