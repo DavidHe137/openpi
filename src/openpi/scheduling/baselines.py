@@ -1,3 +1,4 @@
+import dataclasses
 from functools import lru_cache
 import itertools
 import multiprocessing as mp
@@ -25,6 +26,27 @@ class FixedSizeGreedyScheduler(RequestScheduler):
 
         candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
         return [candidates[: self._max_batch_size]]
+
+
+class TrueMaxBatchScheduler(RequestScheduler):
+    """Always dispatch max_batch_size rows, padding with artificial duplicate requests if needed."""
+
+    def get_next_batches(self) -> list[list[SlotRequest]]:
+        if self._batch_queue.qsize() > 0 or (candidates := self.schedulable_requests) == []:
+            return []
+
+        candidates = sorted(candidates, key=lambda r: self._deadlines.get(r.robot_id, r.deadline))
+        batch = candidates[: self._max_batch_size]
+        if len(batch) == self._max_batch_size:
+            return [batch]
+
+        pad_sources = list(batch)
+        pad_index = 0
+        while len(batch) < self._max_batch_size:
+            source = pad_sources[pad_index % len(pad_sources)]
+            batch.append(dataclasses.replace(source, is_padding=True))
+            pad_index += 1
+        return [batch]
 
 
 class GreedyActionScheduler(RequestScheduler):

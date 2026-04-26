@@ -123,19 +123,22 @@ def _run_gpu_worker(
         # even if the slot was overwritten after the SlotRequest was enqueued.
         slot_datas = [slots.read(sr.slot_index) for sr in slot_reqs]
 
-        # Drop any slot whose request_id has already been served.  This happens when the
+        # Drop any real slot whose request_id has already been served.  This happens when the
         # scheduler dispatches multiple SlotRequests for the same robot before the GPU
         # finishes the first one: both read the same (overwritten) slot and would produce
         # two InferResponses with identical request_ids.  request_ids are monotonically
-        # increasing, so a strict > check also handles episode resets correctly.
+        # increasing, so a strict > check also handles episode resets correctly. Padding
+        # slots are still sent through inference to preserve the requested GPU batch size,
+        # but they never produce responses or scheduler state updates.
         fresh = [
             (sr, sd)
             for sr, sd in zip(slot_reqs, slot_datas, strict=True)
-            if sd.request_id > _last_served_request_id.get(sr.robot_id, 0)
+            if sr.is_padding or sd.request_id > _last_served_request_id.get(sr.robot_id, 0)
         ]
-        if not fresh:
+        if not fresh or not any(not sr.is_padding for sr, _ in fresh):
             continue
         slot_reqs, slot_datas = zip(*fresh, strict=True)
+        actual_batch_size = len(slot_reqs)
 
         infer_requests = [
             InferRequest(
@@ -175,11 +178,12 @@ def _run_gpu_worker(
                 inference_end_time=t1,
             )
             for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True)
+            if not sr.is_padding
         ]
 
         # Update per-robot RTC state
         for sr, sd, action_dict in zip(slot_reqs, slot_datas, actions, strict=True):
-            if sd.infer_type == InferType.INFERENCE_TIME_RTC:
+            if not sr.is_padding and sd.infer_type == InferType.INFERENCE_TIME_RTC:
                 prev_action = action_dict.get("rtc_prev_actions", action_dict["actions"])  # shape (ah, ad)
                 if _action_shape is None:
                     _action_shape = prev_action.shape
@@ -188,10 +192,13 @@ def _run_gpu_worker(
 
         # Record served request_ids before sending so the duplicate check stays consistent.
         for sr, sd in zip(slot_reqs, slot_datas, strict=True):
-            _last_served_request_id[sr.robot_id] = sd.request_id
+            if not sr.is_padding:
+                _last_served_request_id[sr.robot_id] = sd.request_id
 
         # Send responses directly to WS — not via scheduler, so ILP latency doesn't affect clients
-        response_sock.send_pyobj(ResponseBatch(responses=responses, batch_id=batch.batch_id))
+        response_sock.send_pyobj(
+            ResponseBatch(responses=responses, batch_id=batch.batch_id, batch_size=actual_batch_size)
+        )
 
         # Notify scheduler of completion so it can update latency estimates
         inference_duration = t1 - t0
@@ -201,9 +208,10 @@ def _run_gpu_worker(
                     robot_id=sr.robot_id,
                     action_start_step=sd.action_start_step,
                     request_id=sd.request_id,
-                    batch_size=len(slot_reqs),
+                    batch_size=actual_batch_size,
                     inference_duration=inference_duration,
                 )
                 for sr, sd in zip(slot_reqs, slot_datas, strict=True)
+                if not sr.is_padding
             ],
         )

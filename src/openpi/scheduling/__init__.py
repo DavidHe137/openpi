@@ -58,6 +58,7 @@ class RequestScheduler(ABC):
         now = time.time()
         for batch in batches:
             batch_size = len(batch)
+            real_batch = [request for request in batch if not request.is_padding]
             # Capture deadlines before the loop overwrites them, sort earliest first.
             requests = sorted(
                 (
@@ -87,19 +88,20 @@ class RequestScheduler(ABC):
                         "robot_id": r.robot_id,
                         "deadline": self._deadlines.get(r.robot_id, r.deadline) - now,
                     }
-                    for r in batch
+                    for r in real_batch
                 ),
                 key=lambda x: x["deadline"],
             )
             annotated = []
             for request in batch:
                 # FIXME: this might monotonically increase if we end up serving a newer observation?
-                self._deadlines[request.robot_id] = (
-                    request.request_timestamp + request.execution_horizon / request.control_hz
-                )
-                self._latest_scheduled_requests[request.robot_id] = request
+                if not request.is_padding:
+                    self._deadlines[request.robot_id] = (
+                        request.request_timestamp + request.execution_horizon / request.control_hz
+                    )
+                    self._latest_scheduled_requests[request.robot_id] = request
                 total_latency_steps = (
-                    self.latency_tracker.total_latency(request.robot_id, batch_size) / request.control_hz
+                    self.latency_tracker.total_latency(request.robot_id, batch_size) * request.control_hz
                 )
                 # FIXME: only pass inference + action latency, can determine observation latency when processing
                 annotated.append(dataclasses.replace(request, estimated_d_param=total_latency_steps))

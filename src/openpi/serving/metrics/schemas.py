@@ -263,6 +263,7 @@ class BatchSummary(NamedTuple):
     request_ids: list[int]
     inference_start_time: float
     inference_end_time: float
+    batch_size: int | None = None
 
     @classmethod
     def from_json(cls, data: BatchSummary | dict | list) -> BatchSummary:
@@ -270,6 +271,16 @@ class BatchSummary(NamedTuple):
             return data
         if isinstance(data, dict):
             return cls(**data)
+        if len(data) == 5:
+            batch_id, robot_ids, request_ids, inference_start_time, inference_end_time = data
+            return cls(
+                batch_id=batch_id,
+                robot_ids=robot_ids,
+                request_ids=request_ids,
+                inference_start_time=inference_start_time,
+                inference_end_time=inference_end_time,
+                batch_size=len(robot_ids),
+            )
         return cls(*data)
 
     @property

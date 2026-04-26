@@ -131,6 +131,30 @@ def load_experiment_duration(output_path: pathlib.Path) -> Optional[float]:
     return t_max - t_min
 
 
+def _server_batch_fields(
+    batch,
+) -> Tuple[object, List[str], List[int], Optional[float], Optional[float], int]:
+    """Parse old 5-field and new 6-field server batch records."""
+    if isinstance(batch, dict):
+        robot_ids = batch.get("robot_ids") or []
+        request_ids = batch.get("request_ids") or []
+        batch_size = int(batch.get("batch_size") or len(robot_ids))
+        return (
+            batch.get("batch_id"),
+            robot_ids,
+            request_ids,
+            batch.get("inference_start_time"),
+            batch.get("inference_end_time"),
+            batch_size,
+        )
+
+    batch_id, robot_ids, request_ids, start, end = batch[:5]
+    batch_size = (
+        int(batch[5]) if len(batch) >= 6 and batch[5] is not None else len(robot_ids)
+    )
+    return batch_id, robot_ids, request_ids, start, end, batch_size
+
+
 def load_planner_starvation_metrics(output_path: pathlib.Path) -> pd.DataFrame:
     """Load per-episode no-action metrics from saved cost histories.
 
@@ -892,7 +916,7 @@ def generate_batch_size_plot(output_path: pathlib.Path) -> None:
         data = json.load(f)
 
     # FIXME: should use JSONDataclass loading
-    batch_sizes = [len(batch[1]) for batch in data["batches"]]
+    batch_sizes = [_server_batch_fields(batch)[5] for batch in data["batches"]]
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(batch_sizes, bins=30, color="steelblue", alpha=0.7, edgecolor="black")
@@ -940,11 +964,7 @@ def generate_server_timings_plot(output_path: pathlib.Path) -> None:
 
     infer: List[float] = []
     for b in data.get("batches", []):
-        if isinstance(b, dict):
-            start = b.get("inference_start_time")
-            end = b.get("inference_end_time")
-        else:
-            _, _, _, start, end = b
+        _, _, _, start, end, _ = _server_batch_fields(b)
         if start and end and end >= start:
             infer.append((end - start) * 1000.0)
 
@@ -1034,16 +1054,11 @@ def generate_server_timings_over_time_plot(output_path: pathlib.Path) -> None:
     infer_v: List[float] = []
     infer_bs: List[int] = []
     for b in data.get("batches", []):
-        if isinstance(b, dict):
-            start = b.get("inference_start_time")
-            end = b.get("inference_end_time")
-            rids = b.get("request_ids") or []
-        else:
-            _, _, rids, start, end = b
+        _, _, _, start, end, batch_size = _server_batch_fields(b)
         if start and end and end >= start:
             infer_t.append(float(start))
             infer_v.append((float(end) - float(start)) * 1000.0)
-            infer_bs.append(len(rids) if rids is not None else 0)
+            infer_bs.append(batch_size)
 
     all_times = step_t + inbound_t + outbound_t + infer_t
     if not all_times:

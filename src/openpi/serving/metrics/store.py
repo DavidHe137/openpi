@@ -167,6 +167,7 @@ class MetricsStore(JSONDataclass):
                     request_ids=[r.request_id for r in responses],
                     inference_start_time=responses[0].inference_start_time,
                     inference_end_time=responses[0].inference_end_time,
+                    batch_size=batch.batch_size or len(responses),
                 )
             )
 
@@ -442,7 +443,7 @@ class MetricsStore(JSONDataclass):
                 batch_history.append(
                     {
                         "t": round(b.inference_end_time - t0, 3),
-                        "batch_size": len(b.robot_ids),
+                        "batch_size": b.batch_size or len(b.robot_ids),
                         "gpu_time_ms": round(b.gpu_time_ms, 2),
                         "idle_before_ms": round(
                             (b.inference_start_time - batches[i - 1].inference_end_time) * 1000,
