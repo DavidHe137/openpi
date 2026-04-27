@@ -213,51 +213,40 @@ class Pi0(_model.BaseModel):
 
         return jnp.mean(jnp.square(v_t - u_t), axis=-1)
 
-    @override
-    def sample_actions(
+    def prefill(
         self,
-        rng: at.KeyArrayLike,
-        observation: _model.Observation,
-        *,
-        num_steps: int | at.Int[at.Array, ""] = 10,
-        noise: at.Float[at.Array, "b ah ad"] | None = None,
-    ) -> _model.Actions:
-        observation = _model.preprocess_observation(None, observation, train=False)
-        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
-        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
-        dt = -1.0 / num_steps
-        batch_size = observation.state.shape[0]
-        if noise is None:
-            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
-
-        # first fill KV cache with a forward pass of the prefix
-        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
-        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
-        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        prefix_tokens: at.Float[at.Array, "b s emb"],
+        prefix_attn_mask: at.Bool[at.Array, "b s"],
+        positions: at.Int[at.Array, "b s"],
+    ) -> tuple[at.Float[at.Array, "l b _t _k _h"], at.Float[at.Array, "l b _t _v _h"]]:
         _, kv_cache = self.PaliGemma.llm([prefix_tokens, None], mask=prefix_attn_mask, positions=positions)
+        return kv_cache
+
+    def flow_matching(
+        self,
+        observation: _model.Observation,
+        noise: at.Float[at.Array, "b ah ad"],
+        kv_cache,
+        dt: float,
+        prefix_tokens: at.Float[at.Array, "b s emb"],
+        prefix_mask: at.Bool[at.Array, "b s"],
+    ) -> _model.Actions:
+        batch_size = observation.state.shape[0]
 
         def step(carry):
             x_t, time = carry
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
                 observation, x_t, jnp.broadcast_to(time, batch_size)
             )
-            # `suffix_attn_mask` is shape (b, suffix_len, suffix_len) indicating how the suffix tokens can attend to each
-            # other
             suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            # `prefix_attn_mask` is shape (b, suffix_len, prefix_len) indicating how the suffix tokens can attend to the
-            # prefix tokens
             prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
-            # `combined_mask` is shape (b, suffix_len, prefix_len + suffix_len) indicating how the suffix tokens (which
-            # generate the queries) can attend to the full prefix + suffix sequence (which generates the keys and values)
             full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
             assert full_attn_mask.shape == (
                 batch_size,
                 suffix_tokens.shape[1],
                 prefix_tokens.shape[1] + suffix_tokens.shape[1],
             )
-            # `positions` is shape (b, suffix_len) indicating the positions of the suffix tokens
             positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-
             (prefix_out, suffix_out), _ = self.PaliGemma.llm(
                 [None, suffix_tokens],
                 mask=full_attn_mask,
@@ -267,13 +256,129 @@ class Pi0(_model.BaseModel):
             )
             assert prefix_out is None
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-
             return x_t + dt * v_t, time + dt
 
         def cond(carry):
             x_t, time = carry
-            # robust to floating-point error
             return time >= -dt / 2
 
         x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
         return x_0
+
+    def guided_flow_matching(
+        self,
+        observation: _model.Observation,
+        noise: at.Float[at.Array, "b ah ad"],
+        kv_cache,
+        dt: float,
+        prefix_tokens: at.Float[at.Array, "b s emb"],
+        prefix_mask: at.Bool[at.Array, "b s"],
+        prev_action: _model.Actions,
+        s: at.Int[at.Array, " b"],
+        d: at.Int[at.Array, " b"],
+        beta: float = 8.0,
+    ) -> _model.Actions:
+        batch_size = observation.state.shape[0]
+        h = self.action_horizon
+        s = jnp.clip(s, 0, h)
+        d = jnp.clip(d, 0, h)
+
+        def shift_prev_action(one_prev_action: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
+            indices = jnp.arange(h) + one_s
+            safe_indices = jnp.minimum(indices, h - 1)
+            shifted = one_prev_action[safe_indices, :]
+            valid = indices < h
+            return jnp.where(valid[:, None], shifted, jnp.zeros_like(shifted))
+
+        prev_action_slice = jax.vmap(shift_prev_action)(prev_action, s)
+
+        def make_w(one_d: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
+            i = jnp.arange(h)
+            cond_1 = i < one_d
+            cond_2 = (i >= one_d) & (i < h - one_s)
+            w1 = jnp.ones_like(i, dtype=float)
+            denom = jnp.maximum(h - one_s - one_d + 1, 1)
+            c_i = (h - one_s - i) / denom
+            w2 = c_i * (jnp.exp(c_i) - 1) / (jnp.e - 1)
+            w3 = jnp.zeros_like(i, dtype=float)
+            return jnp.where(cond_1, w1, jnp.where(cond_2, w2, w3))
+
+        weights = jax.vmap(make_w)(d, s)
+
+        def func_a_1_prime(x_t, time):
+            suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+                observation, x_t, jnp.broadcast_to(time, batch_size)
+            )
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask_r = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_attn_mask_r, suffix_attn_mask], axis=-1)
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+            (_, suffix_out), _ = self.PaliGemma.llm(
+                [None, suffix_tokens],
+                mask=full_attn_mask,
+                positions=positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, adarms_cond],
+            )
+            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            return x_t - time * v_t, v_t
+
+        def step(carry):
+            x_t, time = carry
+            (a_1_prime, v_t), f_vjp = jax.vjp(func_a_1_prime, x_t, time)
+            e = weights[:, :, None] * (prev_action_slice - a_1_prime)
+            grad_a_1_prime_x_t = f_vjp((e, jnp.zeros_like(v_t)))
+            r_t = time * time / (time * time + (1 - time) * (1 - time))
+            a_2_prime = x_t + dt * (
+                v_t - jax.lax.min(beta, time / ((1 - time) * r_t * r_t + 1e-6)) * grad_a_1_prime_x_t[0]
+            )
+            return a_2_prime, time + dt
+
+        def cond(carry):
+            x_t, time = carry
+            return time >= -dt / 2
+
+        x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+        return x_0
+
+    @override
+    def sample_actions(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int = 10,
+        noise: at.Float[at.Array, "b ah ad"] | None = None,
+        use_rtc: bool = False,
+        prev_action: _model.Actions | None = None,
+        s: at.Int[at.Array, " b"] | None = None,
+        d: at.Int[at.Array, " b"] | None = None,
+        **kwargs,
+    ) -> _model.Actions:
+        observation = _model.preprocess_observation(None, observation, train=False)
+        dt = -1.0 / num_steps
+        batch_size = observation.state.shape[0]
+        if noise is None:
+            noise = jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
+
+        prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
+        prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        kv_cache = self.prefill(prefix_tokens, prefix_attn_mask, positions)
+
+        if use_rtc:
+            x_0 = self.guided_flow_matching(
+                observation, noise, kv_cache, dt, prefix_tokens, prefix_mask, prev_action, s, d
+            )
+        else:
+            x_0 = self.flow_matching(observation, noise, kv_cache, dt, prefix_tokens, prefix_mask)
+        return x_0
+
+    def make_example_actions(self) -> _model.Actions:
+        return jnp.zeros((self.action_horizon, self.action_dim))
+
+    @override
+    def sample_noise(
+        self, rng: at.KeyArrayLike, batch_size: int = 1
+    ) -> at.Float[at.Array, "batch_size action_horizon noise_dim"]:
+        return jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
