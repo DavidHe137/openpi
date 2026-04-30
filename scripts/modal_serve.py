@@ -15,7 +15,7 @@ app = modal.App("openpi-serve")
 GPU = "h100"
 MAX_NUM_ROBOTS = 10
 REGION = "us-east"
-ENV_MODE = "LIBERO"
+ENV_MODE = "REAL"
 MAX_BATCH_SIZE = 4
 PORT = 8080
 
@@ -96,7 +96,7 @@ image = (
     region=[REGION],
     enable_memory_snapshot=True,
     experimental_options={"enable_gpu_snapshot": True},
-    scaledown_window=5 * 60,  # seconds, time to wait before scaling down
+    scaledown_window=60 * 60,  # seconds, time to wait before scaling down
     timeout=2 * 60 * 60,  # 2 hours
 )
 @modal.concurrent(max_inputs=MAX_NUM_ROBOTS)
