@@ -189,6 +189,4 @@ def _should_invalidate_cache(cache_dir: pathlib.Path, local_path: pathlib.Path) 
     for pattern, expire_time in _INVALIDATE_CACHE_DIRS.items():
         if pattern.match(relative_path):
             # Remove if not newer than the expiration timestamp.
-            return local_path.stat().st_mtime <= expire_time
-
-    return False
+            return local_path.stat().st_mtime <= expire
