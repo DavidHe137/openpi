@@ -11,12 +11,11 @@ from __future__ import annotations
 import argparse
 import pathlib
 
-import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-
 from openpi_client.schemas import ActionChunk
+import pandas as pd
 
 ACTION_DIM_NAMES = ["X", "Y", "Z", "RX", "RY", "RZ", "Gripper"]
 
@@ -76,7 +75,9 @@ def plot_action_chunks(parquet_path: pathlib.Path, out_path: pathlib.Path) -> No
     # ── 2. Latency per chunk ───────────────────────────────────────────────
     fig_lat, ax_lat = plt.subplots(figsize=(12, 3.5))
     ax_lat.bar(range(n_chunks), latencies, color=colors, edgecolor="none")
-    ax_lat.axhline(np.mean(latencies), color="red", linestyle="--", linewidth=1.2, label=f"Mean {np.mean(latencies):.1f} ms")
+    ax_lat.axhline(
+        np.mean(latencies), color="red", linestyle="--", linewidth=1.2, label=f"Mean {np.mean(latencies):.1f} ms"
+    )
     ax_lat.set_xlabel("Chunk index")
     ax_lat.set_ylabel("Latency (ms)")
     ax_lat.set_title("Server inference latency per chunk (request → response)")
@@ -94,7 +95,13 @@ def plot_action_chunks(parquet_path: pathlib.Path, out_path: pathlib.Path) -> No
     ax_t.scatter(range(n_chunks), df["observation_step"], s=20, label="observation_step", zorder=3)
     ax_t.scatter(range(n_chunks), df["action_start_step"], s=20, label="action_start_step", marker="x", zorder=3)
     skew = (df["action_start_step"] - df["observation_step"]).values
-    ax_t.fill_between(range(n_chunks), df["observation_step"], df["action_start_step"], alpha=0.2, label=f"skew (mean={np.mean(skew):.1f})")
+    ax_t.fill_between(
+        range(n_chunks),
+        df["observation_step"],
+        df["action_start_step"],
+        alpha=0.2,
+        label=f"skew (mean={np.mean(skew):.1f})",
+    )
     ax_t.set_xlabel("Chunk index")
     ax_t.set_ylabel("Step")
     ax_t.set_title("Observation step vs action_start_step per chunk")
@@ -111,7 +118,9 @@ def plot_action_chunks(parquet_path: pathlib.Path, out_path: pathlib.Path) -> No
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plot action chunks from a debug parquet file")
     parser.add_argument("parquet", type=str, help="Path to action_chunks.parquet")
-    parser.add_argument("--out", type=str, default=None, help="Output image base path (default: <parquet_dir>/action_chunks_plot.png)")
+    parser.add_argument(
+        "--out", type=str, default=None, help="Output image base path (default: <parquet_dir>/action_chunks_plot.png)"
+    )
     args = parser.parse_args()
 
     parquet_path = pathlib.Path(args.parquet)
