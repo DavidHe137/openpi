@@ -73,6 +73,8 @@ DEFAULT_CHECKPOINT = {
         "dir": "/coc/flash8/rbansal66/openpi_rollout/openpi/.cache/openpi/openpi-assets/checkpoints/pi0_libero_pytorch_dexmal_mokapots",
     },
     EnvMode.REAL: {
+        # "config": "pi05_pick_up_the_legos",
+        # "dir": "gs://openpi-assets/checkpoints/pi05_bricks_real",
         "config": "pi05_sort_legos_correct_bins",
         "dir": "gs://openpi-assets/checkpoints/pi05_sort_legos_correct_bins",
     },
