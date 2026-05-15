@@ -627,7 +627,7 @@ class TrainConfig:
     # device memory will be reduced but training could potentially be slower.
     # eg. if total device is 4 and fsdp devices is 2; then the model will shard to 2 devices and run
     # data parallel between 2 groups of devices.
-    fsdp_devices: int = 2
+    fsdp_devices: int = 1
 
     @property
     def assets_dirs(self) -> pathlib.Path:
@@ -879,6 +879,68 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        name="pi05_sort_legos_correct_bins",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/sort-the-legos-into-the-correct-bins-20260427",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_sort_legos_correct_bins_extra_data",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/sort-the-legos-into-the-correct-bins-20260505",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/coc/flash7/rbansal66/vvla/openpi-training/checkpoints/pi05_sort_legos_correct_bins/sort_legos_finetune/29999/params"
+        ),
+        num_train_steps=50_000,
+    ),
+    TrainConfig(
+        name="pi05_stack_cubes",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/stack-cubes-of-the-same-color-into-towers-20260505",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
         name="pi05_throw_the_legos",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
         data=LeRobotLiberoDataConfig(
@@ -888,6 +950,106 @@ _CONFIGS = [
         ),
         # Pi05 + AdamW + EMA is memory-heavy. On multi-GPU nodes set --fsdp-devices <N> == GPU count (default 2
         # gives a (batch,fsdp) mesh that can trigger XLA full rematerialization and OOM). batch_size must divide N.
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_legos_30hz",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_30hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_turntable_30hz",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/turntable_30hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_turntable_20hz",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/turntable_20hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_20hz",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_20hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_30hz",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_30hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
         batch_size=8,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
@@ -935,10 +1097,10 @@ _CONFIGS = [
         num_train_steps=20_000,
     ),
     TrainConfig(
-        name="pi05_libero_act_horizon_50_fullnode",
+        name="pi05_libero_act_horizon_20",
         model=pi0_config.Pi0Config(
             pi05=True,
-            action_horizon=50,
+            action_horizon=20,
             max_token_len=180,
             discrete_state_input=False,
             paligemma_variant="gemma_2b_lora",
@@ -949,7 +1111,7 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=False,
         ),
-        batch_size=256,
+        batch_size=128,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -959,7 +1121,7 @@ _CONFIGS = [
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
             action_dim=7,
-            action_horizon=50,
+            action_horizon=20,
             max_token_len=180,
             discrete_state_input=False,
             action_expert_variant="gemma_300m_lora",
@@ -969,8 +1131,8 @@ _CONFIGS = [
         ema_decay=None,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_libero/params"),
         # pytorch_weight_path="/path/to/your/pytorch_weight_path",
-        num_train_steps=30_000,
-        fsdp_devices=4,
+        num_train_steps=50_000,
+        fsdp_devices=2,
     ),
     TrainConfig(
         name="pi05_aloha_pen_uncap",
