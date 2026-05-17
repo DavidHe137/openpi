@@ -96,7 +96,7 @@ def main(config_name: str, max_frames: int | None = None):
         )
     else:
         data_loader, num_batches = create_torch_dataloader(
-            data_config, config.model.action_horizon, config.batch_size, config.model, config.num_workers, max_frames
+            data_config, config.model.action_horizon, config.batch_size, config.model, 8, max_frames
         )
 
     keys = ["state", "actions"]

@@ -970,7 +970,7 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        batch_size=8,
+        batch_size=16,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -981,6 +981,7 @@ _CONFIGS = [
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints"
     ),
     TrainConfig(
         name="pi05_turntable_30hz",
@@ -990,7 +991,7 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        batch_size=8,
+        batch_size=16,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -1001,6 +1002,7 @@ _CONFIGS = [
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints"
     ),
     TrainConfig(
         name="pi05_turntable_20hz",
@@ -1010,7 +1012,7 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        batch_size=8,
+        batch_size=16,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -1021,6 +1023,7 @@ _CONFIGS = [
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints"
     ),
     TrainConfig(
         name="pi05_legos_turntable_20hz",
@@ -1030,7 +1033,28 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        batch_size=8,
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints"
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_30hz",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_30hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=64,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -1042,15 +1066,16 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
     ),
+    # -----------------------
     TrainConfig(
-        name="pi05_legos_turntable_30hz",
+        name="pi05_legos_turntable_25hz_act20",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
         data=LeRobotLiberoDataConfig(
-            repo_id="solace222/legos_turntable_30hz",
+            repo_id="solace222/legos_turntable_25hz",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        batch_size=8,
+        batch_size=16,
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=10_000,
             peak_lr=5e-5,
@@ -1060,7 +1085,144 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=30_000,
+        num_train_steps=60_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints",
+        save_interval=30000,
+        keep_period=30000
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_25hz_act40",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=40, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_25hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=60_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints",
+        save_interval=30000,
+        keep_period=30000
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_25hz_act60",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=60, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_25hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=60_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints",
+        save_interval=30000,
+        keep_period=30000
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_25hz_act80",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=80, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_25hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=60_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints",
+        save_interval=30000,
+        keep_period=30000
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_25hz_act100",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=100, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_25hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=60_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints",
+        save_interval=30000,
+        keep_period=30000
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_better_25hz_act100",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=100, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/turntable_40_25hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=16,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints/pi05_legos_turntable_25hz_act100/legos_turntable_25hz_finetune_act100/29999/params"),
+        num_train_steps=60_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints",
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_better_full_25hz_act100",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=100, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_new_25hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=60_000,
+        checkpoint_base_dir="/storage/cedar/cedar0/cedarp-dxu345-0/rbansal66/openpi_checkpoints",
     ),
     #
     # Fine-tuning Aloha configs.
