@@ -276,12 +276,21 @@ class Pi0(_model.BaseModel):
         prev_action: _model.Actions,
         s: at.Int[at.Array, " b"],
         d: at.Int[at.Array, " b"],
-        beta: float = 8.0,
+        execution_horizon: at.Int[at.Array, " b"] | None = None,
+        beta: float = 10.0,
+        sigma_d: float = 1.0,
     ) -> _model.Actions:
         batch_size = observation.state.shape[0]
         h = self.action_horizon
         s = jnp.clip(s, 0, h)
         d = jnp.clip(d, 0, h)
+        # Per-batch cap on the guided region. When provided, weights become 0 at
+        # position min(H-s, execution_horizon) instead of just H-s. This lets a
+        # client cap inpainting to the prefix it will actually execute.
+        if execution_horizon is None:
+            eh = jnp.full((batch_size,), h, dtype=jnp.int32)
+        else:
+            eh = jnp.clip(execution_horizon, 0, h)
 
         def shift_prev_action(one_prev_action: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
             indices = jnp.arange(h) + one_s
@@ -292,18 +301,22 @@ class Pi0(_model.BaseModel):
 
         prev_action_slice = jax.vmap(shift_prev_action)(prev_action, s)
 
-        def make_w(one_d: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
+        def make_w(one_d: jnp.ndarray, one_s: jnp.ndarray, one_eh: jnp.ndarray) -> jnp.ndarray:
             i = jnp.arange(h)
+            soft_end = jnp.minimum(h - one_s, one_eh)
             cond_1 = i < one_d
-            cond_2 = (i >= one_d) & (i < h - one_s)
+            cond_2 = (i >= one_d) & (i < soft_end)
             w1 = jnp.ones_like(i, dtype=float)
-            denom = jnp.maximum(h - one_s - one_d + 1, 1)
-            c_i = (h - one_s - i) / denom
+            denom = jnp.maximum(soft_end - one_d + 1, 1)
+            c_i = (soft_end - i) / denom
+            # LINEAR schedule (lerobot default): weights ramp linearly from 1 → 0 across [d, soft_end).
+            # w2 = c_i
+            # EXP schedule (paper eq. 5): faster falloff. Commented out for now.
             w2 = c_i * (jnp.exp(c_i) - 1) / (jnp.e - 1)
             w3 = jnp.zeros_like(i, dtype=float)
             return jnp.where(cond_1, w1, jnp.where(cond_2, w2, w3))
 
-        weights = jax.vmap(make_w)(d, s)
+        weights = jax.vmap(make_w)(d, s, eh)
 
         def func_a_1_prime(x_t, time):
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
@@ -328,7 +341,10 @@ class Pi0(_model.BaseModel):
             (a_1_prime, v_t), f_vjp = jax.vjp(func_a_1_prime, x_t, time)
             e = weights[:, :, None] * (prev_action_slice - a_1_prime)
             grad_a_1_prime_x_t = f_vjp((e, jnp.zeros_like(v_t)))
-            r_t = time * time / (time * time + (1 - time) * (1 - time))
+            # r²_τ with tunable σ_d, in openpi's time convention (time = 1 - paper_τ).
+            # Paper form: r²_τ = (1-τ)² σ_d² / [(1-τ)² + σ_d² τ²]
+            sigma_d_sq = sigma_d * sigma_d
+            r_t = sigma_d_sq * time * time / (time * time + sigma_d_sq * (1 - time) * (1 - time))
             a_2_prime = x_t + dt * (
                 v_t - jax.lax.min(beta, time / ((1 - time) * r_t * r_t + 1e-6)) * grad_a_1_prime_x_t[0]
             )
@@ -353,6 +369,7 @@ class Pi0(_model.BaseModel):
         prev_action: _model.Actions | None = None,
         s: at.Int[at.Array, " b"] | None = None,
         d: at.Int[at.Array, " b"] | None = None,
+        execution_horizon: at.Int[at.Array, " b"] | None = None,
         **kwargs,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
@@ -368,7 +385,8 @@ class Pi0(_model.BaseModel):
 
         if use_rtc:
             x_0 = self.guided_flow_matching(
-                observation, noise, kv_cache, dt, prefix_tokens, prefix_mask, prev_action, s, d
+                observation, noise, kv_cache, dt, prefix_tokens, prefix_mask, prev_action, s, d,
+                execution_horizon=execution_horizon,
             )
         else:
             x_0 = self.flow_matching(observation, noise, kv_cache, dt, prefix_tokens, prefix_mask)
