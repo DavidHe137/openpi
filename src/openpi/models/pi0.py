@@ -277,7 +277,7 @@ class Pi0(_model.BaseModel):
         s: at.Int[at.Array, " b"],
         d: at.Int[at.Array, " b"],
         execution_horizon: at.Int[at.Array, " b"] | None = None,
-        beta: float = 10.0,
+        beta: float = 8.0,
         sigma_d: float = 1.0,
     ) -> _model.Actions:
         batch_size = observation.state.shape[0]
@@ -346,7 +346,7 @@ class Pi0(_model.BaseModel):
             sigma_d_sq = sigma_d * sigma_d
             r_t = sigma_d_sq * time * time / (time * time + sigma_d_sq * (1 - time) * (1 - time))
             a_2_prime = x_t + dt * (
-                v_t - jax.lax.min(beta, time / ((1 - time) * r_t * r_t + 1e-6)) * grad_a_1_prime_x_t[0]
+                v_t - jax.lax.min(beta, time / ((1 - time) * r_t + 1e-6)) * grad_a_1_prime_x_t[0]
             )
             return a_2_prime, time + dt
 
