@@ -63,10 +63,20 @@ def posemb_sincos(
     return jnp.concatenate([jnp.sin(sinusoid_input), jnp.cos(sinusoid_input)], axis=-1)
 
 
+def shift_prev_action(one_prev_action: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
+    h = one_prev_action.shape[0]
+    indices = jnp.arange(h) + one_s
+    safe_indices = jnp.minimum(indices, h - 1)
+    shifted = one_prev_action[safe_indices, :]
+    valid = indices < h
+    return jnp.where(valid[:, None], shifted, jnp.zeros_like(shifted))
+
+
 class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
+        self.max_delay = config.max_delay
         paligemma_config = _gemma.get_config(config.paligemma_variant)
         action_expert_config = _gemma.get_config(config.action_expert_variant)
         # TODO: rewrite gemma in NNX. For now, use bridge.
@@ -138,12 +148,12 @@ class Pi0(_model.BaseModel):
 
     @at.typecheck
     def embed_suffix(
-        self, obs: _model.Observation, noisy_actions: _model.Actions, timestep: at.Float[at.Array, " b"]
+        self, obs: _model.Observation, noisy_actions: _model.Actions, timestep: at.Float[at.Array, "b ah"]
     ) -> tuple[
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
         at.Bool[at.Array, " s"],
-        at.Float[at.Array, "b emb"] | None,
+        at.Float[at.Array, "b ah emb"] | None,
     ]:
         input_mask = []
         ar_mask = []
@@ -158,7 +168,9 @@ class Pi0(_model.BaseModel):
 
         action_tokens = self.action_in_proj(noisy_actions)
         # embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
-        time_emb = posemb_sincos(timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0)
+        time_emb = posemb_sincos(
+            timestep.reshape(-1), self.action_in_proj.out_features, min_period=4e-3, max_period=4.0
+        ).reshape(*timestep.shape, -1)
         if self.pi05:
             # time MLP (for adaRMS)
             time_emb = self.time_mlp_in(time_emb)
@@ -169,8 +181,7 @@ class Pi0(_model.BaseModel):
             adarms_cond = time_emb
         else:
             # mix timestep + action information using an MLP (no adaRMS)
-            time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=self.action_horizon)
-            action_time_tokens = jnp.concatenate([action_tokens, time_tokens], axis=-1)
+            action_time_tokens = jnp.concatenate([action_tokens, time_emb], axis=-1)
             action_time_tokens = self.action_time_mlp_in(action_time_tokens)
             action_time_tokens = nnx.swish(action_time_tokens)
             action_time_tokens = self.action_time_mlp_out(action_time_tokens)
@@ -189,13 +200,16 @@ class Pi0(_model.BaseModel):
     def compute_loss(
         self, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, *, train: bool = False
     ) -> at.Float[at.Array, "*b ah"]:
-        preprocess_rng, noise_rng, time_rng = jax.random.split(rng, 3)
+        preprocess_rng, noise_rng, time_rng, delay_rng = jax.random.split(rng, 4)
         observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
 
         batch_shape = actions.shape[:-2]
         noise = jax.random.normal(noise_rng, actions.shape)
         time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
-        time_expanded = time[..., None, None]
+        delay = jax.random.randint(delay_rng, batch_shape, 0, self.max_delay)
+        delay_mask = jnp.arange(self.action_horizon) < delay[..., None]
+        time = jnp.where(delay_mask, 0.0, time[..., None])
+        time_expanded = time[..., None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
@@ -211,7 +225,9 @@ class Pi0(_model.BaseModel):
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
-        return jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        loss = jnp.mean(jnp.square(v_t - u_t), axis=-1)
+        postfix_mask = jnp.logical_not(delay_mask)
+        return loss * postfix_mask * (loss.size / (jnp.sum(postfix_mask) + 1e-8))
 
     def prefill(
         self,
@@ -230,13 +246,18 @@ class Pi0(_model.BaseModel):
         dt: float,
         prefix_tokens: at.Float[at.Array, "b s emb"],
         prefix_mask: at.Bool[at.Array, "b s"],
+        action_prefix: at.Float[at.Array, "b ah ad"],
+        delay: at.Int[at.Array, " b"],
     ) -> _model.Actions:
         batch_size = observation.state.shape[0]
+        delay_mask = jnp.arange(self.action_horizon)[None, :] < delay[:, None]
 
         def step(carry):
             x_t, time = carry
+            x_t = jnp.where(delay_mask[:, :, None], action_prefix, x_t)
+            time_masked = jnp.where(delay_mask, 0.0, time)
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size)
+                observation, x_t, time_masked
             )
             suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
             prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
@@ -292,13 +313,6 @@ class Pi0(_model.BaseModel):
         else:
             eh = jnp.clip(execution_horizon, 0, h)
 
-        def shift_prev_action(one_prev_action: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
-            indices = jnp.arange(h) + one_s
-            safe_indices = jnp.minimum(indices, h - 1)
-            shifted = one_prev_action[safe_indices, :]
-            valid = indices < h
-            return jnp.where(valid[:, None], shifted, jnp.zeros_like(shifted))
-
         prev_action_slice = jax.vmap(shift_prev_action)(prev_action, s)
 
         def make_w(one_d: jnp.ndarray, one_s: jnp.ndarray, one_eh: jnp.ndarray) -> jnp.ndarray:
@@ -320,7 +334,7 @@ class Pi0(_model.BaseModel):
 
         def func_a_1_prime(x_t, time):
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size)
+                observation, x_t, jnp.broadcast_to(time, (batch_size, h))
             )
             suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
             prefix_attn_mask_r = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
@@ -366,6 +380,7 @@ class Pi0(_model.BaseModel):
         num_steps: int = 10,
         noise: at.Float[at.Array, "b ah ad"] | None = None,
         use_rtc: bool = False,
+        use_train_rtc: bool = False,
         prev_action: _model.Actions | None = None,
         s: at.Int[at.Array, " b"] | None = None,
         d: at.Int[at.Array, " b"] | None = None,
@@ -389,7 +404,15 @@ class Pi0(_model.BaseModel):
                 execution_horizon=execution_horizon,
             )
         else:
-            x_0 = self.flow_matching(observation, noise, kv_cache, dt, prefix_tokens, prefix_mask)
+            if use_train_rtc:
+                action_prefix = jax.vmap(shift_prev_action)(prev_action, s)
+                delay = jnp.clip(d, 0, self.action_horizon)
+            else:
+                action_prefix = jnp.zeros_like(noise)
+                delay = jnp.zeros((batch_size,), dtype=jnp.int32)
+            x_0 = self.flow_matching(
+                observation, noise, kv_cache, dt, prefix_tokens, prefix_mask, action_prefix, delay
+            )
         return x_0
 
     def make_example_actions(self) -> _model.Actions:
