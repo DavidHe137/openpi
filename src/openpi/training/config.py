@@ -1257,6 +1257,48 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
+    TrainConfig(
+        name="pi05_legos_turntable_better_full_30hz_rtc_act100",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=100, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_new_30hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50000,
+        checkpoint_base_dir="/coc/flash8/dhe83/.cache/openpi-assets/checkpoints",
+    ),
+    TrainConfig(
+        name="pi05_legos_turntable_better_full_30hz_rtc_act20",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=20, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="solace222/legos_turntable_new_30hz",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        batch_size=32,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50000,
+        checkpoint_base_dir="/coc/flash8/dhe83/.cache/openpi-assets/checkpoints",
+    ),
     #
     # RoboArena configs.
     #
