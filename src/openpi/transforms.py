@@ -7,6 +7,7 @@ import flax.traverse_util as traverse_util
 import jax
 import numpy as np
 from openpi_client import image_tools
+import pandas as pd
 
 from openpi.models import tokenizer as _tokenizer
 from openpi.shared import array_typing as at
@@ -311,17 +312,18 @@ class PromptFromLeRobotTask(DataTransformFn):
     """Extracts a prompt from the current LeRobot dataset task."""
 
     # Contains the LeRobot dataset tasks (dataset.meta.tasks).
-    tasks: dict[int, str]
+    tasks: pd.DataFrame
 
     def __call__(self, data: DataDict) -> DataDict:
         if "task_index" not in data:
             raise ValueError('Cannot extract prompt without "task_index"')
 
         task_index = int(data["task_index"])
-        if (prompt := self.tasks.get(task_index)) is None:
+        matches = self.tasks[self.tasks["task_index"] == task_index]
+        if matches.empty:
             raise ValueError(f"{task_index=} not found in task mapping: {self.tasks}")
 
-        return {**data, "prompt": prompt}
+        return {**data, "prompt": matches.index[0]}
 
 
 @dataclasses.dataclass(frozen=True)
