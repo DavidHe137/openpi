@@ -406,7 +406,7 @@ class Pi0(_model.BaseModel):
         else:
             if use_train_rtc:
                 action_prefix = jax.vmap(shift_prev_action)(prev_action, s)
-                delay = jnp.clip(d, 0, self.action_horizon)
+                delay = jnp.clip(d, 0, self.max_delay - 1)
             else:
                 action_prefix = jnp.zeros_like(noise)
                 delay = jnp.zeros((batch_size,), dtype=jnp.int32)
