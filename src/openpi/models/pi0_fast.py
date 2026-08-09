@@ -314,6 +314,3 @@ class Pi0FAST(_model.BaseModel):
 
     def sample_noise(self, rng: at.KeyArrayLike, batch_size: int = 1):
         return jax.random.normal(rng, (batch_size, self.action_horizon, self.action_dim))
-
-    def make_example_actions(self):
-        return jnp.zeros((self.action_horizon, self.action_dim))

@@ -287,9 +287,6 @@ class BaseModel(nnx.Module, abc.ABC):
         self, rng: at.KeyArrayLike, batch_size: int = 1
     ) -> at.Float[at.Array, "batch_size action_horizon noise_dim"]: ...
 
-    @abc.abstractmethod
-    def make_example_actions(self) -> Actions: ...
-
 
 def restore_params(
     params_path: pathlib.Path | str,

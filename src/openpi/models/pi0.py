@@ -416,9 +416,6 @@ class Pi0(_model.BaseModel):
             )
         return x_0
 
-    def make_example_actions(self) -> _model.Actions:
-        return jnp.zeros((self.action_horizon, self.action_dim))
-
     @override
     def sample_noise(
         self, rng: at.KeyArrayLike, batch_size: int = 1
