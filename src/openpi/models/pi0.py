@@ -254,7 +254,6 @@ class Pi0(_model.BaseModel):
 
         def step(carry):
             x_t, time = carry
-            x_t = jnp.where(delay_mask[:, :, None], action_prefix, x_t)
             time_masked = jnp.where(delay_mask, 0.0, time)
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
                 observation, x_t, time_masked
@@ -277,13 +276,15 @@ class Pi0(_model.BaseModel):
             )
             assert prefix_out is None
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-            return x_t + dt * v_t, time + dt
+            return jnp.where(delay_mask[:, :, None], action_prefix, x_t + dt * v_t), time + dt
 
         def cond(carry):
             x_t, time = carry
             return time >= -dt / 2
 
-        x_0, _ = jax.lax.while_loop(cond, step, (noise, 1.0))
+        x_0, _ = jax.lax.while_loop(
+            cond, step, (jnp.where(delay_mask[:, :, None], action_prefix, noise), 1.0)
+        )
         return x_0
 
     def guided_flow_matching(
