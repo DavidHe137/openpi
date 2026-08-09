@@ -25,5 +25,4 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 # Default fsdp_devices=2 on 8 GPUs -> (4,2) mesh; XLA then does involuntary full rematerialization (~32GiB/GPU).
 # Set --fsdp-devices to match GPU count on this node (must divide jax.device_count(); batch_size must too).
 
-uv run scripts/compute_norm_stats.py --config-name=pi05_legos_turntable_better_full_30hz_rtc_act20_lora_d15
 uv run scripts/train.py pi05_legos_turntable_better_full_30hz_rtc_act20_lora_d15 --exp-name=pi05_legos_turntable_better_full_30hz_rtc_act20_lora_d15 --fsdp-devices 2 --resume

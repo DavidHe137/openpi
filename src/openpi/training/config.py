@@ -1381,6 +1381,7 @@ _CONFIGS = [
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="solace222/legos_turntable_new_30hz",
+            assets=AssetsConfig(assets_dir="/coc/flash8/dhe83/train-time-rtc/third_party/openpi/assets/pi05_legos_turntable_better_full_30hz_rtc_act100_lora"),
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
@@ -1416,6 +1417,7 @@ _CONFIGS = [
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="solace222/legos_turntable_new_30hz",
+            assets=AssetsConfig(assets_dir="/coc/flash8/dhe83/train-time-rtc/third_party/openpi/assets/pi05_legos_turntable_better_full_30hz_rtc_act20_lora"),
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
