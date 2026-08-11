@@ -65,11 +65,8 @@ def posemb_sincos(
 
 def shift_prev_action(one_prev_action: jnp.ndarray, one_s: jnp.ndarray) -> jnp.ndarray:
     h = one_prev_action.shape[0]
-    indices = jnp.arange(h) + one_s
-    safe_indices = jnp.minimum(indices, h - 1)
-    shifted = one_prev_action[safe_indices, :]
-    valid = indices < h
-    return jnp.where(valid[:, None], shifted, jnp.zeros_like(shifted))
+    indices = jnp.minimum(jnp.arange(h) + one_s, h - 1)
+    return one_prev_action[indices, :]
 
 
 class Pi0(_model.BaseModel):
